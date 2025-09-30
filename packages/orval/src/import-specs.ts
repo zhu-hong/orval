@@ -14,7 +14,7 @@ import yaml from 'js-yaml';
 
 import { importOpenApi } from './import-open-api';
 
-const resolveSpecs = async (
+export const resolveSpecs = async (
   path: string,
   { validate, ...options }: SwaggerParserOptions,
   isUrl: boolean,

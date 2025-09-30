@@ -56,7 +56,7 @@ export const importOpenApi = async ({
   };
 };
 
-const generateInputSpecs = async ({
+export const generateInputSpecs = async ({
   specs,
   input,
   workspace,
@@ -163,7 +163,7 @@ const getApiSchemas = ({
   );
 };
 
-const getAllSchemas = (spec: object, specKey?: string): SchemasObject => {
+export const getAllSchemas = (spec: object, specKey?: string): SchemasObject => {
   const keysToOmit = new Set([
     'openapi',
     'info',
