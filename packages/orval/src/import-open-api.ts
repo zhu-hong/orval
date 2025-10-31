@@ -163,7 +163,10 @@ const getApiSchemas = ({
   );
 };
 
-export const getAllSchemas = (spec: object, specKey?: string): SchemasObject => {
+export const getAllSchemas = (
+  spec: object,
+  specKey?: string,
+): SchemasObject => {
   const keysToOmit = new Set([
     'openapi',
     'info',
