@@ -22,7 +22,6 @@ import {
   type ZodCoerceType,
 } from '@orval/core';
 import {
-  isSchemaObject,
   type ParameterObject,
   type PathItemObject,
   type ReferenceObject,
@@ -30,10 +29,7 @@ import {
   type ResponseObject,
   type SchemaObject,
 } from 'openapi3-ts/oas30';
-import {
-  isSchemaObject as isSchemaObject31,
-  type SchemaObject as SchemaObject31,
-} from 'openapi3-ts/oas31';
+import { type SchemaObject as SchemaObject31 } from 'openapi3-ts/oas31';
 import { unique } from 'remeda';
 
 import {
@@ -399,7 +395,7 @@ export const generateZodValidationSchemaDefinition = (
               'tuple',
               schema31.prefixItems.map((item, idx) =>
                 generateZodValidationSchemaDefinition(
-                  deference(item as SchemaObject | ReferenceObject, context),
+                  dereference(item as SchemaObject | ReferenceObject, context),
                   context,
                   camel(`${name}-${idx}-item`),
                   isZodV4,
@@ -544,7 +540,10 @@ export const generateZodValidationSchemaDefinition = (
             Object.keys(schema.properties)
               .map((key) => ({
                 [key]: generateZodValidationSchemaDefinition(
-                  schema.properties?.[key] as any,
+                  schema.properties?.[key] as
+                    | SchemaObject
+                    | SchemaObject31
+                    | undefined,
                   context,
                   camel(`${name}-${key}`),
                   strict,
@@ -775,7 +774,7 @@ ${Object.entries(mergedProperties)
 })`;
 
         // Apply strict only once for Zod v3 (v4 uses strictObject)
-        if (strict && !isZodV4) {
+        if (!isZodV4) {
           return `${mergedObjectString}.strict()`;
         }
 
@@ -806,7 +805,9 @@ ${Object.entries(mergedProperties)
     if (fn === 'oneOf' || fn === 'anyOf') {
       // Can't use zod.union() with a single item
       if (args.length === 1) {
-        return args[0].functions.map((prop) => parseProperty(prop)).join('');
+        return args[0].functions
+          .map((prop: any) => parseProperty(prop))
+          .join('');
       }
 
       const union = args.map(
@@ -829,7 +830,9 @@ ${Object.entries(mergedProperties)
     }
 
     if (fn === 'additionalProperties') {
-      const value = args.functions.map((prop) => parseProperty(prop)).join('');
+      const value = args.functions
+        .map((prop: any) => parseProperty(prop))
+        .join('');
       const valueWithZod = `${value.startsWith('.') ? 'zod' : ''}${value}`;
       consts += args.consts;
       return `zod.record(zod.string(), ${valueWithZod})`;
@@ -851,7 +854,9 @@ ${Object.entries(args)
 })`;
     }
     if (fn === 'array') {
-      const value = args.functions.map((prop) => parseProperty(prop)).join('');
+      const value = args.functions
+        .map((prop: any) => parseProperty(prop))
+        .join('');
       if (typeof args.consts === 'string') {
         consts += args.consts;
       } else if (Array.isArray(args.consts)) {
@@ -908,17 +913,17 @@ ${Object.entries(args)
   return { zod, consts };
 };
 
-const deferenceScalar = (value: any, context: ContextSpecs): unknown => {
+const dereferenceScalar = (value: any, context: ContextSpecs): unknown => {
   if (isObject(value)) {
-    return deference(value, context);
+    return dereference(value, context);
   } else if (Array.isArray(value)) {
-    return value.map((item) => deferenceScalar(item, context));
+    return value.map((item) => dereferenceScalar(item, context));
   } else {
     return value;
   }
 };
 
-const deference = (
+const dereference = (
   schema: SchemaObject | ReferenceObject,
   context: ContextSpecs,
 ): SchemaObject => {
@@ -952,7 +957,7 @@ const deference = (
     if (key === 'properties' && isObject(value)) {
       acc[key] = Object.entries(value).reduce<Record<string, SchemaObject>>(
         (props, [propKey, propSchema]) => {
-          props[propKey] = deference(
+          props[propKey] = dereference(
             propSchema as SchemaObject | ReferenceObject,
             resolvedContext,
           );
@@ -963,7 +968,7 @@ const deference = (
     } else if (key === 'default' || key === 'example' || key === 'examples') {
       acc[key] = value;
     } else {
-      acc[key] = deferenceScalar(value, resolvedContext);
+      acc[key] = dereferenceScalar(value, resolvedContext);
     }
 
     return acc;
@@ -1017,7 +1022,7 @@ const parseBodyAndResponse = ({
     };
   }
 
-  const resolvedJsonSchema = deference(schema, context);
+  const resolvedJsonSchema = dereference(schema, context);
 
   // keep the same behaviour for array
   if (resolvedJsonSchema.items) {
@@ -1129,7 +1134,7 @@ const parseParameters = ({
         return acc;
       }
 
-      const schema = deference(parameter.schema, context);
+      const schema = dereference(parameter.schema, context);
       schema.description = parameter.description;
 
       const mapStrict = {

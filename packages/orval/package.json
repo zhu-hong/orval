@@ -1,18 +1,19 @@
 {
   "name": "orval",
   "description": "A swagger client generator for typescript",
-  "version": "8.0.0-rc.1",
+  "version": "8.0.0-rc.2",
   "license": "MIT",
   "type": "module",
   "files": [
     "dist",
-    "!dist/**/*.d.ts.map"
+    "!dist/**/*.d.ts.map",
+    "!dist/**/*.d.mts.map"
   ],
-  "bin": "./dist/bin/orval.js",
+  "bin": "./dist/bin/orval.mjs",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
     }
   },
   "engines": {
@@ -51,8 +52,8 @@
     "url": "git+https://github.com/orval-labs/orval.git"
   },
   "scripts": {
-    "build": "tsdown --config-loader unconfig",
-    "dev": "tsdown --config-loader unconfig --watch src --onSuccess 'yarn generate-api'",
+    "build": "tsdown --config-loader unrun",
+    "dev": "tsdown --config-loader unrun --watch src --onSuccess 'yarn generate-api'",
     "lint": "eslint .",
     "generate-api": "orval --config ../../samples/react-query/basic/orval.config.ts",
     "test": "tsc --noEmit && vitest",
@@ -62,12 +63,12 @@
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
     "@types/js-yaml": "^4.0.9",
-    "eslint": "^9.38.0",
+    "eslint": "catalog:",
     "openapi-types": "^12.1.3",
-    "rimraf": "^6.0.1",
-    "tsdown": "^0.15.9",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.6"
+    "rimraf": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "dependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",
@@ -84,13 +85,13 @@
     "@orval/zod": "workspace:*",
     "chalk": "^5.6.2",
     "chokidar": "^4.0.3",
-    "commander": "^14.0.1",
+    "commander": "^14.0.2",
     "enquirer": "^2.4.1",
     "execa": "^9.6.0",
     "find-up": "8.0.0",
     "fs-extra": "^11.3.2",
     "jiti": "^2.6.1",
-    "js-yaml": "4.1.0",
+    "js-yaml": "4.1.1",
     "openapi3-ts": "4.5.0",
     "remeda": "^2.32.0",
     "string-argv": "^0.3.2",
@@ -99,5 +100,5 @@
     "typedoc-plugin-coverage": "^4.0.2",
     "typedoc-plugin-markdown": "^4.9.0"
   },
-  "stableVersion": "8.0.0-rc.0"
+  "stableVersion": "8.0.0-rc.1"
 }

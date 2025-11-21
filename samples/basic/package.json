@@ -1,6 +1,6 @@
 {
   "name": "basic",
-  "version": "8.0.0-rc.1",
+  "version": "8.0.0-rc.2",
   "description": "",
   "private": true,
   "type": "module",
@@ -19,13 +19,13 @@
   },
   "dependencies": {
     "@faker-js/faker": "^10.1.0",
-    "axios": "^1.13.1",
-    "msw": "^2.11.6"
+    "axios": "^1.13.2",
+    "msw": "^2.12.1"
   },
   "dependenciesMeta": {
     "msw": {
       "built": true
     }
   },
-  "stableVersion": "8.0.0-rc.0"
+  "stableVersion": "8.0.0-rc.1"
 }

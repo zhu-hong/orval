@@ -1,7 +1,7 @@
 {
   "name": "react-query-custom-fetch",
   "private": true,
-  "version": "8.0.0-rc.1",
+  "version": "8.0.0-rc.2",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
@@ -20,15 +20,15 @@
     "@faker-js/faker": "^10.1.0",
     "@types/react": "^18.3.24",
     "@types/react-dom": "^18.3.7",
-    "@typescript-eslint/eslint-plugin": "^8.46.2",
-    "@typescript-eslint/parser": "^8.46.2",
+    "@typescript-eslint/eslint-plugin": "^8.46.4",
+    "@typescript-eslint/parser": "^8.46.4",
     "@vitejs/plugin-react": "^5.1.0",
-    "eslint": "^9.38.0",
+    "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^4.6.2",
-    "eslint-plugin-react-refresh": "^0.4.20",
+    "eslint-plugin-react-refresh": "^0.4.24",
     "orval": "workspace:*",
     "typescript": "~5.8.3",
-    "vite": "^7.1.12"
+    "vite": "^7.2.2"
   },
-  "stableVersion": "8.0.0-rc.0"
+  "stableVersion": "8.0.0-rc.1"
 }
