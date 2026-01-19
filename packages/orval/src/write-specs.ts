@@ -1,16 +1,20 @@
 import {
   createSuccessMessage,
+  fixCrossDirectoryImports,
+  fixRegularSchemaImports,
   getFileInfo,
   getMockFileExtensionByTypeName,
-  isRootKey,
+  isString,
   jsDoc,
   log,
   type NormalizedOptions,
+  type OpenApiInfoObject,
   OutputMode,
+  splitSchemasByType,
   upath,
   writeSchemas,
   writeSingleMode,
-  type WriteSpecsBuilder,
+  type WriteSpecBuilder,
   writeSplitMode,
   writeSplitTagsMode,
   writeTagsMode,
@@ -18,75 +22,246 @@ import {
 import chalk from 'chalk';
 import { execa, ExecaError } from 'execa';
 import fs from 'fs-extra';
-import type { InfoObject } from 'openapi3-ts/oas30';
 import { unique } from 'remeda';
 import type { TypeDocOptions } from 'typedoc';
 
 import { executeHook } from './utils';
+import { writeZodSchemas, writeZodSchemasFromVerbs } from './write-zod-specs';
 
-const getHeader = (
-  option: false | ((info: InfoObject) => string | string[]),
-  info: InfoObject,
-): string => {
+function getHeader(
+  option: false | ((info: OpenApiInfoObject) => string | string[]),
+  info: OpenApiInfoObject,
+): string {
   if (!option) {
     return '';
   }
 
   const header = option(info);
-
   return Array.isArray(header) ? jsDoc({ description: header }) : header;
-};
+}
 
-export const writeSpecs = async (
-  builder: WriteSpecsBuilder,
+/**
+ * Add re-export of operation schemas from the main schemas index file.
+ * Handles the case where the index file doesn't exist (no regular schemas).
+ */
+async function addOperationSchemasReExport(
+  schemaPath: string,
+  operationSchemasPath: string,
+  fileExtension: string,
+  header: string,
+): Promise<void> {
+  const relativePath = upath.relativeSafe(schemaPath, operationSchemasPath);
+  const schemaIndexPath = upath.join(schemaPath, `index${fileExtension}`);
+  const exportLine = `export * from '${relativePath}';\n`;
+
+  const indexExists = await fs.pathExists(schemaIndexPath);
+  if (!indexExists) {
+    // Create index with header if file doesn't exist (no regular schemas case)
+    const content =
+      header && header.trim().length > 0
+        ? `${header}\n${exportLine}`
+        : exportLine;
+    await fs.outputFile(schemaIndexPath, content);
+  } else {
+    // Check if export already exists to prevent duplicates on re-runs
+    // Use regex to handle both single and double quotes
+    const existingContent = await fs.readFile(schemaIndexPath, 'utf8');
+    const exportPattern = new RegExp(
+      `export\\s*\\*\\s*from\\s*['"]${relativePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]`,
+    );
+    if (!exportPattern.test(existingContent)) {
+      await fs.appendFile(schemaIndexPath, exportLine);
+    }
+  }
+}
+
+export async function writeSpecs(
+  builder: WriteSpecBuilder,
   workspace: string,
   options: NormalizedOptions,
   projectName?: string,
-) => {
-  const { info = { title: '', version: 0 }, schemas, target } = builder;
+) {
+  const { info, schemas, target } = builder;
   const { output } = options;
   const projectTitle = projectName ?? info.title;
 
-  const specsName = Object.keys(schemas).reduce<
-    Record<keyof typeof schemas, string>
-  >((acc, specKey) => {
-    const basePath = upath.getSpecName(specKey, target);
-    const name = basePath.slice(1).split('/').join('-');
-
-    acc[specKey] = name;
-
-    return acc;
-  }, {});
-
-  const header = getHeader(output.override.header, info as InfoObject);
+  const header = getHeader(output.override.header, info);
 
   if (output.schemas) {
-    const rootSchemaPath = output.schemas;
+    if (isString(output.schemas)) {
+      const fileExtension = output.fileExtension || '.ts';
+      const schemaPath = output.schemas;
 
-    const fileExtension = ['tags', 'tags-split', 'split'].includes(output.mode)
-      ? '.ts'
-      : (output.fileExtension ?? '.ts');
+      // Split schemas if operationSchemas path is configured
+      if (output.operationSchemas) {
+        const { regularSchemas, operationSchemas: opSchemas } =
+          splitSchemasByType(schemas);
 
-    await Promise.all(
-      Object.entries(schemas).map(([specKey, schemas]) => {
-        const schemaPath = isRootKey(specKey, target)
-          ? rootSchemaPath
-          : upath.join(rootSchemaPath, specsName[specKey]);
+        // Fix cross-directory imports before writing (both directions)
+        const regularSchemaNames = new Set(regularSchemas.map((s) => s.name));
+        const operationSchemaNames = new Set(opSchemas.map((s) => s.name));
+        fixCrossDirectoryImports(
+          opSchemas,
+          regularSchemaNames,
+          schemaPath,
+          output.operationSchemas,
+          output.namingConvention,
+        );
+        fixRegularSchemaImports(
+          regularSchemas,
+          operationSchemaNames,
+          schemaPath,
+          output.operationSchemas,
+          output.namingConvention,
+        );
 
-        return writeSchemas({
+        // Write regular schemas to schemas path
+        if (regularSchemas.length > 0) {
+          await writeSchemas({
+            schemaPath,
+            schemas: regularSchemas,
+            target,
+            namingConvention: output.namingConvention,
+            fileExtension,
+            header,
+            indexFiles: output.indexFiles,
+          });
+        }
+
+        // Write operation schemas to operationSchemas path
+        if (opSchemas.length > 0) {
+          await writeSchemas({
+            schemaPath: output.operationSchemas,
+            schemas: opSchemas,
+            target,
+            namingConvention: output.namingConvention,
+            fileExtension,
+            header,
+            indexFiles: output.indexFiles,
+          });
+
+          // Add re-export from operations in the main schemas index
+          if (output.indexFiles) {
+            await addOperationSchemasReExport(
+              schemaPath,
+              output.operationSchemas,
+              fileExtension,
+              header,
+            );
+          }
+        }
+      } else {
+        await writeSchemas({
           schemaPath,
           schemas,
           target,
           namingConvention: output.namingConvention,
           fileExtension,
-          specsName,
-          specKey,
-          isRootKey: isRootKey(specKey, target),
           header,
           indexFiles: output.indexFiles,
         });
-      }),
-    );
+      }
+    } else {
+      const schemaType = output.schemas.type;
+
+      if (schemaType === 'typescript') {
+        const fileExtension = output.fileExtension || '.ts';
+
+        // Split schemas if operationSchemas path is configured
+        if (output.operationSchemas) {
+          const { regularSchemas, operationSchemas: opSchemas } =
+            splitSchemasByType(schemas);
+
+          // Fix cross-directory imports before writing (both directions)
+          const regularSchemaNames = new Set(regularSchemas.map((s) => s.name));
+          const operationSchemaNames = new Set(opSchemas.map((s) => s.name));
+          fixCrossDirectoryImports(
+            opSchemas,
+            regularSchemaNames,
+            output.schemas.path,
+            output.operationSchemas,
+            output.namingConvention,
+          );
+          fixRegularSchemaImports(
+            regularSchemas,
+            operationSchemaNames,
+            output.schemas.path,
+            output.operationSchemas,
+            output.namingConvention,
+          );
+
+          if (regularSchemas.length > 0) {
+            await writeSchemas({
+              schemaPath: output.schemas.path,
+              schemas: regularSchemas,
+              target,
+              namingConvention: output.namingConvention,
+              fileExtension,
+              header,
+              indexFiles: output.indexFiles,
+            });
+          }
+
+          if (opSchemas.length > 0) {
+            await writeSchemas({
+              schemaPath: output.operationSchemas,
+              schemas: opSchemas,
+              target,
+              namingConvention: output.namingConvention,
+              fileExtension,
+              header,
+              indexFiles: output.indexFiles,
+            });
+
+            // Add re-export from operations in the main schemas index
+            if (output.indexFiles) {
+              await addOperationSchemasReExport(
+                output.schemas.path,
+                output.operationSchemas,
+                fileExtension,
+                header,
+              );
+            }
+          }
+        } else {
+          await writeSchemas({
+            schemaPath: output.schemas.path,
+            schemas,
+            target,
+            namingConvention: output.namingConvention,
+            fileExtension,
+            header,
+            indexFiles: output.indexFiles,
+          });
+        }
+      } else if (schemaType === 'zod') {
+        const fileExtension = '.zod.ts';
+
+        await writeZodSchemas(
+          builder,
+          output.schemas.path,
+          fileExtension,
+          header,
+          output,
+        );
+
+        if (builder.verbOptions) {
+          await writeZodSchemasFromVerbs(
+            builder.verbOptions,
+            output.schemas.path,
+            fileExtension,
+            header,
+            output,
+            {
+              spec: builder.spec,
+              target: builder.target,
+              workspace,
+              output,
+            },
+          );
+        }
+      }
+    }
   }
 
   let implementationPaths: string[] = [];
@@ -97,7 +272,7 @@ export const writeSpecs = async (
       builder,
       workspace,
       output,
-      specsName,
+      projectName,
       header,
       needSchema: !output.schemas && output.client !== 'zod',
     });
@@ -119,8 +294,21 @@ export const writeSpecs = async (
       );
 
     if (output.schemas) {
+      const schemasPath =
+        typeof output.schemas === 'string'
+          ? output.schemas
+          : output.schemas.path;
       imports.push(
-        upath.relativeSafe(workspacePath, getFileInfo(output.schemas).dirname),
+        upath.relativeSafe(workspacePath, getFileInfo(schemasPath).dirname),
+      );
+    }
+
+    if (output.operationSchemas) {
+      imports.push(
+        upath.relativeSafe(
+          workspacePath,
+          getFileInfo(output.operationSchemas).dirname,
+        ),
       );
     }
 
@@ -163,7 +351,18 @@ export const writeSpecs = async (
   }
 
   const paths = [
-    ...(output.schemas ? [getFileInfo(output.schemas).dirname] : []),
+    ...(output.schemas
+      ? [
+          getFileInfo(
+            typeof output.schemas === 'string'
+              ? output.schemas
+              : output.schemas.path,
+          ).dirname,
+        ]
+      : []),
+    ...(output.operationSchemas
+      ? [getFileInfo(output.operationSchemas).dirname]
+      : []),
     ...implementationPaths,
   ];
 
@@ -247,9 +446,9 @@ export const writeSpecs = async (
   }
 
   createSuccessMessage(projectTitle);
-};
+}
 
-const getWriteMode = (mode: OutputMode) => {
+function getWriteMode(mode: OutputMode) {
   switch (mode) {
     case OutputMode.SPLIT: {
       return writeSplitMode;
@@ -265,4 +464,4 @@ const getWriteMode = (mode: OutputMode) => {
       return writeSingleMode;
     }
   }
-};
+}

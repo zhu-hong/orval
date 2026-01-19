@@ -3,7 +3,7 @@ import fs from 'fs-extra';
 import { generateModelsInline, generateMutatorImports } from '../generators';
 import { OutputClient, type WriteModeProps } from '../types';
 import {
-  camel,
+  conventionName,
   getFileInfo,
   isFunction,
   isSyntheticDefaultImportsAllow,
@@ -15,15 +15,15 @@ import { generateImportsForBuilder } from './generate-imports-for-builder';
 import { generateTargetForTags } from './target-tags';
 import { getOrvalGeneratedTypes, getTypedResponse } from './types';
 
-export const writeSplitTagsMode = async ({
+export async function writeSplitTagsMode({
   builder,
   output,
-  specsName,
+  projectName,
   header,
   needSchema,
-}: WriteModeProps): Promise<string[]> => {
+}: WriteModeProps): Promise<string[]> {
   const { filename, dirname, extension } = getFileInfo(output.target, {
-    backupFilename: camel(builder.info.title),
+    backupFilename: conventionName(builder.info.title, output.namingConvention),
     extension: output.fileExtension,
   });
 
@@ -67,8 +67,12 @@ export const writeSplitTagsMode = async ({
           ? '../' +
             upath.relativeSafe(
               dirname,
-              getFileInfo(output.schemas, { extension: output.fileExtension })
-                .dirname,
+              getFileInfo(
+                typeof output.schemas === 'string'
+                  ? output.schemas
+                  : output.schemas.path,
+                { extension: output.fileExtension },
+              ).dirname,
             )
           : '../' + filename + '.schemas';
 
@@ -82,7 +86,7 @@ export const writeSplitTagsMode = async ({
           client: output.client,
           implementation,
           imports: importsForBuilder,
-          specsName,
+          projectName,
           hasSchemaDir: !!output.schemas,
           isAllowSyntheticDefaultImports,
           hasGlobalMutator: !!output.override.mutator,
@@ -103,7 +107,7 @@ export const writeSplitTagsMode = async ({
         mockData += builder.importsMock({
           implementation: implementationMock,
           imports: importsMockForBuilder,
-          specsName,
+          projectName,
           hasSchemaDir: !!output.schemas,
           isAllowSyntheticDefaultImports,
           options: isFunction(output.mock) ? undefined : output.mock,
@@ -225,4 +229,4 @@ export const writeSplitTagsMode = async ({
   );
 
   return generatedFilePathsArray.flat();
-};
+}

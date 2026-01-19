@@ -1,7 +1,7 @@
 {
   "name": "vue-query-custom-fetch",
   "private": true,
-  "version": "8.0.0-rc.2",
+  "version": "8.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,16 +11,15 @@
     "test": "tsc --noEmit"
   },
   "dependencies": {
-    "@tanstack/vue-query": "^5.90.6",
-    "vue": "^3.5.22"
+    "@tanstack/vue-query": "^5.92.7",
+    "vue": "^3.5.26"
   },
   "devDependencies": {
-    "@faker-js/faker": "^10.1.0",
+    "@faker-js/faker": "^10.2.0",
     "@vitejs/plugin-vue": "^6.0.1",
     "orval": "workspace:*",
     "typescript": "~5.9.3",
     "vite": "^7.2.2",
     "vue-tsc": "^3.1.4"
-  },
-  "stableVersion": "8.0.0-rc.1"
+  }
 }

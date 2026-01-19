@@ -1,6 +1,6 @@
 {
   "name": "@orval/zod",
-  "version": "8.0.0-rc.2",
+  "version": "8.0.1",
   "license": "MIT",
   "type": "module",
   "exports": {
@@ -24,7 +24,6 @@
   },
   "dependencies": {
     "@orval/core": "workspace:*",
-    "openapi3-ts": "4.5.0",
     "remeda": "^2.32.0"
   },
   "devDependencies": {
@@ -32,6 +31,5 @@
     "rimraf": "catalog:",
     "tsdown": "catalog:",
     "vitest": "catalog:"
-  },
-  "stableVersion": "8.0.0-rc.1"
+  }
 }

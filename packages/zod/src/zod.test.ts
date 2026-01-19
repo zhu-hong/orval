@@ -1,6 +1,8 @@
-import type { ContextSpecs } from '@orval/core';
-import type { SchemaObject as SchemaObject30 } from 'openapi3-ts/oas30';
-import type { SchemaObject as SchemaObject31 } from 'openapi3-ts/oas31';
+import type {
+  ContextSpec,
+  GeneratorOptions,
+  OpenApiSchemaObject,
+} from '@orval/core';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -78,7 +80,7 @@ describe('parseZodValidationSchemaDefinition', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       false,
       false,
       false,
@@ -90,7 +92,7 @@ describe('parseZodValidationSchemaDefinition', () => {
   });
 });
 
-const objectIntoObjectSchema: SchemaObject30 = {
+const objectIntoObjectSchema: OpenApiSchemaObject = {
   type: 'object',
   properties: {
     pet: {
@@ -107,7 +109,7 @@ const objectIntoObjectSchema: SchemaObject30 = {
   },
 };
 
-const deepRequiredSchema: SchemaObject30 = {
+const deepRequiredSchema: OpenApiSchemaObject = {
   type: 'object',
   properties: {
     pet: {
@@ -125,7 +127,7 @@ const deepRequiredSchema: SchemaObject30 = {
   },
 };
 
-const additionalPropertiesSchema: SchemaObject30 = {
+const additionalPropertiesSchema: OpenApiSchemaObject = {
   type: 'object',
   properties: {
     any: {
@@ -149,7 +151,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       'strict',
       true,
       false,
@@ -203,7 +205,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       'strict',
       true,
       false,
@@ -260,7 +262,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       'strict',
       true,
       false,
@@ -329,7 +331,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       'test',
       false,
       false,
@@ -350,7 +352,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       false,
       false,
       false,
@@ -410,7 +412,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       'test',
       false,
       false,
@@ -444,7 +446,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       false,
       false,
       false,
@@ -486,7 +488,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       'test',
       false,
       false,
@@ -507,7 +509,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       false,
       false,
       false,
@@ -540,7 +542,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       'test',
       false,
       false,
@@ -559,7 +561,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       false,
       false,
       false,
@@ -589,7 +591,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       'test',
       false,
       false,
@@ -608,7 +610,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       false,
       false,
       false,
@@ -620,7 +622,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
 
   it('handles allOf with strict mode for objects (issue #2520)', () => {
     // Schema with allOf containing two objects
-    const schemaWithAllOf: SchemaObject30 = {
+    const schemaWithAllOf: OpenApiSchemaObject = {
       type: 'object',
       allOf: [
         {
@@ -652,7 +654,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       'test',
       true, // strict mode enabled
       false, // Zod v3
@@ -673,7 +675,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       false,
       true, // strict mode
       false, // Zod v3
@@ -692,7 +694,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
 
   it('handles allOf with strict mode for objects in Zod v4', () => {
     // Schema with allOf containing two objects
-    const schemaWithAllOf: SchemaObject30 = {
+    const schemaWithAllOf: OpenApiSchemaObject = {
       type: 'object',
       allOf: [
         {
@@ -724,7 +726,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       'test',
       true, // strict mode enabled
       true, // Zod v4
@@ -745,7 +747,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       false,
       true, // strict mode
       true, // Zod v4
@@ -786,7 +788,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       'test',
       false,
       false,
@@ -805,7 +807,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
             useDates: false,
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       false,
       false,
       false,
@@ -818,16 +820,16 @@ describe('generateZodValidationSchemaDefinition`', () => {
   });
 
   describe('description handling', () => {
-    const context: ContextSpecs = {
+    const context: ContextSpec = {
       output: {
         override: {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     it('generates a description for a parameter', () => {
-      const schemaWithDefault: SchemaObject30 = {
+      const schemaWithDefault: OpenApiSchemaObject = {
         type: 'string',
         description: 'This is a test description',
         default: 'hello',
@@ -848,7 +850,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
           ['default', 'testStringDescriptionDefault'],
           ['describe', "'This is a test description'"],
         ],
-        consts: ['export const testStringDescriptionDefault = "hello";'],
+        consts: ['export const testStringDescriptionDefault = \`hello\`;'],
       });
 
       const parsed = parseZodValidationSchemaDefinition(
@@ -865,16 +867,16 @@ describe('generateZodValidationSchemaDefinition`', () => {
   });
 
   describe('default value handling', () => {
-    const context: ContextSpecs = {
+    const context: ContextSpec = {
       output: {
         override: {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     it('generates a default value for a non-required string schema', () => {
-      const schemaWithDefault: SchemaObject30 = {
+      const schemaWithDefault: OpenApiSchemaObject = {
         type: 'string',
         default: 'hello',
       };
@@ -893,7 +895,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
           ['string', undefined],
           ['default', 'testStringDefaultDefault'],
         ],
-        consts: [`export const testStringDefaultDefault = "hello";`],
+        consts: [`export const testStringDefaultDefault = \`hello\`;`],
       });
 
       const parsed = parseZodValidationSchemaDefinition(
@@ -905,12 +907,12 @@ describe('generateZodValidationSchemaDefinition`', () => {
       );
       expect(parsed.zod).toBe('zod.string().default(testStringDefaultDefault)');
       expect(parsed.consts).toBe(
-        'export const testStringDefaultDefault = "hello";',
+        'export const testStringDefaultDefault = `hello`;',
       );
     });
 
     it('generates a default value for a number schema', () => {
-      const schemaWithNumberDefault: SchemaObject30 = {
+      const schemaWithNumberDefault: OpenApiSchemaObject = {
         type: 'number',
         default: 42,
       };
@@ -944,7 +946,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
     });
 
     it('generates a default value for a boolean schema with default: true', () => {
-      const schemaWithBooleanDefault: SchemaObject30 = {
+      const schemaWithBooleanDefault: OpenApiSchemaObject = {
         type: 'boolean',
         default: true,
       };
@@ -982,7 +984,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
     });
 
     it('generates a default value for a boolean schema with default: false', () => {
-      const schemaWithBooleanDefault: SchemaObject30 = {
+      const schemaWithBooleanDefault: OpenApiSchemaObject = {
         type: 'boolean',
         default: false,
       };
@@ -1020,7 +1022,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
     });
 
     it('generates a boolean schema without default (undefined)', () => {
-      const schemaWithoutDefault: SchemaObject30 = {
+      const schemaWithoutDefault: OpenApiSchemaObject = {
         type: 'boolean',
         // default property is undefined (not set)
       };
@@ -1054,7 +1056,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
     });
 
     it('generates a default value for an array schema', () => {
-      const schemaWithArrayDefault: SchemaObject30 = {
+      const schemaWithArrayDefault: OpenApiSchemaObject = {
         type: 'array',
         items: { type: 'string' },
         default: ['a', 'b'],
@@ -1074,7 +1076,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
           ['array', { functions: [['string', undefined]], consts: [] }],
           ['default', 'testArrayDefaultDefault'],
         ],
-        consts: ['export const testArrayDefaultDefault = ["a", "b"];'],
+        consts: ['export const testArrayDefaultDefault = [`a`, `b`];'],
       });
 
       const parsed = parseZodValidationSchemaDefinition(
@@ -1088,12 +1090,12 @@ describe('generateZodValidationSchemaDefinition`', () => {
         'zod.array(zod.string()).default(testArrayDefaultDefault)',
       );
       expect(parsed.consts).toBe(
-        'export const testArrayDefaultDefault = ["a", "b"];',
+        'export const testArrayDefaultDefault = [`a`, `b`];',
       );
     });
 
     it('generates a default value for an object schema', () => {
-      const schemaWithObjectDefault: SchemaObject30 = {
+      const schemaWithObjectDefault: OpenApiSchemaObject = {
         type: 'object',
         properties: {
           name: { type: 'string' },
@@ -1102,11 +1104,11 @@ describe('generateZodValidationSchemaDefinition`', () => {
         default: { name: 'Fluffy', age: 3 },
       };
 
-      const context: ContextSpecs = {
+      const context: ContextSpec = {
         output: {
           override: { useDates: false },
         },
-      } as ContextSpecs;
+      } as ContextSpec;
 
       const result = generateZodValidationSchemaDefinition(
         schemaWithObjectDefault,
@@ -1161,19 +1163,19 @@ describe('generateZodValidationSchemaDefinition`', () => {
     });
 
     it('generates a default value for a date schema with useDates enabled', () => {
-      const schemaWithDateDefault: SchemaObject30 = {
+      const schemaWithDateDefault: OpenApiSchemaObject = {
         type: 'string',
         format: 'date',
         default: '2025-01-01',
       };
 
-      const dateContext: ContextSpecs = {
+      const dateContext: ContextSpec = {
         output: {
           override: {
             useDates: true,
           },
         },
-      } as ContextSpecs;
+      } as ContextSpec;
 
       const result = generateZodValidationSchemaDefinition(
         schemaWithDateDefault,
@@ -1209,16 +1211,16 @@ describe('generateZodValidationSchemaDefinition`', () => {
   });
 
   describe('enum handling', () => {
-    const context: ContextSpecs = {
+    const context: ContextSpec = {
       output: {
         override: {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     it('generates an enum for a string', () => {
-      const schema: SchemaObject30 = {
+      const schema: OpenApiSchemaObject = {
         type: 'string',
         enum: ['cat', 'dog'],
       };
@@ -1251,7 +1253,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
     });
 
     it('generates an enum for a number', () => {
-      const schema: SchemaObject30 = {
+      const schema: OpenApiSchemaObject = {
         type: 'number',
         enum: [1, 2],
       };
@@ -1292,7 +1294,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
     });
 
     it('generates an enum for a boolean', () => {
-      const schema: SchemaObject30 = {
+      const schema: OpenApiSchemaObject = {
         type: 'boolean',
         enum: [true, false],
       };
@@ -1333,7 +1335,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
     });
 
     it('does not use union for single item enum', () => {
-      const schema: SchemaObject30 = {
+      const schema: OpenApiSchemaObject = {
         type: 'number',
         enum: [1],
       };
@@ -1366,7 +1368,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
     });
 
     it('generates an enum for any', () => {
-      const schema: SchemaObject30 = {
+      const schema: OpenApiSchemaObject = {
         enum: ['cat', 1, true],
       };
 
@@ -1407,7 +1409,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
     });
 
     it('generates a default value for an array with enum items using "as const"', () => {
-      const schemaWithEnumArrayDefault: SchemaObject30 = {
+      const schemaWithEnumArrayDefault: OpenApiSchemaObject = {
         type: 'array',
         items: {
           type: 'string',
@@ -1434,9 +1436,9 @@ describe('generateZodValidationSchemaDefinition`', () => {
               consts: [],
             },
           ],
-          ['default', 'testEnumArrayDefaultDefault'],
+          ['default', '[`A`]'],
         ],
-        consts: ['export const testEnumArrayDefaultDefault = ["A"] as const;'],
+        consts: [],
       });
 
       const parsed = parseZodValidationSchemaDefinition(
@@ -1447,15 +1449,12 @@ describe('generateZodValidationSchemaDefinition`', () => {
         false,
       );
       expect(parsed.zod).toBe(
-        "zod.array(zod.enum(['A', 'B', 'C'])).default(testEnumArrayDefaultDefault)",
-      );
-      expect(parsed.consts).toBe(
-        'export const testEnumArrayDefaultDefault = ["A"] as const;',
+        "zod.array(zod.enum(['A', 'B', 'C'])).default([`A`])",
       );
     });
 
     it('generates a default value for nested enum arrays in objects', () => {
-      const schemaWithNestedEnumArray: SchemaObject30 = {
+      const schemaWithNestedEnumArray: OpenApiSchemaObject = {
         type: 'object',
         properties: {
           some_enum: {
@@ -1487,22 +1486,133 @@ describe('generateZodValidationSchemaDefinition`', () => {
       >;
       const someEnumProperty = objectProperties.some_enum;
 
-      expect(someEnumProperty.consts).toEqual(
-        expect.arrayContaining([expect.stringContaining('as const')]),
+      const parsed = parseZodValidationSchemaDefinition(
+        someEnumProperty,
+        context,
+        false,
+        false,
+        false,
       );
+
+      expect(parsed.zod).toBe(
+        "zod.array(zod.enum(['A', 'B', 'C'])).default([`A`])",
+      );
+    });
+
+    it('ignores minLength on string enum (issue #2630)', () => {
+      const schema: OpenApiSchemaObject = {
+        type: 'string',
+        enum: ['value1', 'value2'],
+        minLength: 1,
+      };
+
+      const result = generateZodValidationSchemaDefinition(
+        schema,
+        context,
+        'testEnumMinLength',
+        false,
+        false,
+        { required: false },
+      );
+
+      expect(result).toEqual({
+        functions: [
+          ['enum', "['value1', 'value2']"],
+          ['optional', undefined],
+        ],
+        consts: [],
+      });
+
+      const parsed = parseZodValidationSchemaDefinition(
+        result,
+        context,
+        false,
+        false,
+        false,
+      );
+      expect(parsed.zod).toBe("zod.enum(['value1', 'value2']).optional()");
+    });
+
+    it('ignores maxLength on string enum (issue #2634)', () => {
+      const schema: OpenApiSchemaObject = {
+        type: 'string',
+        enum: ['order.status.pending', 'order.status.confirmed'],
+        maxLength: 30,
+      };
+
+      const result = generateZodValidationSchemaDefinition(
+        schema,
+        context,
+        'testEnumMaxLength',
+        false,
+        false,
+        { required: true },
+      );
+
+      expect(result).toEqual({
+        functions: [
+          ['enum', "['order.status.pending', 'order.status.confirmed']"],
+        ],
+        consts: [],
+      });
+
+      const parsed = parseZodValidationSchemaDefinition(
+        result,
+        context,
+        false,
+        false,
+        false,
+      );
+      expect(parsed.zod).toBe(
+        "zod.enum(['order.status.pending', 'order.status.confirmed'])",
+      );
+    });
+
+    it('ignores pattern on string enum', () => {
+      const schema: OpenApiSchemaObject = {
+        type: 'string',
+        enum: ['cat', 'dog'],
+        pattern: '^[a-z]+$',
+      };
+
+      const result = generateZodValidationSchemaDefinition(
+        schema,
+        context,
+        'testEnumPattern',
+        false,
+        false,
+        { required: false },
+      );
+
+      expect(result).toEqual({
+        functions: [
+          ['enum', "['cat', 'dog']"],
+          ['optional', undefined],
+        ],
+        consts: [],
+      });
+
+      const parsed = parseZodValidationSchemaDefinition(
+        result,
+        context,
+        false,
+        false,
+        false,
+      );
+      expect(parsed.zod).toBe("zod.enum(['cat', 'dog']).optional()");
     });
   });
   describe('number handling', () => {
-    const context: ContextSpecs = {
+    const context: ContextSpec = {
       output: {
         override: {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     it('generates an number', () => {
-      const schema: SchemaObject30 = {
+      const schema: OpenApiSchemaObject = {
         type: 'number',
       };
 
@@ -1532,8 +1642,42 @@ describe('generateZodValidationSchemaDefinition`', () => {
       );
       expect(parsed.zod).toBe('zod.number().optional()');
     });
+
+    it('ignores pattern on number (issue #2634)', () => {
+      const schema: OpenApiSchemaObject = {
+        type: 'number',
+        pattern: '^[0-9]+$',
+      };
+
+      const result = generateZodValidationSchemaDefinition(
+        schema,
+        context,
+        'testNumberPattern',
+        false,
+        false,
+        { required: false },
+      );
+
+      expect(result).toEqual({
+        functions: [
+          ['number', undefined],
+          ['optional', undefined],
+        ],
+        consts: [],
+      });
+
+      const parsed = parseZodValidationSchemaDefinition(
+        result,
+        context,
+        false,
+        false,
+        false,
+      );
+      expect(parsed.zod).toBe('zod.number().optional()');
+    });
+
     it('generates an number with min', () => {
-      const schema: SchemaObject30 = {
+      const schema: OpenApiSchemaObject = {
         type: 'number',
         minimum: 10,
       };
@@ -1566,7 +1710,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
       expect(parsed.zod).toBe('zod.number().min(testNumberMinMin).optional()');
     });
     it('generates an number with max', () => {
-      const schema: SchemaObject30 = {
+      const schema: OpenApiSchemaObject = {
         type: 'number',
         maximum: 99,
       };
@@ -1601,7 +1745,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
 
     describe('OpenAPI 3.1 (exclusiveMinimum/exclusiveMaximum as numbers)', () => {
       it('generates .gt() for numeric exclusiveMinimum', () => {
-        const schema: SchemaObject30 & { exclusiveMinimum?: number } = {
+        const schema: OpenApiSchemaObject & { exclusiveMinimum?: number } = {
           type: 'number',
           exclusiveMinimum: 5,
         };
@@ -1640,7 +1784,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
       });
 
       it('generates .lt() for numeric exclusiveMaximum', () => {
-        const schema: SchemaObject30 & { exclusiveMaximum?: number } = {
+        const schema: OpenApiSchemaObject & { exclusiveMaximum?: number } = {
           type: 'number',
           exclusiveMaximum: 100,
         };
@@ -1679,7 +1823,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
       });
 
       it('generates .gt() and .lt() for both exclusiveMinimum and exclusiveMaximum', () => {
-        const schema: SchemaObject30 & {
+        const schema: OpenApiSchemaObject & {
           exclusiveMinimum?: number;
           exclusiveMaximum?: number;
         } = {
@@ -1726,7 +1870,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
 
     describe('OpenAPI 3.0 (exclusiveMinimum/exclusiveMaximum as booleans)', () => {
       it('generates .gt() when exclusiveMinimum=true with minimum value', () => {
-        const schema: SchemaObject30 = {
+        const schema: OpenApiSchemaObject = {
           type: 'number',
           minimum: 10,
           exclusiveMinimum: true,
@@ -1766,7 +1910,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
       });
 
       it('generates .lt() when exclusiveMaximum=true with maximum value', () => {
-        const schema: SchemaObject30 = {
+        const schema: OpenApiSchemaObject = {
           type: 'number',
           maximum: 100,
           exclusiveMaximum: true,
@@ -1806,7 +1950,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
       });
 
       it('generates .gt() and .lt() when both exclusiveMinimum and exclusiveMaximum are true', () => {
-        const schema: SchemaObject30 = {
+        const schema: OpenApiSchemaObject = {
           type: 'number',
           minimum: 5,
           maximum: 100,
@@ -1851,7 +1995,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
     });
 
     it('generates an number with max and max', () => {
-      const schema: SchemaObject30 = {
+      const schema: OpenApiSchemaObject = {
         type: 'number',
         minimum: 10,
         maximum: 99,
@@ -1892,7 +2036,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
       );
     });
     it('generates an number with max, max and multipleOf', () => {
-      const schema: SchemaObject30 = {
+      const schema: OpenApiSchemaObject = {
         type: 'number',
         minimum: 10,
         maximum: 99,
@@ -1938,44 +2082,57 @@ describe('generateZodValidationSchemaDefinition`', () => {
   });
 });
 
-const basicApiSchema = {
+const basicApiSchema: GeneratorOptions = {
   pathRoute: '/cats',
   context: {
-    specKey: 'cat',
-    specs: {
-      cat: {
-        paths: {
-          '/cats': {
-            post: {
-              operationId: 'xyz',
-              parameters: [
-                {
-                  name: 'id',
-                  required: true,
-                  in: 'path',
-                  schema: {
-                    type: 'string',
-                  },
-                },
-                {
-                  name: 'page',
-                  required: false,
-                  in: 'query',
-                  schema: {
-                    type: 'number',
-                  },
-                },
-                {
-                  name: 'x-header',
-                  in: 'header',
-                  required: true,
-                  schema: {
-                    type: 'string',
-                  },
-                },
-              ],
-              requestBody: {
+    spec: {
+      paths: {
+        '/cats': {
+          post: {
+            operationId: 'xyz',
+            parameters: [
+              {
+                name: 'id',
                 required: true,
+                in: 'path',
+                schema: {
+                  type: 'string',
+                },
+              },
+              {
+                name: 'page',
+                required: false,
+                in: 'query',
+                schema: {
+                  type: 'number',
+                },
+              },
+              {
+                name: 'x-header',
+                in: 'header',
+                required: true,
+                schema: {
+                  type: 'string',
+                },
+              },
+            ],
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      name: {
+                        type: 'string',
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            responses: {
+              '200': {
                 content: {
                   'application/json': {
                     schema: {
@@ -1983,22 +2140,6 @@ const basicApiSchema = {
                       properties: {
                         name: {
                           type: 'string',
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-              responses: {
-                '200': {
-                  content: {
-                    'application/json': {
-                      schema: {
-                        type: 'object',
-                        properties: {
-                          name: {
-                            type: 'string',
-                          },
                         },
                       },
                     },
@@ -2057,7 +2198,7 @@ describe('generatePartOfSchemaGenerateZod', () => {
     );
 
     expect(result.implementation).toBe(
-      'export const testParams = zod.object({\n  "id": zod.string()\n})\n\nexport const testQueryParams = zod.object({\n  "page": zod.number().optional()\n})\n\nexport const testHeader = zod.object({\n  "x-header": zod.string()\n})\n\nexport const testBody = zod.object({\n  "name": zod.string().optional()\n})\n\nexport const testResponse = zod.object({\n  "name": zod.string().optional()\n})\n\n',
+      'export const TestParams = zod.object({\n  "id": zod.string()\n})\n\nexport const TestQueryParams = zod.object({\n  "page": zod.number().optional()\n})\n\nexport const TestHeader = zod.object({\n  "x-header": zod.string()\n})\n\nexport const TestBody = zod.object({\n  "name": zod.string().optional()\n})\n\nexport const TestResponse = zod.object({\n  "name": zod.string().optional()\n})\n\n',
     );
   });
 
@@ -2097,7 +2238,7 @@ describe('generatePartOfSchemaGenerateZod', () => {
       {},
     );
     expect(result.implementation).toBe(
-      'export const testResponse = zod.object({\n  "name": zod.string().optional()\n})\n\n',
+      'export const TestResponse = zod.object({\n  "name": zod.string().optional()\n})\n\n',
     );
   });
 
@@ -2137,7 +2278,7 @@ describe('generatePartOfSchemaGenerateZod', () => {
       {},
     );
     expect(result.implementation).toBe(
-      'export const testBody = zod.object({\n  "name": zod.string().optional()\n})\n\n',
+      'export const TestBody = zod.object({\n  "name": zod.string().optional()\n})\n\n',
     );
   });
 
@@ -2177,7 +2318,7 @@ describe('generatePartOfSchemaGenerateZod', () => {
       {},
     );
     expect(result.implementation).toBe(
-      'export const testQueryParams = zod.object({\n  "page": zod.number().optional()\n})\n\n',
+      'export const TestQueryParams = zod.object({\n  "page": zod.number().optional()\n})\n\n',
     );
   });
 
@@ -2217,7 +2358,7 @@ describe('generatePartOfSchemaGenerateZod', () => {
       {},
     );
     expect(result.implementation).toBe(
-      'export const testParams = zod.object({\n  "id": zod.string()\n})\n\n',
+      'export const TestParams = zod.object({\n  "id": zod.string()\n})\n\n',
     );
   });
 
@@ -2257,27 +2398,27 @@ describe('generatePartOfSchemaGenerateZod', () => {
       {},
     );
     expect(result.implementation).toBe(
-      'export const testHeader = zod.object({\n  "x-header": zod.string()\n})\n\n',
+      'export const TestHeader = zod.object({\n  "x-header": zod.string()\n})\n\n',
     );
   });
 });
 
 describe('parsePrefixItemsArrayAsTupleZod', () => {
   it('generates correctly', () => {
-    const arrayWithPrefixItemsSchema: SchemaObject31 = {
+    const arrayWithPrefixItemsSchema: OpenApiSchemaObject = {
       type: 'array',
       prefixItems: [{ type: 'string' }, {}],
       items: { type: 'string' },
     };
     const result = generateZodValidationSchemaDefinition(
-      arrayWithPrefixItemsSchema as SchemaObject30,
+      arrayWithPrefixItemsSchema as OpenApiSchemaObject,
       {
         output: {
           override: {
             zod: {},
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       'example_tuple',
       true,
       false,
@@ -2316,21 +2457,21 @@ describe('parsePrefixItemsArrayAsTupleZod', () => {
 
 describe('parsePrefixItemsArrayAsTupleZod', () => {
   it('correctly omits rest', () => {
-    const arrayWithPrefixItemsSchema: SchemaObject31 = {
+    const arrayWithPrefixItemsSchema: OpenApiSchemaObject = {
       type: 'array',
       prefixItems: [{ type: 'string' }, {}],
       items: { type: 'string' },
       maxItems: 2,
     };
     const result = generateZodValidationSchemaDefinition(
-      arrayWithPrefixItemsSchema as SchemaObject30,
+      arrayWithPrefixItemsSchema as OpenApiSchemaObject,
       {
         output: {
           override: {
             zod: {},
           },
         },
-      } as ContextSpecs,
+      } as ContextSpec,
       'example_tuple',
       true,
       false,
@@ -2360,45 +2501,42 @@ describe('parsePrefixItemsArrayAsTupleZod', () => {
   });
 });
 
-const formDataSchema = {
+const formDataSchema: GeneratorOptions = {
   pathRoute: '/cats',
   context: {
-    specKey: 'cat',
-    specs: {
-      cat: {
-        paths: {
-          '/cats': {
-            post: {
-              operationId: 'xyz',
-              requestBody: {
-                required: true,
-                content: {
-                  'multipart/form-data': {
-                    schema: {
-                      type: 'object',
-                      properties: {
-                        name: {
-                          type: 'string',
-                        },
-                        catImage: {
-                          type: 'string',
-                          format: 'binary',
-                        },
+    spec: {
+      paths: {
+        '/cats': {
+          post: {
+            operationId: 'xyz',
+            requestBody: {
+              required: true,
+              content: {
+                'multipart/form-data': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      name: {
+                        type: 'string',
+                      },
+                      catImage: {
+                        type: 'string',
+                        format: 'binary',
                       },
                     },
                   },
                 },
               },
-              responses: {
-                '200': {
-                  content: {
-                    'application/json': {
-                      schema: {
-                        type: 'object',
-                        properties: {
-                          name: {
-                            type: 'string',
-                          },
+            },
+            responses: {
+              '200': {
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'object',
+                      properties: {
+                        name: {
+                          type: 'string',
                         },
                       },
                     },
@@ -2457,47 +2595,44 @@ describe('generateFormData', () => {
       {},
     );
     expect(result.implementation).toBe(
-      'export const testBody = zod.object({\n  "name": zod.string().optional(),\n  "catImage": zod.instanceof(File).optional()\n})\n\n',
+      'export const TestBody = zod.object({\n  "name": zod.string().optional(),\n  "catImage": zod.instanceof(File).optional()\n})\n\n',
     );
   });
 });
 
-const schemaWithRefProperty = {
+const schemaWithRefProperty: GeneratorOptions = {
   pathRoute: '/cats',
   context: {
-    specKey: 'cat',
-    specs: {
-      cat: {
-        openapi: '3.0.0',
-        info: {
-          version: '1.0.0',
-          title: 'Cats',
-        },
-        paths: {
-          '/cats': {
-            post: {
-              operationId: 'xyz',
-              requestBody: {
-                required: true,
-                content: {
-                  'application/json': {
-                    schema: {
-                      type: 'object',
-                      properties: {
-                        $ref: {
-                          type: 'string',
-                        },
+    spec: {
+      openapi: '3.0.0',
+      info: {
+        version: '1.0.0',
+        title: 'Cats',
+      },
+      paths: {
+        '/cats': {
+          post: {
+            operationId: 'xyz',
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      $ref: {
+                        type: 'string',
                       },
-                      example: {
-                        $ref: 'hello',
-                      },
+                    },
+                    example: {
+                      $ref: 'hello',
                     },
                   },
                 },
               },
-              responses: {
-                '200': {},
-              },
+            },
+            responses: {
+              '200': {},
             },
           },
         },
@@ -2551,45 +2686,42 @@ describe('generateZodWithEdgeCases', () => {
     );
 
     expect(result.implementation).toBe(
-      'export const testBody = zod.object({\n  "$ref": zod.string().optional()\n})\n\n',
+      'export const TestBody = zod.object({\n  "$ref": zod.string().optional()\n})\n\n',
     );
   });
 });
 
-const schemaWithLiteralProperty = {
+const schemaWithLiteralProperty: GeneratorOptions = {
   pathRoute: '/cats',
   context: {
-    specKey: 'cat',
-    specs: {
-      cat: {
-        openapi: '3.0.0',
-        info: {
-          version: '1.0.0',
-          title: 'Cats',
-        },
-        paths: {
-          '/cats': {
-            post: {
-              operationId: 'xyz',
-              requestBody: {
-                required: true,
-                content: {
-                  'application/json': {
-                    schema: {
-                      type: 'object',
-                      properties: {
-                        type: {
-                          type: 'string',
-                          const: 'WILD',
-                        },
+    spec: {
+      openapi: '3.0.0',
+      info: {
+        version: '1.0.0',
+        title: 'Cats',
+      },
+      paths: {
+        '/cats': {
+          post: {
+            operationId: 'xyz',
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'WILD',
                       },
                     },
                   },
                 },
               },
-              responses: {
-                '200': {},
-              },
+            },
+            responses: {
+              '200': {},
             },
           },
         },
@@ -2643,7 +2775,7 @@ describe('generateZodWithLiteralProperty', () => {
     );
 
     expect(result.implementation).toBe(
-      'export const testBody = zod.object({\n  "type": zod.literal("WILD").optional()\n})\n\n',
+      'export const TestBody = zod.object({\n  "type": zod.literal("WILD").optional()\n})\n\n',
     );
   });
 });
@@ -2656,10 +2788,10 @@ describe('generateZodWithMultiTypeArray', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case from the issue: type: ["string", "number", "boolean", "null"]
-    const schemaWithMultiType: SchemaObject31 = {
+    const schemaWithMultiType: OpenApiSchemaObject = {
       type: ['string', 'number', 'boolean', 'null'],
     };
 
@@ -2693,9 +2825,9 @@ describe('generateZodWithMultiTypeArray', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
-    const schemaWithMultiType: SchemaObject31 = {
+    const schemaWithMultiType: OpenApiSchemaObject = {
       type: ['string', 'number'],
     };
 
@@ -2726,9 +2858,9 @@ describe('generateZodWithMultiTypeArray', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
-    const schemaWithMultiType: SchemaObject31 = {
+    const schemaWithMultiType: OpenApiSchemaObject = {
       type: ['string', 'number'],
     };
 
@@ -2763,10 +2895,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: anyOf with multiple nullable refs that could cause duplicate names
-    const schemaWithAnyOfNullableRefs: SchemaObject30 = {
+    const schemaWithAnyOfNullableRefs: OpenApiSchemaObject = {
       anyOf: [
         {
           $ref: '#/components/schemas/DogId',
@@ -2820,9 +2952,9 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
-    const schemaWithOneOfNullableRefs: SchemaObject30 = {
+    const schemaWithOneOfNullableRefs: OpenApiSchemaObject = {
       oneOf: [
         {
           $ref: '#/components/schemas/DogId',
@@ -2876,9 +3008,9 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
-    const schemaWithAllOfNullableRefs: SchemaObject30 = {
+    const schemaWithAllOfNullableRefs: OpenApiSchemaObject = {
       allOf: [
         {
           $ref: '#/components/schemas/BaseSchema',
@@ -2929,9 +3061,9 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
-    const schemaWithAllOfAndProperties: SchemaObject30 = {
+    const schemaWithAllOfAndProperties: OpenApiSchemaObject = {
       allOf: [
         {
           $ref: '#/components/schemas/BaseSchema',
@@ -2985,11 +3117,11 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case from issue #2511: nullable oneOf with multiple enum refs
     // This should not generate duplicate schema names like "Item1Hello" and "Item2Hello"
-    const schemaItem1: SchemaObject30 = {
+    const schemaItem1: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         hello: {
@@ -3003,7 +3135,7 @@ describe('generateZodWithNullableAnyOfRefs', () => {
       },
     };
 
-    const schemaItem2: SchemaObject30 = {
+    const schemaItem2: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         hello: {
@@ -3072,10 +3204,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: anyOf with 3 nullable refs (like Animals.animalId)
-    const schemaWithThreeRefs: SchemaObject30 = {
+    const schemaWithThreeRefs: OpenApiSchemaObject = {
       anyOf: [
         { $ref: '#/components/schemas/DogId' },
         { $ref: '#/components/schemas/CatId' },
@@ -3114,10 +3246,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: object with multiple anyOf properties (like Animals)
-    const schemaWithMultipleAnyOf: SchemaObject30 = {
+    const schemaWithMultipleAnyOf: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         animalId: {
@@ -3175,10 +3307,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: multiple objects (Pets and Animals) with similar anyOf structures
-    const petsSchema: SchemaObject30 = {
+    const petsSchema: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         petId: {
@@ -3191,7 +3323,7 @@ describe('generateZodWithNullableAnyOfRefs', () => {
       },
     };
 
-    const animalsSchema: SchemaObject30 = {
+    const animalsSchema: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         petId: {
@@ -3246,10 +3378,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: oneOf with different enum types (like Item3.world)
-    const schemaWithMixedEnums: SchemaObject30 = {
+    const schemaWithMixedEnums: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         world: {
@@ -3304,10 +3436,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: object with multiple oneOf properties (like Item3)
-    const schemaWithMultipleOneOf: SchemaObject30 = {
+    const schemaWithMultipleOneOf: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         hello: {
@@ -3374,10 +3506,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: three objects (Item1, Item2, Item3) with same oneOf structure
-    const createItemSchema = (name: string): SchemaObject30 => ({
+    const createItemSchema = (name: string): OpenApiSchemaObject => ({
       type: 'object',
       properties: {
         hello: {
@@ -3444,10 +3576,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: required anyOf property vs optional anyOf property
-    const schemaRequired: SchemaObject30 = {
+    const schemaRequired: OpenApiSchemaObject = {
       anyOf: [
         { $ref: '#/components/schemas/DogId' },
         { $ref: '#/components/schemas/CatId' },
@@ -3455,7 +3587,7 @@ describe('generateZodWithNullableAnyOfRefs', () => {
       nullable: true,
     };
 
-    const schemaOptional: SchemaObject30 = {
+    const schemaOptional: OpenApiSchemaObject = {
       anyOf: [
         { $ref: '#/components/schemas/DogId' },
         { $ref: '#/components/schemas/CatId' },
@@ -3509,10 +3641,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: anyOf mixing nullable and not-null refs (like MixedNullable.mixedId)
-    const schemaWithMixedNullable: SchemaObject30 = {
+    const schemaWithMixedNullable: OpenApiSchemaObject = {
       anyOf: [
         { $ref: '#/components/schemas/DogId' }, // nullable
         { $ref: '#/components/schemas/CatId' }, // nullable
@@ -3557,10 +3689,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: oneOf mixing nullable and not-null enum refs (like MixedEnumItem.mixed)
-    const schemaWithMixedEnum: SchemaObject30 = {
+    const schemaWithMixedEnum: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         mixed: {
@@ -3611,10 +3743,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: nested object with anyOf properties (like NestedAnimals)
-    const schemaWithNestedAnyOf: SchemaObject30 = {
+    const schemaWithNestedAnyOf: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         nested: {
@@ -3679,10 +3811,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: nested object with oneOf enum properties (like NestedItem)
-    const schemaWithNestedOneOf: SchemaObject30 = {
+    const schemaWithNestedOneOf: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         nested: {
@@ -3747,10 +3879,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: multiple nested objects with same anyOf structure
-    const createNestedSchema = (name: string): SchemaObject30 => ({
+    const createNestedSchema = (name: string): OpenApiSchemaObject => ({
       type: 'object',
       properties: {
         nested: {
@@ -3810,10 +3942,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: deeply nested (3 levels) object with anyOf
-    const deeplyNestedSchema: SchemaObject30 = {
+    const deeplyNestedSchema: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         level1: {
@@ -3874,10 +4006,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: allOf with mixed nullable and not-null refs
-    const schemaWithMixedAllOf: SchemaObject30 = {
+    const schemaWithMixedAllOf: OpenApiSchemaObject = {
       allOf: [
         { $ref: '#/components/schemas/DogId' }, // nullable
         { $ref: '#/components/schemas/FishIdNotNull' }, // not null
@@ -3921,10 +4053,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: anyOf mixing different types (like MixedTypes.mixedAnyOf)
-    const schemaWithMixedTypes: SchemaObject30 = {
+    const schemaWithMixedTypes: OpenApiSchemaObject = {
       anyOf: [
         { $ref: '#/components/schemas/DogId' }, // string
         { $ref: '#/components/schemas/NumberId' }, // number
@@ -3970,10 +4102,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: anyOf with not-null types of different kinds
-    const schemaWithMixedNotNullTypes: SchemaObject30 = {
+    const schemaWithMixedNotNullTypes: OpenApiSchemaObject = {
       anyOf: [
         { $ref: '#/components/schemas/NumberIdNotNull' }, // number
         { $ref: '#/components/schemas/IntegerIdNotNull' }, // integer
@@ -4018,10 +4150,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: oneOf with number enum (nullable and not-null)
-    const schemaWithNumberEnum: SchemaObject30 = {
+    const schemaWithNumberEnum: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         numberEnum: {
@@ -4078,10 +4210,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: oneOf with integer enum (nullable and not-null)
-    const schemaWithIntegerEnum: SchemaObject30 = {
+    const schemaWithIntegerEnum: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         integerEnum: {
@@ -4138,10 +4270,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: object with multiple oneOf properties of different types (like MixedTypeEnums)
-    const schemaWithMultipleTypeEnums: SchemaObject30 = {
+    const schemaWithMultipleTypeEnums: OpenApiSchemaObject = {
       type: 'object',
       properties: {
         stringEnum: {
@@ -4215,10 +4347,10 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpecs;
+    } as ContextSpec;
 
     // Test case: multiple objects with same mixed type anyOf structure
-    const createMixedTypeSchema = (name: string): SchemaObject30 => ({
+    const createMixedTypeSchema = (name: string): OpenApiSchemaObject => ({
       type: 'object',
       properties: {
         mixedId: {
@@ -4265,5 +4397,204 @@ describe('generateZodWithNullableAnyOfRefs', () => {
 
     // Ensure no duplicates between different objects with mixed types
     expect(uniqueConstNames.size).toBe(allConstNames.length);
+  });
+});
+
+// Content type handling tests - mirrors res-req-types.test.ts structure
+describe('generateZod (content type handling - parity with res-req-types.test.ts)', () => {
+  const zodOverride = {
+    zod: {
+      strict: {
+        param: false,
+        body: false,
+        response: false,
+        query: false,
+        header: false,
+      },
+      generate: {
+        param: false,
+        body: true,
+        response: false,
+        query: false,
+        header: false,
+      },
+      coerce: {
+        param: false,
+        body: false,
+        response: false,
+        query: false,
+        header: false,
+      },
+      generateEachHttpStatus: false,
+      dateTimeOptions: {},
+      timeOptions: {},
+    },
+  };
+
+  it('media key precedence: application/json ignores contentMediaType', async () => {
+    const schema: GeneratorOptions = {
+      pathRoute: '/upload',
+      context: {
+        spec: {
+          paths: {
+            '/upload': {
+              post: {
+                operationId: 'upload',
+                requestBody: {
+                  required: true,
+                  content: {
+                    'application/json': {
+                      schema: {
+                        type: 'object',
+                        properties: {
+                          // contentMediaType should be IGNORED (media key is text/JSON)
+                          ignored: {
+                            type: 'string',
+                            contentMediaType: 'image/png',
+                          },
+                        },
+                        required: ['ignored'],
+                      },
+                    },
+                  },
+                },
+                responses: {
+                  '200': {
+                    content: {
+                      'application/json': { schema: { type: 'string' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        output: { override: { zod: { generateEachHttpStatus: false } } },
+      },
+    };
+    const result = await generateZod(
+      {
+        pathRoute: '/upload',
+        verb: 'post',
+        operationName: 'upload',
+        override: zodOverride,
+      },
+      schema,
+      {},
+    );
+    // contentMediaType: 'image/png' should be IGNORED because media key is application/json
+    expect(result.implementation).toContain('"ignored": zod.string()');
+    expect(result.implementation).not.toContain('instanceof');
+  });
+
+  it('multipart/form-data: comprehensive content type handling', async () => {
+    // Matches type gen test structure in res-req-types.test.ts
+    const schema: GeneratorOptions = {
+      pathRoute: '/upload-form',
+      context: {
+        spec: {
+          paths: {
+            '/upload-form': {
+              post: {
+                operationId: 'uploadForm',
+                requestBody: {
+                  required: true,
+                  content: {
+                    'multipart/form-data': {
+                      schema: {
+                        type: 'object',
+                        properties: {
+                          encBinary: { type: 'string' },
+                          encText: { type: 'string' },
+                          cmtBinary: {
+                            type: 'string',
+                            contentMediaType: 'image/png',
+                          },
+                          cmtText: {
+                            type: 'string',
+                            contentMediaType: 'application/xml',
+                          },
+                          encOverride: {
+                            type: 'string',
+                            contentMediaType: 'image/png',
+                          },
+                          formatBinary: { type: 'string', format: 'binary' },
+                          base64Field: {
+                            type: 'string',
+                            contentMediaType: 'image/png',
+                            contentEncoding: 'base64',
+                          },
+                          metadata: {
+                            type: 'object',
+                            properties: { name: { type: 'string' } },
+                          },
+                        },
+                        required: [
+                          'encBinary',
+                          'encText',
+                          'cmtBinary',
+                          'cmtText',
+                          'encOverride',
+                          'formatBinary',
+                          'base64Field',
+                          'metadata',
+                        ],
+                      },
+                      encoding: {
+                        encBinary: { contentType: 'image/png' },
+                        encText: { contentType: 'text/plain' },
+                        encOverride: { contentType: 'text/csv' },
+                        metadata: { contentType: 'application/json' },
+                      },
+                    },
+                  },
+                },
+                responses: {
+                  '200': {
+                    content: {
+                      'application/json': { schema: { type: 'string' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        output: { override: { zod: { generateEachHttpStatus: false } } },
+      },
+    };
+    const result = await generateZod(
+      {
+        pathRoute: '/upload-form',
+        verb: 'post',
+        operationName: 'uploadForm',
+        override: zodOverride,
+      },
+      schema,
+      {},
+    );
+    // encBinary: encoding image/png → File
+    // encText: encoding text/plain → File | string
+    // cmtBinary: contentMediaType image/png → File
+    // cmtText: contentMediaType application/xml → File | string
+    // encOverride: encoding text/csv overrides contentMediaType image/png → File | string
+    // formatBinary: format: binary → File (same as instanceof check)
+    // base64Field: contentEncoding base64 → stays string
+    // metadata: object → object schema
+    expect(result.implementation)
+      .toBe(`export const UploadFormBody = zod.object({
+  "encBinary": zod.instanceof(File),
+  "encText": zod.instanceof(File).or(zod.string()),
+  "cmtBinary": zod.instanceof(File),
+  "cmtText": zod.instanceof(File).or(zod.string()),
+  "encOverride": zod.instanceof(File).or(zod.string()),
+  "formatBinary": zod.instanceof(File),
+  "base64Field": zod.string(),
+  "metadata": zod.object({
+  "name": zod.string().optional()
+})
+})
+
+`);
   });
 });

@@ -1,65 +1,113 @@
-import type { ReferenceObject, SchemaObject } from 'openapi3-ts/oas30';
-
 import { getEnum, getEnumDescriptions, getEnumNames } from '../getters/enum';
-import type { ContextSpecs, ResolverValue } from '../types';
+import type {
+  ContextSpec,
+  OpenApiReferenceObject,
+  OpenApiSchemaObject,
+  ResolverValue,
+  ScalarValue,
+} from '../types';
 import { jsDoc } from '../utils';
 import { resolveValue } from './value';
 
-const resolveObjectOriginal = ({
+interface ResolveOptions {
+  schema: OpenApiSchemaObject | OpenApiReferenceObject;
+  propName?: string;
+  combined?: boolean;
+  context: ContextSpec;
+}
+
+interface CreateTypeAliasOptions {
+  resolvedValue: ResolverValue;
+  propName: string | undefined;
+  context: ContextSpec;
+}
+
+/**
+ * Wraps inline object type in a type alias.
+ * E.g. `{ foo: string }` → value becomes `FooBody`, schema gets `export type FooBody = { foo: string };`
+ */
+export function createTypeAliasIfNeeded({
+  resolvedValue,
+  propName,
+  context,
+}: CreateTypeAliasOptions): ScalarValue | undefined {
+  if (!propName) {
+    return undefined;
+  }
+
+  if (resolvedValue.isEnum || resolvedValue.type !== 'object') {
+    return undefined;
+  }
+
+  // aliasCombinedTypes (v7 compat): match '|' and '&' so 'string | number' creates named type
+  // v8 default: only match '{' so combined primitives are inlined
+  const aliasPattern = context.output.override.aliasCombinedTypes
+    ? '{|&|\\|'
+    : '{';
+  if (!new RegExp(aliasPattern).test(resolvedValue.value)) {
+    return undefined;
+  }
+
+  const { originalSchema } = resolvedValue;
+  const doc = jsDoc(originalSchema);
+  const isConstant = 'const' in originalSchema;
+  const constantIsString =
+    'type' in originalSchema &&
+    (originalSchema.type === 'string' ||
+      (Array.isArray(originalSchema.type) &&
+        originalSchema.type.includes('string')));
+
+  const model = isConstant
+    ? `${doc}export const ${propName} = ${constantIsString ? `'${originalSchema.const}'` : originalSchema.const} as const;\n`
+    : `${doc}export type ${propName} = ${resolvedValue.value};\n`;
+
+  return {
+    value: propName,
+    imports: [{ name: propName, isConstant }],
+    schemas: [
+      ...resolvedValue.schemas,
+      {
+        name: propName,
+        model,
+        imports: resolvedValue.imports,
+        dependencies: resolvedValue.dependencies,
+      },
+    ],
+    isEnum: false,
+    type: 'object',
+    isRef: resolvedValue.isRef,
+    hasReadonlyProps: resolvedValue.hasReadonlyProps,
+    dependencies: resolvedValue.dependencies,
+  };
+}
+
+function resolveObjectOriginal({
   schema,
   propName,
   combined = false,
   context,
-}: {
-  schema: SchemaObject | ReferenceObject;
-  propName?: string;
-  combined?: boolean;
-  context: ContextSpecs;
-}): ResolverValue => {
+}: ResolveOptions): ResolverValue {
   const resolvedValue = resolveValue({
     schema,
     name: propName,
     context,
   });
-  const doc = jsDoc(resolvedValue.originalSchema ?? {});
 
-  if (
-    propName &&
-    !resolvedValue.isEnum &&
-    resolvedValue?.type === 'object' &&
-    new RegExp(/{|&|\|/).test(resolvedValue.value)
-  ) {
-    let model = '';
-    const isConstant = 'const' in schema;
-    const constantIsString =
-      'type' in schema &&
-      (schema.type === 'string' ||
-        (Array.isArray(schema.type) && schema.type.includes('string')));
-
-    model += isConstant
-      ? `${doc}export const ${propName} = ${constantIsString ? `'${schema.const}'` : schema.const} as const;\n`
-      : `${doc}export type ${propName} = ${resolvedValue.value};\n`;
-
+  // Try to create a type alias for object types
+  const aliased = createTypeAliasIfNeeded({
+    resolvedValue,
+    propName,
+    context,
+  });
+  if (aliased) {
     return {
-      value: propName,
-      imports: [{ name: propName, isConstant }],
-      schemas: [
-        ...resolvedValue.schemas,
-        {
-          name: propName,
-          model,
-          imports: resolvedValue.imports,
-        },
-      ],
-      isEnum: false,
-      type: 'object',
+      ...aliased,
       originalSchema: resolvedValue.originalSchema,
-      isRef: resolvedValue.isRef,
-      hasReadonlyProps: resolvedValue.hasReadonlyProps,
     };
   }
 
   if (propName && resolvedValue.isEnum && !combined && !resolvedValue.isRef) {
+    const doc = jsDoc(resolvedValue.originalSchema ?? {});
     const enumValue = getEnum(
       resolvedValue.value,
       propName,
@@ -78,6 +126,7 @@ const resolveObjectOriginal = ({
           name: propName,
           model: doc + enumValue,
           imports: resolvedValue.imports,
+          dependencies: resolvedValue.dependencies,
         },
       ],
       isEnum: false,
@@ -85,33 +134,31 @@ const resolveObjectOriginal = ({
       originalSchema: resolvedValue.originalSchema,
       isRef: resolvedValue.isRef,
       hasReadonlyProps: resolvedValue.hasReadonlyProps,
+      dependencies: [...resolvedValue.dependencies, propName],
     };
   }
 
   return resolvedValue;
-};
+}
 
 const resolveObjectCacheMap = new Map<string, ResolverValue>();
 
-export const resolveObject = ({
+export function resolveObject({
   schema,
   propName,
   combined = false,
   context,
-}: {
-  schema: SchemaObject | ReferenceObject;
-  propName?: string;
-  combined?: boolean;
-  context: ContextSpecs;
-}): ResolverValue => {
+}: ResolveOptions): ResolverValue {
   const hashKey = JSON.stringify({
     schema,
     propName,
     combined,
-    specKey: context.specKey,
+    projectName: context.projectName ?? context.output.target,
   });
 
   if (resolveObjectCacheMap.has(hashKey)) {
+    // .has(...) guarantees existence
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     return resolveObjectCacheMap.get(hashKey)!;
   }
 
@@ -125,4 +172,4 @@ export const resolveObject = ({
   resolveObjectCacheMap.set(hashKey, result);
 
   return result;
-};
+}

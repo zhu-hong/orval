@@ -6,21 +6,44 @@ import {
   generateBodyOptions,
   generateFormDataAndUrlEncodedFunction,
   generateVerbImports,
+  type GeneratorDependency,
   type GeneratorOptions,
   type GeneratorVerbOptions,
   GetterPropType,
   isObject,
+  type OpenApiParameterObject,
+  type OpenApiSchemaObject,
   pascal,
   resolveRef,
   stringify,
   toObjectString,
 } from '@orval/core';
-import type {
-  ParameterObject,
-  PathItemObject,
-  ReferenceObject,
-} from 'openapi3-ts/oas30';
-import type { SchemaObject } from 'openapi3-ts/oas31';
+import { isDereferenced } from '@scalar/openapi-types/helpers';
+
+const WILDCARD_STATUS_CODE_REGEX = /^[1-5]XX$/i;
+
+const getStatusCodeType = (key: string): string => {
+  if (WILDCARD_STATUS_CODE_REGEX.test(key)) {
+    const prefix = key[0];
+    return `HTTPStatusCode${prefix}xx`;
+  }
+  return key;
+};
+
+const FETCH_DEPENDENCIES: GeneratorDependency[] = [
+  {
+    exports: [
+      {
+        name: 'z',
+        alias: 'zod',
+        values: true,
+      },
+    ],
+    dependency: 'zod',
+  },
+];
+
+export const getFetchDependencies = () => FETCH_DEPENDENCIES;
 
 export const generateRequestFunction = (
   {
@@ -54,15 +77,12 @@ export const generateRequestFunction = (
     'implementation',
   );
 
-  const spec = context.specs[context.specKey].paths[pathRoute] as
-    | PathItemObject
-    | undefined;
-  const parameters =
-    spec?.[verb]?.parameters ?? ([] as (ParameterObject | ReferenceObject)[]);
+  const spec = context.spec.paths?.[pathRoute];
+  const parameters = spec?.[verb]?.parameters ?? [];
 
   const explodeParameters = parameters.filter((parameter) => {
-    const { schema } = resolveRef<ParameterObject>(parameter, context);
-    const schemaObject = schema.schema as SchemaObject;
+    const { schema } = resolveRef<OpenApiParameterObject>(parameter, context);
+    const schemaObject = schema.schema as OpenApiSchemaObject;
 
     return (
       schema.in === 'query' && schemaObject.type === 'array' && schema.explode
@@ -70,18 +90,14 @@ export const generateRequestFunction = (
   });
 
   const explodeParametersNames = explodeParameters.map((parameter) => {
-    const { schema } = resolveRef<ParameterObject>(parameter, context);
+    const { schema } = resolveRef<OpenApiParameterObject>(parameter, context);
 
     return schema.name;
   });
-  const hasDateParams =
+  const hasExplodedDateParams =
     context.output.override.useDates &&
-    parameters.some(
-      (p) =>
-        'schema' in p &&
-        p.schema &&
-        'format' in p.schema &&
-        p.schema.format === 'date-time',
+    explodeParameters.some(
+      (p) => isDereferenced(p) && p.schema?.format === 'date-time',
     );
 
   const explodeArrayImplementation =
@@ -90,7 +106,7 @@ export const generateRequestFunction = (
 
     if (Array.isArray(value) && explodeParameters.includes(key)) {
       value.forEach((v) => {
-        normalizedParams.append(key, v === null ? 'null' : ${hasDateParams ? 'v instanceof Date ? v.toISOString() : ' : ''}v.toString());
+        normalizedParams.append(key, v === null ? 'null' : ${hasExplodedDateParams ? 'v instanceof Date ? v.toISOString() : ' : ''}v.toString());
       });
       return;
     }
@@ -100,7 +116,13 @@ export const generateRequestFunction = (
   const isExplodeParametersOnly =
     explodeParameters.length === parameters.length;
 
-  const nomalParamsImplementation = `if (value !== undefined) {
+  const hasDateParams =
+    context.output.override.useDates &&
+    parameters.some(
+      (p) => isDereferenced(p) && p.schema?.format === 'date-time',
+    );
+
+  const normalParamsImplementation = `if (value !== undefined) {
       normalizedParams.append(key, value === null ? 'null' : ${hasDateParams ? 'value instanceof Date ? value.toISOString() : ' : ''}value.toString())
     }`;
 
@@ -111,7 +133,7 @@ ${
 
   Object.entries(params || {}).forEach(([key, value]) => {
     ${explodeArrayImplementation}
-    ${isExplodeParametersOnly ? '' : nomalParamsImplementation}
+    ${isExplodeParametersOnly ? '' : normalParamsImplementation}
   });`
     : ''
 }
@@ -138,6 +160,23 @@ ${
     operationName,
   );
 
+  const responseType = response.definition.success;
+
+  const isPrimitiveType = [
+    'string',
+    'number',
+    'boolean',
+    'void',
+    'unknown',
+  ].includes(responseType);
+  const hasSchema = response.imports.some((imp) => imp.name === responseType);
+
+  const isValidateResponse =
+    override.fetch.runtimeValidation &&
+    !isPrimitiveType &&
+    hasSchema &&
+    !isNdJson;
+
   const allResponses = [...response.types.success, ...response.types.errors];
   if (allResponses.length === 0) {
     allResponses.push({
@@ -150,11 +189,12 @@ ${
       schemas: [],
       type: 'unknown',
       value: 'unknown',
+      dependencies: [],
     });
   }
   const nonDefaultStatuses = allResponses
     .filter((r) => r.key !== 'default')
-    .map((r) => r.key);
+    .map((r) => getStatusCodeType(r.key));
   const responseDataTypes = allResponses
     .map((r) =>
       allResponses.filter((r2) => r2.key === r.key).length > 1
@@ -163,17 +203,19 @@ ${
     )
     .map((r) => {
       const name = `${responseTypeName}${pascal(r.key)}${'suffix' in r ? r.suffix : ''}`;
+      const dataType = r.value || 'unknown';
+
       return {
         name,
         success: response.types.success.some((s) => s.key === r.key),
         value: `export type ${name} = {
-  ${isContentTypeNdJson(r.contentType) ? `stream: TypedResponse<${r.value}>` : `data: ${r.value || 'unknown'}`}
+  ${isContentTypeNdJson(r.contentType) ? `stream: TypedResponse<${dataType}>` : `data: ${dataType}`}
   status: ${
     r.key === 'default'
       ? nonDefaultStatuses.length > 0
         ? `Exclude<HTTPStatusCodes, ${nonDefaultStatuses.join(' | ')}>`
         : 'number'
-      : r.key
+      : getStatusCodeType(r.key)
   }
 }`,
       };
@@ -234,6 +276,13 @@ ${override.fetch.forceSuccessResponse && hasSuccess ? '' : `export type ${respon
 
   const fetchMethodOption = `method: '${verb.toUpperCase()}'`;
   const ignoreContentTypes = ['multipart/form-data'];
+  const overrideHeaders =
+    isObject(override.requestOptions) && override.requestOptions.headers
+      ? Object.entries(override.requestOptions.headers).map(
+          ([key, value]) => `'${key}': \`${value}\``,
+        )
+      : [];
+
   const headersToAdd: string[] = [
     ...(body.contentType && !ignoreContentTypes.includes(body.contentType)
       ? [`'Content-Type': '${body.contentType}'`]
@@ -247,6 +296,7 @@ ${override.fetch.forceSuccessResponse && hasSuccess ? '' : `export type ${respon
           }`,
         ]
       : []),
+    ...overrideHeaders,
     ...(headers ? ['...headers'] : []),
   ];
 
@@ -260,10 +310,6 @@ ${override.fetch.forceSuccessResponse && hasSuccess ? '' : `export type ${respon
       // Remove the headers from the object going into globalFetchOptions
       delete globalFetchOptionsObject.headers;
       // Add it to the dedicated headers object
-      const stringifiedHeaders = stringify(override.requestOptions.headers);
-      if (stringifiedHeaders) {
-        headersToAdd.unshift('...' + stringifiedHeaders);
-      }
     }
     globalFetchOptions = stringify(globalFetchOptionsObject)
       ?.slice(1, -1)
@@ -313,7 +359,12 @@ ${override.fetch.forceSuccessResponse && hasSuccess ? '' : `export type ${respon
 
   const body = [204, 205, 304].includes(res.status) ? null : await res.text();
   ${override.fetch.forceSuccessResponse ? throwOnErrorImplementation : ''}
-  const data: ${override.fetch.forceSuccessResponse && hasSuccess ? successName : responseTypeName}${override.fetch.includeHttpResponseReturnType ? `['data']` : ''} = body ? JSON.parse(body${reviver}) : {}
+  ${
+    isValidateResponse
+      ? `const parsedBody = body ? JSON.parse(body${reviver}) : {}
+  const data = ${responseType}.parse(parsedBody)`
+      : `const data: ${override.fetch.forceSuccessResponse && hasSuccess ? successName : responseTypeName}${override.fetch.includeHttpResponseReturnType ? `['data']` : ''} = body ? JSON.parse(body${reviver}) : {}`
+  }
   ${override.fetch.includeHttpResponseReturnType ? `return { data, status: res.status, headers: res.headers } as ${override.fetch.forceSuccessResponse && hasSuccess ? successName : responseTypeName}` : 'return data'}
 `;
   const customFetchResponseImplementation = `return ${mutator?.name}<${override.fetch.forceSuccessResponse && hasSuccess ? successName : responseTypeName}>(${fetchFnOptions});`;
@@ -376,15 +427,16 @@ export type HTTPStatusCodes = HTTPStatusCode1xx | HTTPStatusCode2xx | HTTPStatus
 export const generateFetchHeader: ClientHeaderBuilder = ({
   clientImplementation,
 }) => {
-  return clientImplementation.includes('<HTTPStatusCodes,')
-    ? getHTTPStatusCodes()
-    : '';
+  const needsStatusCodeTypes = /HTTPStatusCode[1-5]xx|<HTTPStatusCodes,/.test(
+    clientImplementation,
+  );
+  return needsStatusCodeTypes ? getHTTPStatusCodes() : '';
 };
 
 const fetchClientBuilder: ClientGeneratorsBuilder = {
   client: generateClient,
   header: generateFetchHeader,
-  dependencies: () => [],
+  dependencies: getFetchDependencies,
 };
 
 export const builder = () => () => fetchClientBuilder;

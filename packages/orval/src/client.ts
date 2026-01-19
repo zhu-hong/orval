@@ -4,7 +4,7 @@ import {
   asyncReduce,
   type ClientFileBuilder,
   type ClientMockGeneratorBuilder,
-  type ContextSpecs,
+  type ContextSpec,
   generateDependencyImports,
   type GeneratorClientFooter,
   type GeneratorClientHeader,
@@ -26,6 +26,7 @@ import hono from '@orval/hono';
 import mcp from '@orval/mcp';
 import * as mock from '@orval/mock';
 import query from '@orval/query';
+import solidStart from '@orval/solid-start';
 import swr from '@orval/swr';
 import zod from '@orval/zod';
 
@@ -39,7 +40,10 @@ const getGeneratorClient = (
     axios: axios({ type: 'axios' })(),
     'axios-functions': axios({ type: 'axios-functions' })(),
     angular: angular()(),
+    'angular-query': query({ output, type: 'angular-query' })(),
     'react-query': query({ output, type: 'react-query' })(),
+    'solid-start': solidStart()(),
+    'solid-query': query({ output, type: 'solid-query' })(),
     'svelte-query': query({ output, type: 'svelte-query' })(),
     'vue-query': query({ output, type: 'vue-query' })(),
     swr: swr()(),
@@ -61,10 +65,10 @@ const getGeneratorClient = (
 };
 
 export const generateClientImports: GeneratorClientImports = ({
-  client = DEFAULT_CLIENT,
+  client,
   implementation,
   imports,
-  specsName,
+  projectName,
   hasSchemaDir,
   isAllowSyntheticDefaultImports,
   hasGlobalMutator,
@@ -89,7 +93,7 @@ export const generateClientImports: GeneratorClientImports = ({
           ...imports,
         ]
       : imports,
-    specsName,
+    projectName,
     hasSchemaDir,
     isAllowSyntheticDefaultImports,
   );
@@ -129,7 +133,7 @@ export const generateClientHeader: GeneratorClientHeader = ({
 };
 
 export const generateClientFooter: GeneratorClientFooter = ({
-  outputClient = DEFAULT_CLIENT,
+  outputClient,
   operationNames,
   hasMutator,
   hasAwaitedType,
@@ -246,7 +250,12 @@ export const generateOperations = (
         outputClient,
         output,
       );
-      const client = await generatorClient(verbOption, options, outputClient);
+      const client = await generatorClient(
+        verbOption,
+        options,
+        outputClient,
+        output,
+      );
 
       if (!client.implementation) {
         return acc;
@@ -279,7 +288,7 @@ export const generateExtraFiles = (
   outputClient: OutputClient | OutputClientFunc = DEFAULT_CLIENT,
   verbsOptions: Record<string, GeneratorVerbOptions>,
   output: NormalizedOutputOptions,
-  context: ContextSpecs,
+  context: ContextSpec,
 ): Promise<ClientFileBuilder[]> => {
   const { extraFiles: generateExtraFiles } = getGeneratorClient(
     outputClient,

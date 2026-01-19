@@ -165,4 +165,28 @@ export default defineConfig({
       },
     },
   },
+  zodSchemaResponse: {
+    output: {
+      target: '../generated/mock/zod-schema-response/endpoints.ts',
+      schemas: {
+        path: '../generated/mock/zod-schema-response/model',
+        type: 'zod',
+      },
+      client: 'axios',
+      mock: true,
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  allofSharedBase: {
+    output: {
+      target: '../generated/mock/allof-shared-base/endpoints.ts',
+      schemas: '../generated/mock/allof-shared-base/model',
+      mock: true,
+    },
+    input: {
+      target: '../specifications/allof-shared-base.yaml',
+    },
+  },
 });

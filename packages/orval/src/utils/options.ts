@@ -17,7 +17,6 @@ import {
   isUndefined,
   isUrl,
   type JsDocOptions,
-  mergeDeep,
   type Mutator,
   NamingConvention,
   type NormalizedHonoOptions,
@@ -28,6 +27,7 @@ import {
   type NormalizedOptions,
   type NormalizedOverrideOutput,
   type NormalizedQueryOptions,
+  type NormalizedSchemaOptions,
   type OperationOptions,
   type OptionsExport,
   OutputClient,
@@ -37,15 +37,14 @@ import {
   PropertySortOrder,
   type QueryOptions,
   RefComponentSuffix,
-  type SwaggerParserOptions,
+  type SchemaGenerationType,
+  type SchemaOptions,
   upath,
 } from '@orval/core';
 import { DEFAULT_MOCK_OPTIONS } from '@orval/mock';
 import chalk from 'chalk';
 
 import pkg from '../../package.json';
-import { githubResolver } from './github';
-import { httpResolver } from './http-resolver';
 import { loadPackageJson } from './package-json';
 import { loadTsconfig } from './tsconfig';
 
@@ -57,10 +56,10 @@ export function defineConfig(options: ConfigExternal): ConfigExternal {
   return options;
 }
 
-const createFormData = (
+function createFormData(
   workspace: string,
   formData: OverrideOutput['formData'],
-): NormalizedOverrideOutput['formData'] => {
+): NormalizedOverrideOutput['formData'] {
   const defaultArrayHandling = FormDataArrayHandling.SERIALIZE;
   if (formData === undefined)
     return { disabled: false, arrayHandling: defaultArrayHandling };
@@ -83,13 +82,31 @@ const createFormData = (
     mutator: normalizeMutator(workspace, formData),
     arrayHandling: defaultArrayHandling,
   };
-};
+}
 
-export const normalizeOptions = async (
+function normalizeSchemasOption(
+  schemas: string | SchemaOptions | undefined,
+  workspace: string,
+): string | NormalizedSchemaOptions | undefined {
+  if (!schemas) {
+    return undefined;
+  }
+
+  if (isString(schemas)) {
+    return normalizePath(schemas, workspace);
+  }
+
+  return {
+    path: normalizePath(schemas.path, workspace),
+    type: schemas.type,
+  };
+}
+
+export async function normalizeOptions(
   optionsExport: OptionsExport,
   workspace = process.cwd(),
   globalOptions: GlobalOptions = {},
-) => {
+): Promise<NormalizedOptions> {
   const options = await (isFunction(optionsExport)
     ? optionsExport()
     : optionsExport);
@@ -160,32 +177,35 @@ export const normalizeOptions = async (
       target: globalOptions.input
         ? normalizePathOrUrl(globalOptions.input, process.cwd())
         : normalizePathOrUrl(inputOptions.target, workspace),
-      validation: inputOptions.validation || false,
       override: {
         transformer: normalizePath(
           inputOptions.override?.transformer,
           workspace,
         ),
       },
-      converterOptions: inputOptions.converterOptions ?? {},
-      parserOptions: mergeDeep(
-        parserDefaultOptions,
-        inputOptions.parserOptions ?? {},
-      ),
       filters: inputOptions.filters,
+      parserOptions: inputOptions.parserOptions,
     },
     output: {
       target: globalOptions.output
         ? normalizePath(globalOptions.output, process.cwd())
         : normalizePath(outputOptions.target, outputWorkspace),
-      schemas: normalizePath(outputOptions.schemas, outputWorkspace),
+      schemas: normalizeSchemasOption(outputOptions.schemas, outputWorkspace),
+      operationSchemas: outputOptions.operationSchemas
+        ? normalizePath(outputOptions.operationSchemas, outputWorkspace)
+        : undefined,
       namingConvention:
         outputOptions.namingConvention || NamingConvention.CAMEL_CASE,
       fileExtension: outputOptions.fileExtension || defaultFileExtension,
       workspace: outputOptions.workspace ? outputWorkspace : undefined,
       client: outputOptions.client ?? client ?? OutputClient.AXIOS_FUNCTIONS,
       httpClient:
-        outputOptions.httpClient ?? httpClient ?? OutputHttpClient.FETCH,
+        outputOptions.httpClient ??
+        httpClient ??
+        // Auto-detect: use Angular HttpClient for angular-query by default
+        ((outputOptions.client ?? client) === OutputClient.ANGULAR_QUERY
+          ? OutputHttpClient.ANGULAR
+          : OutputHttpClient.FETCH),
       mode: normalizeOutputMode(outputOptions.mode ?? mode),
       mock,
       clean: outputOptions.clean ?? clean ?? false,
@@ -343,6 +363,7 @@ export const normalizeOptions = async (
           timeOptions: outputOptions.override?.zod?.timeOptions ?? {},
         },
         swr: {
+          generateErrorTypes: false,
           ...outputOptions.override?.swr,
         },
         angular: {
@@ -354,6 +375,8 @@ export const normalizeOptions = async (
             true,
           forceSuccessResponse:
             outputOptions.override?.fetch?.forceSuccessResponse ?? false,
+          runtimeValidation:
+            outputOptions.override?.fetch?.runtimeValidation ?? false,
           ...outputOptions.override?.fetch,
         },
         useDates: outputOptions.override?.useDates || false,
@@ -363,6 +386,7 @@ export const normalizeOptions = async (
           outputOptions.override?.enumGenerationType ?? 'const',
         suppressReadonlyModifier:
           outputOptions.override?.suppressReadonlyModifier || false,
+        aliasCombinedTypes: outputOptions.override?.aliasCombinedTypes ?? false,
       },
       allParamsOptional: outputOptions.allParamsOptional ?? false,
       urlEncodeParameters: outputOptions.urlEncodeParameters ?? false,
@@ -382,17 +406,12 @@ export const normalizeOptions = async (
   }
 
   return normalizedOptions;
-};
+}
 
-const parserDefaultOptions = {
-  validate: true,
-  resolve: { github: githubResolver, http: httpResolver },
-} as SwaggerParserOptions;
-
-const normalizeMutator = (
+function normalizeMutator(
   workspace: string,
   mutator?: Mutator,
-): NormalizedMutator | undefined => {
+): NormalizedMutator | undefined {
   if (isObject(mutator)) {
     if (!mutator.path) {
       throw new Error(chalk.red(`Mutator need a path`));
@@ -413,30 +432,30 @@ const normalizeMutator = (
   }
 
   return mutator;
-};
+}
 
-const normalizePathOrUrl = <T>(path: T, workspace: string) => {
+function normalizePathOrUrl<T>(path: T, workspace: string) {
   if (isString(path) && !isUrl(path)) {
     return normalizePath(path, workspace);
   }
 
   return path;
-};
+}
 
-export const normalizePath = <T>(path: T, workspace: string) => {
+export function normalizePath<T>(path: T, workspace: string) {
   if (!isString(path)) {
     return path;
   }
   return upath.resolve(workspace, path);
-};
+}
 
-const normalizeOperationsAndTags = (
+function normalizeOperationsAndTags(
   operationsOrTags: Record<string, OperationOptions>,
   workspace: string,
   global: {
     query: NormalizedQueryOptions;
   },
-): Record<string, NormalizedOperationOptions> => {
+): Record<string, NormalizedOperationOptions> {
   return Object.fromEntries(
     Object.entries(operationsOrTags).map(
       ([
@@ -561,9 +580,9 @@ const normalizeOperationsAndTags = (
       },
     ),
   );
-};
+}
 
-const normalizeOutputMode = (mode?: OutputMode): OutputMode => {
+function normalizeOutputMode(mode?: OutputMode): OutputMode {
   if (!mode) {
     return OutputMode.SINGLE;
   }
@@ -574,9 +593,9 @@ const normalizeOutputMode = (mode?: OutputMode): OutputMode => {
   }
 
   return mode;
-};
+}
 
-const normalizeHooks = (hooks: HooksOptions): NormalizedHookOptions => {
+function normalizeHooks(hooks: HooksOptions): NormalizedHookOptions {
   const keys = Object.keys(hooks) as unknown as Hook[];
 
   return keys.reduce<NormalizedHookOptions>((acc, key: Hook) => {
@@ -604,12 +623,12 @@ const normalizeHooks = (hooks: HooksOptions): NormalizedHookOptions => {
 
     return acc;
   }, {});
-};
+}
 
-const normalizeHonoOptions = (
+function normalizeHonoOptions(
   hono: HonoOptions = {},
   workspace: string,
-): NormalizedHonoOptions => {
+): NormalizedHonoOptions {
   return {
     ...(hono.handlers
       ? { handlers: upath.resolve(workspace, hono.handlers) }
@@ -620,21 +639,21 @@ const normalizeHonoOptions = (
       ? upath.resolve(workspace, hono.validatorOutputPath)
       : '',
   };
-};
+}
 
-const normalizeJSDocOptions = (
+function normalizeJSDocOptions(
   jsdoc: JsDocOptions = {},
-): NormalizedJsDocOptions => {
+): NormalizedJsDocOptions {
   return {
     ...jsdoc,
   };
-};
+}
 
-const normalizeQueryOptions = (
+function normalizeQueryOptions(
   queryOptions: QueryOptions = {},
   outputWorkspace: string,
   globalOptions: NormalizedQueryOptions = {},
-): NormalizedQueryOptions => {
+): NormalizedQueryOptions {
   if (queryOptions.options) {
     console.warn(
       '[WARN] Using query options is deprecated and will be removed in a future major release. Please use queryOptions or mutationOptions instead.',
@@ -764,10 +783,13 @@ const normalizeQueryOptions = (
     ...(isUndefined(queryOptions.version)
       ? {}
       : { version: queryOptions.version }),
+    ...(queryOptions.mutationInvalidates
+      ? { mutationInvalidates: queryOptions.mutationInvalidates }
+      : {}),
   };
-};
+}
 
-export const getDefaultFilesHeader = ({
+export function getDefaultFilesHeader({
   title,
   description,
   version,
@@ -775,10 +797,12 @@ export const getDefaultFilesHeader = ({
   title?: string;
   description?: string;
   version?: string;
-} = {}) => [
-  `Generated by ${pkg.name} v${pkg.version} 🍺`,
-  `Do not edit manually.`,
-  ...(title ? [title] : []),
-  ...(description ? [description] : []),
-  ...(version ? [`OpenAPI spec version: ${version}`] : []),
-];
+} = {}) {
+  return [
+    `Generated by ${pkg.name} v${pkg.version} 🍺`,
+    `Do not edit manually.`,
+    ...(title ? [title] : []),
+    ...(description ? [description] : []),
+    ...(version ? [`OpenAPI spec version: ${version}`] : []),
+  ];
+}

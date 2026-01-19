@@ -1,5 +1,4 @@
 import {
-  getIsBodyVerb,
   type GetterProps,
   GetterPropType,
   isObject,
@@ -12,7 +11,6 @@ import {
   type QueryOptions,
   TEMPLATE_TAG_REGEX,
   upath,
-  Verbs,
 } from '@orval/core';
 import chalk from 'chalk';
 
@@ -29,24 +27,24 @@ export const normalizeQueryOptions = (
       ? { useInfiniteQueryParam: queryOptions.useInfiniteQueryParam }
       : {}),
     ...(queryOptions.options ? { options: queryOptions.options } : {}),
-    ...(queryOptions?.queryKey
+    ...(queryOptions.queryKey
       ? {
-          queryKey: normalizeMutator(outputWorkspace, queryOptions?.queryKey),
+          queryKey: normalizeMutator(outputWorkspace, queryOptions.queryKey),
         }
       : {}),
-    ...(queryOptions?.queryOptions
+    ...(queryOptions.queryOptions
       ? {
           queryOptions: normalizeMutator(
             outputWorkspace,
-            queryOptions?.queryOptions,
+            queryOptions.queryOptions,
           ),
         }
       : {}),
-    ...(queryOptions?.mutationOptions
+    ...(queryOptions.mutationOptions
       ? {
           mutationOptions: normalizeMutator(
             outputWorkspace,
-            queryOptions?.mutationOptions,
+            queryOptions.mutationOptions,
           ),
         }
       : {}),
@@ -80,7 +78,7 @@ const normalizeMutator = (
     return {
       ...mutator,
       path: upath.resolve(workspace, mutator.path),
-      default: (mutator.default || !mutator.name) ?? false,
+      default: mutator.default ?? !mutator.name,
     };
   }
 
@@ -134,10 +132,29 @@ export const makeRouteSafe = (route: string): string =>
 export const isVue = (client: OutputClient | OutputClientFunc) =>
   OutputClient.VUE_QUERY === client;
 
+export const isSolid = (client: OutputClient | OutputClientFunc) =>
+  OutputClient.SOLID_QUERY === client;
+
+export const isAngular = (client: OutputClient | OutputClientFunc) =>
+  OutputClient.ANGULAR_QUERY === client;
+
+export const getQueryTypeForFramework = (type: string): string => {
+  // Angular Query and Svelte Query don't have suspense variants, map them to regular queries
+  switch (type) {
+    case 'suspenseQuery': {
+      return 'query';
+    }
+    case 'suspenseInfiniteQuery': {
+      return 'infiniteQuery';
+    }
+    default: {
+      return type;
+    }
+  }
+};
+
 export const getHasSignal = ({
   overrideQuerySignal = false,
-  verb,
 }: {
-  verb: Verbs;
   overrideQuerySignal?: boolean;
-}) => overrideQuerySignal && (!getIsBodyVerb(verb) || verb === Verbs.POST);
+}) => overrideQuerySignal;

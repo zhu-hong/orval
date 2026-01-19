@@ -9,14 +9,15 @@
   <img src="./logo/orval-logo-horizontal.svg?raw=true" width="500" height="160" alt="orval - Restfull Client Generator" />
 </p>
 <h1 align="center">
-  Visit <a href="https://orval.dev" target="_blank">orval.dev</a> for docs, guides, API and beer!
+  Generate Typescript clients from OpenAPI specification!
 </h1>
-
-⚠️ Actively searching for contributors, if you want to help, please contact me on [discord](https://discord.gg/6fC2sjDU7w) ⚠️
 
 ### Code Generation
 
-`orval` is able to generate client with appropriate type-signatures (TypeScript) from any valid OpenAPI v3 or Swagger v2 specification, either in `yaml` or `json` formats.
+`orval` generates type-safe JS clients (TypeScript) from any valid OpenAPI v3 or Swagger v2 specification, either in `yaml` or `json` formats.
+
+> [!IMPORTANT]  
+> Version [8.0.0+](https://orval.dev/versions/v8) comes with a lot of improvements and changes please see the [Migration Guide](https://orval.dev/versions/v8)
 
 ### Supported clients
 
@@ -27,7 +28,10 @@
 - [React with swr](https://swr.vercel.app/)
 - [Vue Query](https://tanstack.com/query/latest/docs/framework/vue/overview)
 - [Svelte Query](https://tanstack.com/query/latest/docs/framework/svelte/overview)
+- [Solid Query](https://tanstack.com/query/latest/docs/framework/solid/overview)
+- [SolidStart](https://start.solidjs.com/)
 - [Angular](https://angular.dev/)
+- [Angular Query](https://tanstack.com/query/latest/docs/framework/angular/overview)
 - [Hono](https://hono.dev/)
 - [zod](https://zod.dev/)
 - [native fetch](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API)
@@ -43,6 +47,7 @@ You can find some samples below:
 - [vue query](https://github.com/orval-labs/orval/tree/master/samples/vue-query)
 - [react app with swr](https://github.com/orval-labs/orval/tree/master/samples/react-app-with-swr)
 - [angular app](https://github.com/orval-labs/orval/tree/master/samples/angular-app)
+- [angular query](https://github.com/orval-labs/orval/tree/master/samples/angular-query)
 - [hono](https://github.com/orval-labs/orval/tree/master/samples/hono)
 - [next app with fetch](https://github.com/orval-labs/orval/tree/master/samples/next-app-with-fetch)
 - [mcp server](https://github.com/orval-labs/orval/tree/master/samples/mcp)
@@ -100,6 +105,34 @@ If you encounter issues or want to start completely fresh:
 
 1. Run `yarn nuke:all` to clean everything
 2. Reinstall dependencies and rebuild from scratch
+
+## Sponsors
+
+Thank you to all our sponsors! 🍻
+
+Support orval development by [Open Collective](https://opencollective.com/orval) and your logo will be displayed here with a link to your website.
+
+<a href="https://opencollective.com/orval">
+  <img src="https://orval.dev/images/orval-logo-horizontal.svg?raw=true" width="300" alt="Become a sponsor" />
+</a>
+
+## Backers
+
+Thank you to all our backers! 🙏
+
+Support us with a one-time donation and help us continue our activities on [Open Collective](https://opencollective.com/orval).
+
+<a href="https://opencollective.com/orval">
+  <img src="https://orval.dev/images/emblem.svg" width="50" height="50" alt="Backer" />
+</a>
+<a href="https://opencollective.com/orval">
+  <img src="https://orval.dev/images/emblem.svg" width="50" height="50" alt="Backer" />
+</a>
+<a href="https://opencollective.com/orval">
+  <img src="https://orval.dev/images/emblem.svg" width="50" height="50" alt="Backer" />
+</a>
+
+**Note:** After becoming a sponsor or backer, please contact us on [Discord](https://discord.gg/6fC2sjDU7w) to upload your logo.
 
 ## Star History
 

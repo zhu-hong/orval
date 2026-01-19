@@ -276,4 +276,125 @@ export default defineConfig({
       target: '../specifications/petstore.yaml',
     },
   },
+  requestOptionsHeaders: {
+    output: {
+      target: '../generated/fetch/request-options-headers/endpoints.ts',
+      schemas: '../generated/fetch/request-options-headers/model',
+      client: 'fetch',
+      override: {
+        requestOptions: {
+          headers: {
+            Authorization: "Bearer ${process.env.API_TOKEN || ''}",
+            'X-Static-Header': 'static-value',
+          },
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  zodSchemaResponseSingle: {
+    output: {
+      target: '../generated/fetch/zod-schema-response-single/endpoints.ts',
+      schemas: {
+        path: '../generated/fetch/zod-schema-response-single/model',
+        type: 'zod',
+      },
+      client: 'fetch',
+      override: {
+        fetch: {
+          runtimeValidation: true,
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  zodSchemaResponseSplit: {
+    output: {
+      target: '../generated/fetch/zod-schema-response-split/endpoints.ts',
+      schemas: {
+        path: '../generated/fetch/zod-schema-response-split/model',
+        type: 'zod',
+      },
+      mode: 'split',
+      indexFiles: false,
+      client: 'fetch',
+      override: {
+        fetch: {
+          runtimeValidation: true,
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  zodSchemaResponseTags: {
+    output: {
+      target: '../generated/fetch/zod-schema-response-tags/endpoints.ts',
+      schemas: {
+        path: '../generated/fetch/zod-schema-response-tags/model',
+        type: 'zod',
+      },
+      mode: 'tags',
+      client: 'fetch',
+      override: {
+        fetch: {
+          runtimeValidation: true,
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  zodSchemaResponseTagsSplit: {
+    output: {
+      target: '../generated/fetch/zod-schema-response-tags-split/endpoints.ts',
+      schemas: {
+        path: '../generated/fetch/zod-schema-response-tags-split/model',
+        type: 'zod',
+      },
+      mode: 'tags-split',
+      client: 'fetch',
+      override: {
+        fetch: {
+          runtimeValidation: true,
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  wildcardResponses: {
+    output: {
+      target: '../generated/fetch/wildcard-responses/endpoints.ts',
+      schemas: '../generated/fetch/wildcard-responses/model',
+      client: 'fetch',
+    },
+    input: {
+      target: '../specifications/wildcard-responses.yaml',
+    },
+  },
+  mutatorWithExternal: {
+    output: {
+      target: '../generated/fetch/mutator-external/endpoints.ts',
+      schemas: '../generated/fetch/mutator-external/model',
+      client: 'fetch',
+      override: {
+        mutator: {
+          path: '../mutators/with-scss-import.ts',
+          name: 'customFetchWithScss',
+          external: ['*.scss'],
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
 });

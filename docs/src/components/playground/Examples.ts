@@ -8,7 +8,7 @@ const SCHEMA = dedent(/* YAML */ `
     license:
       name: MIT
   servers:
-    - url: http://petstore.swagger.io/v1
+    - url: https://petstore3.swagger.io/api/v3/openapi.json
   paths:
     /pets:
       get:
@@ -201,6 +201,7 @@ export const EXAMPLES = {
       tags: [],
       config: dedent(/* JSON */ `{
           "output": {
+            "httpClient": "fetch",
             "client": "react-query",
             "target": "./src/generated/endpoints.ts",
             "mock": true

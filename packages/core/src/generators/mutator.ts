@@ -19,19 +19,21 @@ const getImport = (output: string, mutator: NormalizedMutator) => {
   return `${pathWithoutExtension}${mutator.extension ?? ''}`;
 };
 
+interface GenerateMutatorOptions {
+  output?: string;
+  mutator?: NormalizedMutator;
+  name: string;
+  workspace: string;
+  tsconfig?: Tsconfig;
+}
+
 export async function generateMutator({
   output,
   mutator,
   name,
   workspace,
   tsconfig,
-}: {
-  output?: string;
-  mutator?: NormalizedMutator;
-  name: string;
-  workspace: string;
-  tsconfig?: Tsconfig;
-}): Promise<GeneratorMutator | undefined> {
+}: GenerateMutatorOptions): Promise<GeneratorMutator | undefined> {
   if (!mutator || !output) {
     return;
   }
@@ -69,6 +71,7 @@ export async function generateMutator({
     root: path.resolve(workspace),
     namedExport: mutatorInfoName,
     alias: mutator.alias,
+    external: mutator.external,
     tsconfig,
   });
 

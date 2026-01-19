@@ -1,6 +1,6 @@
 {
   "name": "orval-tests",
-  "version": "8.0.0-rc.2",
+  "version": "8.0.1",
   "description": "",
   "author": "Victor Bury",
   "license": "ISC",
@@ -29,27 +29,26 @@
   "devDependencies": {
     "@angular/common": "catalog:angular",
     "@angular/core": "catalog:angular",
-    "@faker-js/faker": "^10.1.0",
+    "@faker-js/faker": "^10.2.0",
     "@hono/zod-validator": "^0.7.4",
-    "@modelcontextprotocol/sdk": "1.20.2",
+    "@modelcontextprotocol/sdk": "1.25.2",
     "@tanstack/react-query": "~5.62.16",
     "@tanstack/svelte-query": "^4.41.0",
-    "@tanstack/vue-query": "^5.90.6",
+    "@tanstack/vue-query": "^5.92.7",
     "@types/react": "18.3.24",
     "axios": "^1.13.2",
-    "hono": "^4.10.2",
-    "msw": "^2.12.1",
+    "hono": "^4.11.4",
+    "msw": "^2.12.7",
     "npm-run-all": "^4.1.5",
     "openapi3-ts": "^4.5.0",
     "orval": "workspace:*",
     "react": "^18.3.1",
     "rimraf": "catalog:",
     "rxjs": "~7.8.2",
-    "svelte": "^5.43.8",
+    "svelte": "^5.46.4",
     "swr": "^2.3.6",
     "typescript": "catalog:",
-    "vue": "^3.5.22",
+    "vue": "^3.5.26",
     "zod": "^3.25.76"
-  },
-  "stableVersion": "8.0.0-rc.1"
+  }
 }

@@ -17,9 +17,9 @@ import { getDelay } from '../delay';
 import { getRouteMSW, overrideVarName } from '../faker/getters';
 import { getMockDefinition, getMockOptionsDataOverride } from './mocks';
 
-const getMSWDependencies = (
+function getMSWDependencies(
   options?: GlobalMockOptions,
-): GeneratorDependency[] => {
+): GeneratorDependency[] {
   const hasDelay = options?.delay !== false;
   const locale = options?.locale;
 
@@ -42,12 +42,12 @@ const getMSWDependencies = (
         : '@faker-js/faker',
     },
   ];
-};
+}
 
 export const generateMSWImports: GenerateMockImports = ({
   implementation,
   imports,
-  specsName,
+  projectName,
   hasSchemaDir,
   isAllowSyntheticDefaultImports,
   options,
@@ -55,13 +55,13 @@ export const generateMSWImports: GenerateMockImports = ({
   return generateDependencyImports(
     implementation,
     [...getMSWDependencies(options), ...imports],
-    specsName,
+    projectName,
     hasSchemaDir,
     isAllowSyntheticDefaultImports,
   );
 };
 
-const generateDefinition = (
+function generateDefinition(
   name: string,
   route: string,
   getResponseMockFunctionNameBase: string,
@@ -74,7 +74,7 @@ const generateDefinition = (
   responses: ResReqTypesValue[],
   contentTypes: string[],
   splitMockImplementations: string[],
-) => {
+) {
   const oldSplitMockImplementations = [...splitMockImplementations];
   const { definitions, definition, imports } = getMockDefinition({
     operationId,
@@ -156,18 +156,14 @@ export const ${handlerName} = (overrideResponse?: ${returnType} | ((${infoParam}
   }, options)
 }\n`;
 
-  const includeResponseImports = isTextPlain
-    ? imports
-    : [
-        ...imports,
-        ...response.imports.filter((r) => {
-          // Only include imports which are actually used in mock.
-          const reg = new RegExp(`\\b${r.name}\\b`);
-          return (
-            reg.test(handlerImplementation) || reg.test(mockImplementation)
-          );
-        }),
-      ];
+  const includeResponseImports = [
+    ...imports,
+    ...response.imports.filter((r) => {
+      // Only include imports which are actually used in mock.
+      const reg = new RegExp(String.raw`\b${r.name}\b`);
+      return reg.test(handlerImplementation) || reg.test(mockImplementation);
+    }),
+  ];
 
   return {
     implementation: {
@@ -177,12 +173,12 @@ export const ${handlerName} = (overrideResponse?: ${returnType} | ((${infoParam}
     },
     imports: includeResponseImports,
   };
-};
+}
 
-export const generateMSW = (
+export function generateMSW(
   generatorVerbOptions: GeneratorVerbOptions,
   generatorOptions: GeneratorOptions,
-): ClientMockGeneratorBuilder => {
+): ClientMockGeneratorBuilder {
   const { pathRoute, override, mock } = generatorOptions;
   const { operationId, response } = generatorVerbOptions;
 
@@ -252,4 +248,4 @@ export const generateMSW = (
     },
     imports: imports,
   };
-};
+}

@@ -25,7 +25,7 @@ export default defineConfig({
 
 Type: `String | Function`.
 
-Valid values: `angular`, `axios`, `axios-functions`, `react-query`, `svelte-query`, `vue-query`, `swr`, `zod`, `fetch`.
+Valid values: `angular`, `axios`, `axios-functions`, `react-query`, `svelte-query`, `vue-query`, `swr`, `zod`, `hono`, `fetch`, `mcp`.
 
 Default Value: `axios-functions`.
 
@@ -84,6 +84,43 @@ export default defineConfig({
     },
   },
 });
+```
+
+## operationSchemas
+
+Type: `String`.
+
+Valid values: path to the folder where operation-derived types (params, bodies, responses) are written.
+
+Default Value: `undefined` (all schemas written to `schemas` path).
+
+When set, types matching operation patterns (`*Params`, `*Body`, `*Parameter`, `*Query`, `*Header`, `*Response`) are written to this path instead of the main `schemas` path. This helps organize large API clients by separating auto-generated operation types from core domain models.
+
+```js
+import { defineConfig } from 'orval';
+
+export default defineConfig({
+  petstore: {
+    output: {
+      schemas: './api/model',
+      operationSchemas: './api/model/params',
+    },
+  },
+});
+```
+
+Result:
+
+```
+api/model/
+├── user.ts           # Domain models
+├── pet.ts
+├── index.ts
+└── params/
+    ├── getUserParams.ts    # Operation types
+    ├── createPetBody.ts
+    ├── listPets200Response.ts
+    └── index.ts
 ```
 
 ## fileExtension
@@ -744,7 +781,7 @@ Type: `String` or `Function`.
 
 Valid values: path or implementation of the transformer function.
 
-This function is executed for each call when you generate and take in argument a <a href="https://github.com/orval-labs/orval/blob/master/packages/core/src/types.ts#L823" target="_blank">GeneratorVerbOptions</a> and should return a <a href="https://github.com/orval-labs/orval/blob/master/packages/core/src/types.ts#L823" target="_blank">GeneratorVerbOptions</a>
+This function is executed for each call when you generate and take in argument a <a href="https://github.com/orval-labs/orval/blob/master/packages/core/src/types.ts#L857" target="_blank">GeneratorVerbOptions</a> and should return a <a href="https://github.com/orval-labs/orval/blob/master/packages/core/src/types.ts#L857" target="_blank">GeneratorVerbOptions</a>
 
 ```js
 import { defineConfig } from 'orval';
@@ -1262,6 +1299,48 @@ export const invalidateShowPetById = async (
 }
 ```
 
+#### mutationInvalidates
+
+Type: `Array<{ onMutations: string[], invalidates: (string | { query: string, params: string[] })[] }>`.
+
+**Angular Query only.** Declaratively invalidate queries when mutations succeed. Requires `useInvalidate: true`.
+
+```js
+import { defineConfig } from 'orval';
+
+export default defineConfig({
+  petstore: {
+    output: {
+      client: 'angular-query',
+      override: {
+        query: {
+          useInvalidate: true,
+          mutationInvalidates: [
+            {
+              onMutations: ['createPets'],
+              invalidates: ['listPets'],
+            },
+            {
+              onMutations: ['deletePet', 'updatePet'],
+              invalidates: [
+                'listPets',
+                { query: 'showPetById', params: ['petId'] },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  },
+});
+```
+
+##### Param-based invalidation
+
+With `{ query: 'showPetById', params: ['petId'] }`, the mutation's variables are used to determine which specific query to invalidate. When `deletePet({ petId: '123' })` succeeds, only `showPetById('123')` is invalidated—not all `showPetById` queries.
+
+See the [Angular Query guide](../../guides/angular-query#automatic-mutation-invalidation-angular-query-only) for more details.
+
 #### useInfiniteQueryParam
 
 Type: `String`.
@@ -1564,6 +1643,60 @@ export default defineConfig({
           swrOptions: {
             useSWRMutationForGet: true,
           },
+        },
+      },
+    },
+  },
+});
+```
+
+#### useSuspense
+
+Type: `Boolean`.
+
+Default Value: `false`.
+
+Use to generate Suspense-compatible custom hooks (e.g., `useXxxSuspense`). These hooks automatically set `suspense: true` in SWR options and provide type-safe `data` that is guaranteed to be defined (not `undefined`).
+
+When using Suspense hooks, wrap your components with React's `<Suspense>` boundary to handle loading states.
+
+Example:
+
+```js
+import { defineConfig } from 'orval';
+
+export default defineConfig({
+  petstore: {
+    output: {
+      override: {
+        swr: {
+          useSuspense: true,
+        },
+      },
+    },
+  },
+});
+```
+
+#### generateErrorTypes
+
+Type: `Boolean`.
+
+Default Value: `false`.
+
+Use to generate custom error type aliases for each hook (e.g., `ListPetsQueryError`, `CreatePetsMutationError`).
+
+Example:
+
+```ts
+import { defineConfig } from 'orval';
+
+export default defineConfig({
+  petstore: {
+    output: {
+      override: {
+        swr: {
+          generateErrorTypes: true,
         },
       },
     },
@@ -2909,7 +3042,6 @@ Result when `enumGenerationType` is `const`:
 ```ts
 export type Example = (typeof Example)[keyof typeof Example];
 
-// eslint-disable-next-line @typescript-eslint/no-redeclare
 export const Example = {
   foo: 'foo',
   bar: 'bar',
@@ -2931,6 +3063,57 @@ Result when `enumGenerationType` is `union`:
 
 ```ts
 export const Example = 'foo' | 'bar' | 'baz';
+```
+
+### aliasCombinedTypes
+
+Type: `Boolean`
+
+Default Value: `false`.
+
+Creates intermediate type aliases for combined types (`anyOf`, `oneOf`, `allOf`) instead of inlining them. This restores v7 behavior.
+
+```js
+import { defineConfig } from 'orval';
+
+export default defineConfig({
+  petstore: {
+    output: {
+      override: {
+        aliasCombinedTypes: true,
+      },
+    },
+  },
+});
+```
+
+Result when `aliasCombinedTypes` is `false` (default):
+
+```ts
+// Primitives - inlined directly
+// Objects - creates one named type
+export interface Pet {
+  status?: string | number;
+  category?: PetCategory;
+}
+export type PetCategory = { id?: number; name?: string } | { code?: string };
+```
+
+Result when `aliasCombinedTypes` is `true`:
+
+```ts
+// Primitives - creates named type
+export type PetStatus = string | number;
+
+// Objects - creates intermediate types with OneOf/OneOfTwo suffixes
+export type PetCategoryOneOf = { id?: number; name?: string };
+export type PetCategoryOneOfTwo = { code?: string };
+export type PetCategory = PetCategoryOneOf | PetCategoryOneOfTwo;
+
+export interface Pet {
+  status?: PetStatus;
+  category?: PetCategory;
+}
 ```
 
 ### suppressReadonlyModifier

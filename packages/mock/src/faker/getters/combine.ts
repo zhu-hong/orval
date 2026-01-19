@@ -1,5 +1,5 @@
 import {
-  type ContextSpecs,
+  type ContextSpec,
   type GeneratorImport,
   isReference,
   isSchema,
@@ -10,7 +10,25 @@ import {
 import type { MockDefinition, MockSchemaObject } from '../../types';
 import { resolveMockValue } from '../resolvers';
 
-export const combineSchemasMock = ({
+interface CombineSchemasMockOptions {
+  item: MockSchemaObject;
+  separator: 'allOf' | 'oneOf' | 'anyOf';
+  operationId: string;
+  mockOptions?: MockOptions;
+  tags: string[];
+  combine?: {
+    separator: 'allOf' | 'oneOf' | 'anyOf';
+    includedProperties: string[];
+  };
+  context: ContextSpec;
+  imports: GeneratorImport[];
+  // This is used to prevent recursion when combining schemas
+  // When an element is added to the array, it means on this iteration, we've already seen this property
+  existingReferencedProperties: string[];
+  splitMockImplementations: string[];
+}
+
+export function combineSchemasMock({
   item,
   separator,
   mockOptions,
@@ -21,23 +39,7 @@ export const combineSchemasMock = ({
   imports,
   existingReferencedProperties,
   splitMockImplementations,
-}: {
-  item: MockSchemaObject;
-  separator: 'allOf' | 'oneOf' | 'anyOf';
-  operationId: string;
-  mockOptions?: MockOptions;
-  tags: string[];
-  combine?: {
-    separator: 'allOf' | 'oneOf' | 'anyOf';
-    includedProperties: string[];
-  };
-  context: ContextSpecs;
-  imports: GeneratorImport[];
-  // This is used to prevent recursion when combining schemas
-  // When an element is added to the array, it means on this iteration, we've already seen this property
-  existingReferencedProperties: string[];
-  splitMockImplementations: string[];
-}): MockDefinition => {
+}: CombineSchemasMockOptions): MockDefinition {
   const combineImports: GeneratorImport[] = [];
   const includedProperties: string[] = [...(combine?.includedProperties ?? [])];
 
@@ -70,12 +72,18 @@ export const combineSchemasMock = ({
 
   const value = (item[separator] ?? []).reduce(
     (acc, val, _, arr) => {
-      if (
-        '$ref' in val &&
-        existingReferencedProperties.includes(
-          pascal(val.$ref.split('/').pop() ?? ''),
-        )
-      ) {
+      const refName =
+        '$ref' in val ? pascal(val.$ref.split('/').pop() ?? '') : '';
+      // For allOf: skip if refName is in existingRefs AND this is an inline schema (not a top-level ref)
+      // This allows top-level schemas (item.isRef=true) to get base properties from allOf
+      // while preventing circular allOf chains in inline property schemas
+      const shouldSkipRef =
+        separator === 'allOf'
+          ? refName &&
+            (refName === item.name ||
+              (existingReferencedProperties.includes(refName) && !item.isRef))
+          : refName && existingReferencedProperties.includes(refName);
+      if (shouldSkipRef) {
         if (arr.length === 1) {
           return 'undefined';
         }
@@ -140,6 +148,7 @@ export const combineSchemasMock = ({
     value === 'undefined'
       ? value
       : // containsOnlyPrimitiveValues isn't just true, it's being set to false inside the above reduce and the type system doesn't detect it
+
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         `${separator === 'allOf' && !containsOnlyPrimitiveValues ? '{' : ''}${value}${separator === 'allOf' ? (containsOnlyPrimitiveValues ? '' : '}') : '])'}`;
   if (itemResolvedValue) {
@@ -157,4 +166,4 @@ export const combineSchemasMock = ({
     name: item.name,
     includedProperties,
   };
-};
+}

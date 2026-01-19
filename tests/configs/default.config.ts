@@ -481,12 +481,6 @@ export default defineConfig({
   'external-ref': {
     input: {
       target: '../specifications/external-ref.yaml',
-      parserOptions: {
-        resolve: {
-          external: true,
-          http: {},
-        },
-      },
     },
     output: '../generated/default/external-ref/endpoints.ts',
   },
@@ -508,6 +502,32 @@ export default defineConfig({
       target: '../generated/default/nullable-oneof-enums/endpoints.ts',
       schemas: '../generated/default/nullable-oneof-enums/model',
       mock: true,
+    },
+  },
+  'schemas-typescript-only': {
+    output: {
+      target: '../generated/default/schemas-typescript-only/endpoints.ts',
+      schemas: {
+        path: '../generated/default/schemas-typescript-only/model',
+        type: 'typescript',
+      },
+      client: 'fetch',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  'schemas-zod-only': {
+    output: {
+      target: '../generated/default/schemas-zod-only/endpoints.ts',
+      schemas: {
+        path: '../generated/default/schemas-zod-only/model',
+        type: 'zod',
+      },
+      client: 'zod',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
     },
   },
 });

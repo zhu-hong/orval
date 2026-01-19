@@ -5,7 +5,7 @@ import {
   type ClientFooterBuilder,
   type ClientGeneratorsBuilder,
   type ClientHeaderBuilder,
-  type ContextSpecs,
+  type ContextSpec,
   generateMutatorImports,
   type GeneratorDependency,
   type GeneratorImport,
@@ -13,17 +13,18 @@ import {
   getFileInfo,
   getOrvalGeneratedTypes,
   getParamsInPath,
+  isObject,
   jsDoc,
   kebab,
   type NormalizedMutator,
   type NormalizedOutputOptions,
+  type OpenApiInfoObject,
   pascal,
   sanitize,
   upath,
 } from '@orval/core';
 import { generateZod } from '@orval/zod';
 import fs from 'fs-extra';
-import { type InfoObject } from 'openapi3-ts/oas30';
 
 import { getRoute } from './route';
 
@@ -183,26 +184,28 @@ const getHonoHandlers = (
     let currentValidator = '';
 
     if (validator) {
+      const pascalOperationName = pascal(verbOption.operationName);
+
       if (verbOption.headers) {
-        currentValidator += `zValidator('header', ${verbOption.operationName}Header),\n`;
+        currentValidator += `zValidator('header', ${pascalOperationName}Header),\n`;
       }
       if (verbOption.params.length > 0) {
-        currentValidator += `zValidator('param', ${verbOption.operationName}Params),\n`;
+        currentValidator += `zValidator('param', ${pascalOperationName}Params),\n`;
       }
       if (verbOption.queryParams) {
-        currentValidator += `zValidator('query', ${verbOption.operationName}QueryParams),\n`;
+        currentValidator += `zValidator('query', ${pascalOperationName}QueryParams),\n`;
       }
       if (verbOption.body.definition) {
-        currentValidator += `zValidator('json', ${verbOption.operationName}Body),\n`;
+        currentValidator += `zValidator('json', ${pascalOperationName}Body),\n`;
       }
       if (
         validator !== 'hono' &&
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         verbOption.response.originalSchema?.['200']?.content?.[
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
           'application/json'
         ]
       ) {
-        currentValidator += `zValidator('response', ${verbOption.operationName}Response),\n`;
+        currentValidator += `zValidator('response', ${pascalOperationName}Response),\n`;
       }
     }
 
@@ -234,20 +237,22 @@ const getZvalidatorImports = (
     body,
     response,
   } of verbOptions) {
+    const pascalOperationName = pascal(operationName);
+
     if (headers) {
-      specifiers.push(`${operationName}Header`);
+      specifiers.push(`${pascalOperationName}Header`);
     }
 
     if (params.length > 0) {
-      specifiers.push(`${operationName}Params`);
+      specifiers.push(`${pascalOperationName}Params`);
     }
 
     if (queryParams) {
-      specifiers.push(`${operationName}QueryParams`);
+      specifiers.push(`${pascalOperationName}QueryParams`);
     }
 
     if (body.definition) {
-      specifiers.push(`${operationName}Body`);
+      specifiers.push(`${pascalOperationName}Body`);
     }
 
     if (
@@ -256,7 +261,7 @@ const getZvalidatorImports = (
       response.originalSchema?.['200']?.content?.['application/json'] !=
         undefined
     ) {
-      specifiers.push(`${operationName}Response`);
+      specifiers.push(`${pascalOperationName}Response`);
     }
   }
 
@@ -491,8 +496,8 @@ const getContext = (verbOption: GeneratorVerbOptions) => {
 };
 
 const getHeader = (
-  option: false | ((info: InfoObject) => string | string[]),
-  info: InfoObject,
+  option: false | ((info: OpenApiInfoObject) => string | string[]),
+  info: OpenApiInfoObject,
 ): string => {
   if (!option) {
     return '';
@@ -561,13 +566,10 @@ const generateContextFile = ({
 const generateContextFiles = (
   verbOptions: Record<string, GeneratorVerbOptions>,
   output: NormalizedOutputOptions,
-  context: ContextSpecs,
+  context: ContextSpec,
   schemaModule: string,
 ) => {
-  const header = getHeader(
-    output.override.header,
-    context.specs[context.specKey].info,
-  );
+  const header = getHeader(output.override.header, context.spec.info);
   const { extension, dirname, filename } = getFileInfo(output.target);
 
   if (output.mode === 'tags' || output.mode === 'tags-split') {
@@ -605,14 +607,11 @@ const generateContextFiles = (
 const generateZodFiles = async (
   verbOptions: Record<string, GeneratorVerbOptions>,
   output: NormalizedOutputOptions,
-  context: ContextSpecs,
+  context: ContextSpec,
 ) => {
   const { extension, dirname, filename } = getFileInfo(output.target);
 
-  const header = getHeader(
-    output.override.header,
-    context.specs[context.specKey].info,
-  );
+  const header = getHeader(output.override.header, context.spec.info);
 
   if (output.mode === 'tags' || output.mode === 'tags-split') {
     const groupByTags = getVerbOptionGroupByTag(verbOptions);
@@ -715,12 +714,9 @@ const generateZodFiles = async (
 
 const generateZvalidator = (
   output: NormalizedOutputOptions,
-  context: ContextSpecs,
+  context: ContextSpec,
 ) => {
-  const header = getHeader(
-    output.override.header,
-    context.specs[context.specKey].info,
-  );
+  const header = getHeader(output.override.header, context.spec.info);
 
   let validatorPath = output.override.hono.validatorOutputPath;
   if (!output.override.hono.validatorOutputPath) {
@@ -738,15 +734,12 @@ const generateZvalidator = (
 const generateCompositeRoutes = (
   verbOptions: Record<string, GeneratorVerbOptions>,
   output: NormalizedOutputOptions,
-  context: ContextSpecs,
+  context: ContextSpec,
 ) => {
   const targetInfo = getFileInfo(output.target);
   const compositeRouteInfo = getFileInfo(output.override.hono.compositeRoute);
 
-  const header = getHeader(
-    output.override.header,
-    context.specs[context.specKey].info,
-  );
+  const header = getHeader(output.override.header, context.spec.info);
 
   const routes = Object.values(verbOptions)
     .map((verbOption) => {
@@ -825,9 +818,18 @@ export const generateExtraFiles: ClientExtraFilesBuilder = async (
   const { path, pathWithoutExtension } = getFileInfo(output.target);
   const validator = generateZvalidator(output, context);
   let schemaModule: string;
+  const isZodSchemaOutput =
+    isObject(output.schemas) && output.schemas.type === 'zod';
 
   if (output.schemas != undefined) {
-    schemaModule = getFileInfo(output.schemas).dirname;
+    const schemasPath = isObject(output.schemas)
+      ? output.schemas.path
+      : output.schemas;
+    const basePath = getFileInfo(schemasPath).dirname;
+    schemaModule =
+      isZodSchemaOutput && output.indexFiles
+        ? upath.joinSafe(basePath, 'index.zod')
+        : basePath;
   } else if (output.mode === 'single') {
     schemaModule = path;
   } else {

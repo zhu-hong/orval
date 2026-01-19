@@ -2,13 +2,14 @@ import {
   camel,
   type ClientBuilder,
   type ClientGeneratorsBuilder,
-  type ContextSpecs,
+  type ContextSpec,
   escape,
   generateMutator,
   type GeneratorDependency,
   type GeneratorMutator,
   type GeneratorOptions,
   type GeneratorVerbOptions,
+  getFormDataFieldFileType,
   getNumberWord,
   getPropertySafe,
   getRefInfo,
@@ -16,20 +17,16 @@ import {
   isObject,
   isString,
   jsStringEscape,
+  type OpenApiParameterObject,
+  type OpenApiReferenceObject,
+  type OpenApiRequestBodyObject,
+  type OpenApiResponseObject,
+  type OpenApiSchemaObject,
   pascal,
   resolveRef,
   stringify,
   type ZodCoerceType,
 } from '@orval/core';
-import {
-  type ParameterObject,
-  type PathItemObject,
-  type ReferenceObject,
-  type RequestBodyObject,
-  type ResponseObject,
-  type SchemaObject,
-} from 'openapi3-ts/oas30';
-import { type SchemaObject as SchemaObject31 } from 'openapi3-ts/oas31';
 import { unique } from 'remeda';
 
 import {
@@ -72,7 +69,7 @@ const possibleSchemaTypes = new Set([
   'array',
 ]);
 
-const resolveZodType = (schema: SchemaObject | SchemaObject31) => {
+const resolveZodType = (schema: OpenApiSchemaObject) => {
   const schemaTypeValue = schema.type;
 
   // Handle array of types (OpenAPI 3.1+)
@@ -134,15 +131,17 @@ export type ZodValidationSchemaDefinition = {
 
 const minAndMaxTypes = new Set(['number', 'string', 'array']);
 
-const removeReadOnlyProperties = (schema: SchemaObject): SchemaObject => {
+const removeReadOnlyProperties = (
+  schema: OpenApiSchemaObject,
+): OpenApiSchemaObject => {
   if (schema.properties) {
     return {
       ...schema,
       properties: Object.entries(schema.properties).reduce<
-        Record<string, SchemaObject>
+        Record<string, OpenApiSchemaObject>
       >((acc, [key, value]) => {
         if ('readOnly' in value && value.readOnly) return acc;
-        acc[key] = value as SchemaObject;
+        acc[key] = value as OpenApiSchemaObject;
         return acc;
       }, {}),
     };
@@ -150,7 +149,7 @@ const removeReadOnlyProperties = (schema: SchemaObject): SchemaObject => {
   if (schema.items && 'properties' in schema.items) {
     return {
       ...schema,
-      items: removeReadOnlyProperties(schema.items as SchemaObject),
+      items: removeReadOnlyProperties(schema.items as OpenApiSchemaObject),
     };
   }
   return schema;
@@ -167,8 +166,8 @@ type TimeOptions = {
 };
 
 export const generateZodValidationSchemaDefinition = (
-  schema: SchemaObject | SchemaObject31 | undefined,
-  context: ContextSpecs,
+  schema: OpenApiSchemaObject | undefined,
+  context: ContextSpec,
   name: string,
   strict: boolean,
   isZodV4: boolean,
@@ -176,6 +175,11 @@ export const generateZodValidationSchemaDefinition = (
     required?: boolean;
     dateTimeOptions?: DateTimeOptions;
     timeOptions?: TimeOptions;
+    /**
+     * Override schemas for properties at THIS level only.
+     * Not passed to nested schemas. Used by form-data for file type handling.
+     */
+    propertyOverrides?: Record<string, ZodValidationSchemaDefinition>;
   },
 ): ZodValidationSchemaDefinition => {
   if (!schema) return { functions: [], consts: [] };
@@ -231,15 +235,15 @@ export const generateZodValidationSchemaDefinition = (
     const separator = schema.allOf ? 'allOf' : schema.oneOf ? 'oneOf' : 'anyOf';
 
     const schemas = (schema.allOf ?? schema.oneOf ?? schema.anyOf) as (
-      | SchemaObject
-      | ReferenceObject
+      | OpenApiSchemaObject
+      | OpenApiReferenceObject
     )[];
 
     // Use index-based naming to ensure uniqueness when processing multiple schemas
     // This prevents duplicate schema names when nullable refs are used
     const baseSchemas = schemas.map((schema, index) =>
       generateZodValidationSchemaDefinition(
-        schema as SchemaObject,
+        schema as OpenApiSchemaObject,
         context,
         `${camel(name)}${pascal(getNumberWord(index + 1))}`,
         strict,
@@ -250,14 +254,14 @@ export const generateZodValidationSchemaDefinition = (
       ),
     );
 
-    // Handle allOf with additional properties - merge additional properties into the last schema
-    if (schema.allOf && schema.properties) {
+    // Handle allOf/oneOf/anyOf with additional properties - merge additional properties into the schema
+    if ((schema.allOf || schema.oneOf || schema.anyOf) && schema.properties) {
       const additionalPropertiesSchema = {
         properties: schema.properties,
         required: schema.required,
         additionalProperties: schema.additionalProperties,
         type: schema.type,
-      } as SchemaObject;
+      } as OpenApiSchemaObject;
 
       // Use index-based naming to ensure uniqueness
       const additionalIndex = baseSchemas.length + 1;
@@ -273,17 +277,31 @@ export const generateZodValidationSchemaDefinition = (
           },
         );
 
-      baseSchemas.push(additionalPropertiesDefinition);
+      // For oneOf/anyOf, use allOf to combine union with common properties
+      // This generates: zod.union([...]).and(commonProperties)
+      if (schema.oneOf || schema.anyOf) {
+        functions.push([
+          'allOf',
+          [
+            { functions: [[separator, baseSchemas]], consts: [] },
+            additionalPropertiesDefinition,
+          ],
+        ]);
+      } else {
+        // For allOf, just add to the list
+        baseSchemas.push(additionalPropertiesDefinition);
+        functions.push([separator, baseSchemas]);
+      }
+    } else {
+      functions.push([separator, baseSchemas]);
     }
-
-    functions.push([separator, baseSchemas]);
     skipSwitchStatement = true;
   }
 
   let defaultVarName: string | undefined;
   if (schema.default !== undefined) {
     defaultVarName = `${name}Default${constsCounterValue}`;
-    let defaultValue: string;
+    let defaultValue: string | undefined;
 
     const isDateType =
       schema.type === 'string' &&
@@ -291,7 +309,7 @@ export const generateZodValidationSchemaDefinition = (
       context.output.override.useDates;
 
     if (isDateType) {
-      // openapi3-ts's SchemaObject defines default as 'any'
+      // OpenApiSchemaObject defines default as 'any'
       // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
       defaultValue = `new Date("${escape(schema.default)}")`;
     } else if (isObject(schema.default)) {
@@ -319,26 +337,30 @@ export const generateZodValidationSchemaDefinition = (
         .join(', ');
       defaultValue = `{ ${entries} }`;
     } else {
-      // openapi3-ts's SchemaObject defines default as 'any'
+      // OpenApiSchemaObject defines default as 'any'
       // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
       const rawStringified = stringify(schema.default);
       defaultValue =
         rawStringified === undefined
           ? 'null'
-          : rawStringified.replaceAll("'", '"');
+          : rawStringified.replaceAll("'", '`');
 
-      // If the schema is an array with enum items, add 'as const' for proper TypeScript typing
+      // If the schema is an array with enum items, inject inplace to avoid issues with default values
       const isArrayWithEnumItems =
         Array.isArray(schema.default) &&
         type === 'array' &&
         schema.items &&
-        'enum' in schema.items;
+        'enum' in schema.items &&
+        schema.default.length > 0;
 
       if (isArrayWithEnumItems) {
-        defaultValue = `${defaultValue} as const`;
+        defaultVarName = defaultValue;
+        defaultValue = undefined;
       }
     }
-    consts.push(`export const ${defaultVarName} = ${defaultValue};`);
+    if (defaultValue) {
+      consts.push(`export const ${defaultVarName} = ${defaultValue};`);
+    }
   }
 
   // Handle multi-type schemas (OpenAPI 3.1+ type arrays)
@@ -388,14 +410,17 @@ export const generateZodValidationSchemaDefinition = (
          * > Omitting this keyword has the same assertion behavior as an empty array.
          */
         if ('prefixItems' in schema) {
-          const schema31 = schema as SchemaObject31;
+          const schema31 = schema as OpenApiSchemaObject;
 
           if (schema31.prefixItems && schema31.prefixItems.length > 0) {
             functions.push([
               'tuple',
               schema31.prefixItems.map((item, idx) =>
                 generateZodValidationSchemaDefinition(
-                  dereference(item as SchemaObject | ReferenceObject, context),
+                  dereference(
+                    item as OpenApiSchemaObject | OpenApiReferenceObject,
+                    context,
+                  ),
                   context,
                   camel(`${name}-${idx}-item`),
                   isZodV4,
@@ -415,7 +440,7 @@ export const generateZodValidationSchemaDefinition = (
               functions.push([
                 'rest',
                 generateZodValidationSchemaDefinition(
-                  schema.items as SchemaObject | undefined,
+                  schema.items as OpenApiSchemaObject | undefined,
                   context,
                   camel(`${name}-item`),
                   strict,
@@ -434,7 +459,7 @@ export const generateZodValidationSchemaDefinition = (
         functions.push([
           'array',
           generateZodValidationSchemaDefinition(
-            schema.items as SchemaObject | undefined,
+            schema.items as OpenApiSchemaObject | undefined,
             context,
             camel(`${name}-item`),
             strict,
@@ -539,19 +564,16 @@ export const generateZodValidationSchemaDefinition = (
             objectType,
             Object.keys(schema.properties)
               .map((key) => ({
-                [key]: generateZodValidationSchemaDefinition(
-                  schema.properties?.[key] as
-                    | SchemaObject
-                    | SchemaObject31
-                    | undefined,
-                  context,
-                  camel(`${name}-${key}`),
-                  strict,
-                  isZodV4,
-                  {
-                    required: schema.required?.includes(key),
-                  },
-                ),
+                [key]:
+                  rules?.propertyOverrides?.[key] ??
+                  generateZodValidationSchemaDefinition(
+                    schema.properties?.[key] as OpenApiSchemaObject | undefined,
+                    context,
+                    camel(`${name}-${key}`),
+                    strict,
+                    isZodV4,
+                    { required: schema.required?.includes(key) },
+                  ),
               }))
               .reduce((acc, curr) => ({ ...acc, ...curr }), {}),
           ]);
@@ -569,7 +591,7 @@ export const generateZodValidationSchemaDefinition = (
             generateZodValidationSchemaDefinition(
               isBoolean(schema.additionalProperties)
                 ? {}
-                : (schema.additionalProperties as SchemaObject),
+                : (schema.additionalProperties as OpenApiSchemaObject),
               context,
               name,
               strict,
@@ -594,11 +616,14 @@ export const generateZodValidationSchemaDefinition = (
     }
   }
 
-  if (minAndMaxTypes.has(type)) {
+  if (minAndMaxTypes.has(type) && !schema.enum) {
     // Handle minimum constraints: exclusiveMinimum (>.gt()) takes priority over minimum (.min())
     // Check if exclusive flag was set (boolean format in OpenAPI 3.0) or a different value (OpenAPI 3.1)
-    const shouldUseExclusiveMin = exclusiveMinRaw !== undefined;
-    const shouldUseExclusiveMax = exclusiveMaxRaw !== undefined;
+    // Only use .gt()/.lt() for numbers since these methods don't exist on ZodString/ZodArray
+    const shouldUseExclusiveMin =
+      exclusiveMinRaw !== undefined && type === 'number';
+    const shouldUseExclusiveMax =
+      exclusiveMaxRaw !== undefined && type === 'number';
 
     if (shouldUseExclusiveMin && exclusiveMin !== undefined) {
       consts.push(
@@ -627,7 +652,7 @@ export const generateZodValidationSchemaDefinition = (
       functions.push(['max', `${name}Max${constsCounterValue}`]);
     }
 
-    if (multipleOf !== undefined) {
+    if (multipleOf !== undefined && type === 'number') {
       consts.push(
         `export const ${name}MultipleOf${constsCounterValue} = ${multipleOf.toString()};`,
       );
@@ -644,7 +669,7 @@ export const generateZodValidationSchemaDefinition = (
     }
   }
 
-  if (matches) {
+  if (matches && type === 'string' && !schema.enum) {
     const isStartWithSlash = matches.startsWith('/');
     const isEndWithSlash = matches.endsWith('/');
 
@@ -696,7 +721,7 @@ export const generateZodValidationSchemaDefinition = (
 
 export const parseZodValidationSchemaDefinition = (
   input: ZodValidationSchemaDefinition,
-  context: ContextSpecs,
+  context: ContextSpec,
   coerceTypes: boolean | ZodCoerceType[] = false,
   strict: boolean,
   isZodV4: boolean,
@@ -710,6 +735,11 @@ export const parseZodValidationSchemaDefinition = (
 
   const parseProperty = (property: [string, any]): string => {
     const [fn, args = ''] = property;
+
+    // File | string for text contentMediaType/encoding (user can pass string, runtime wraps in Blob)
+    if (fn === 'fileOrString') {
+      return 'zod.instanceof(File).or(zod.string())';
+    }
 
     if (fn === 'allOf') {
       const allOfArgs = args as ZodValidationSchemaDefinition[];
@@ -913,7 +943,7 @@ ${Object.entries(args)
   return { zod, consts };
 };
 
-const dereferenceScalar = (value: any, context: ContextSpecs): unknown => {
+const dereferenceScalar = (value: any, context: ContextSpec): unknown => {
   if (isObject(value)) {
     return dereference(value, context);
   } else if (Array.isArray(value)) {
@@ -923,48 +953,40 @@ const dereferenceScalar = (value: any, context: ContextSpecs): unknown => {
   }
 };
 
-const dereference = (
-  schema: SchemaObject | ReferenceObject,
-  context: ContextSpecs,
-): SchemaObject => {
+export const dereference = (
+  schema: OpenApiSchemaObject | OpenApiReferenceObject,
+  context: ContextSpec,
+): OpenApiSchemaObject => {
   const refName = '$ref' in schema ? schema.$ref : undefined;
   if (refName && context.parents?.includes(refName)) {
     return {};
   }
 
-  const childContext: ContextSpecs = {
+  const childContext: ContextSpec = {
     ...context,
     ...(refName
       ? { parents: [...(context.parents ?? []), refName] }
       : undefined),
   };
 
-  const { schema: resolvedSchema } = resolveRef<SchemaObject>(
+  const { schema: resolvedSchema } = resolveRef<OpenApiSchemaObject>(
     schema,
     childContext,
   );
 
-  const resolvedSpecKey = refName
-    ? getRefInfo(refName, context).specKey
-    : undefined;
-
-  const resolvedContext: ContextSpecs = {
-    ...childContext,
-    specKey: resolvedSpecKey ?? childContext.specKey,
-  };
+  const resolvedContext = childContext;
 
   return Object.entries(resolvedSchema).reduce<any>((acc, [key, value]) => {
     if (key === 'properties' && isObject(value)) {
-      acc[key] = Object.entries(value).reduce<Record<string, SchemaObject>>(
-        (props, [propKey, propSchema]) => {
-          props[propKey] = dereference(
-            propSchema as SchemaObject | ReferenceObject,
-            resolvedContext,
-          );
-          return props;
-        },
-        {},
-      );
+      acc[key] = Object.entries(value).reduce<
+        Record<string, OpenApiSchemaObject>
+      >((props, [propKey, propSchema]) => {
+        props[propKey] = dereference(
+          propSchema as OpenApiSchemaObject | OpenApiReferenceObject,
+          resolvedContext,
+        );
+        return props;
+      }, {});
     } else if (key === 'default' || key === 'example' || key === 'examples') {
       acc[key] = value;
     } else {
@@ -973,6 +995,71 @@ const dereference = (
 
     return acc;
   }, {});
+};
+
+/**
+ * Generate zod schema for form-data request body.
+ * Handles file type detection for top-level properties based on encoding.contentType
+ * and contentMediaType. Mirrors type gen's resolveFormDataRootObject.
+ */
+const generateFormDataZodSchema = (
+  schema: OpenApiSchemaObject,
+  context: ContextSpec,
+  name: string,
+  strict: boolean,
+  isZodV4: boolean,
+  encoding?: Record<string, { contentType?: string }>,
+): ZodValidationSchemaDefinition => {
+  // Precompute file type overrides for top-level properties only
+  const propertyOverrides: Record<string, ZodValidationSchemaDefinition> = {};
+
+  if (schema.properties) {
+    for (const key of Object.keys(schema.properties)) {
+      const propSchema = schema.properties[key];
+      const resolvedPropSchema = propSchema
+        ? dereference(
+            propSchema as OpenApiSchemaObject | OpenApiReferenceObject,
+            context,
+          )
+        : undefined;
+
+      const fileType = resolvedPropSchema
+        ? getFormDataFieldFileType(
+            resolvedPropSchema,
+            encoding?.[key]?.contentType,
+          )
+        : undefined;
+
+      if (fileType) {
+        const isRequired = schema.required?.includes(key);
+        const fileFunctions: [string, unknown][] = [
+          fileType === 'binary'
+            ? ['instanceof', 'File']
+            : ['fileOrString', undefined],
+        ];
+        if (!isRequired) {
+          fileFunctions.push(['optional', undefined]);
+        }
+        propertyOverrides[key] = { functions: fileFunctions, consts: [] };
+      }
+    }
+  }
+
+  // Delegate to generic handler with file type overrides
+  return generateZodValidationSchemaDefinition(
+    schema,
+    context,
+    name,
+    strict,
+    isZodV4,
+    {
+      required: true,
+      propertyOverrides:
+        Object.keys(propertyOverrides).length > 0
+          ? propertyOverrides
+          : undefined,
+    },
+  );
 };
 
 const parseBodyAndResponse = ({
@@ -984,8 +1071,12 @@ const parseBodyAndResponse = ({
   isZodV4,
   parseType,
 }: {
-  data: ResponseObject | RequestBodyObject | ReferenceObject | undefined;
-  context: ContextSpecs;
+  data:
+    | OpenApiResponseObject
+    | OpenApiRequestBodyObject
+    | OpenApiReferenceObject
+    | undefined;
+  context: ContextSpec;
   name: string;
   strict: boolean;
   generate: boolean;
@@ -1006,14 +1097,21 @@ const parseBodyAndResponse = ({
     };
   }
 
-  const resolvedRef = resolveRef<ResponseObject | RequestBodyObject>(
-    data,
-    context,
-  ).schema;
+  const resolvedRef = resolveRef<
+    OpenApiResponseObject | OpenApiRequestBodyObject
+  >(data, context).schema;
 
-  const schema =
-    resolvedRef.content?.['application/json']?.schema ??
-    resolvedRef.content?.['multipart/form-data']?.schema;
+  // Only handle JSON and form-data; other content types (e.g., application/octet-stream)
+  // are skipped - unclear if this is correct behavior for root-level binary/text bodies
+  const jsonMedia = resolvedRef.content?.['application/json'];
+  const formDataMedia = resolvedRef.content?.['multipart/form-data'];
+  const [contentType, mediaType] = jsonMedia
+    ? (['application/json', jsonMedia] as const)
+    : formDataMedia
+      ? (['multipart/form-data', formDataMedia] as const)
+      : [undefined, undefined];
+
+  const schema = mediaType?.schema;
 
   if (!schema) {
     return {
@@ -1021,6 +1119,8 @@ const parseBodyAndResponse = ({
       isArray: false,
     };
   }
+
+  const encoding = mediaType.encoding;
 
   const resolvedJsonSchema = dereference(schema, context);
 
@@ -1038,8 +1138,10 @@ const parseBodyAndResponse = ({
     return {
       input: generateZodValidationSchemaDefinition(
         parseType === 'body'
-          ? removeReadOnlyProperties(resolvedJsonSchema.items as SchemaObject)
-          : (resolvedJsonSchema.items as SchemaObject),
+          ? removeReadOnlyProperties(
+              resolvedJsonSchema.items as OpenApiSchemaObject,
+            )
+          : (resolvedJsonSchema.items as OpenApiSchemaObject),
         context,
         name,
         strict,
@@ -1056,24 +1158,36 @@ const parseBodyAndResponse = ({
     };
   }
 
+  const effectiveSchema =
+    parseType === 'body'
+      ? removeReadOnlyProperties(resolvedJsonSchema)
+      : resolvedJsonSchema;
+
+  const isFormData = contentType === 'multipart/form-data';
+
   return {
-    input: generateZodValidationSchemaDefinition(
-      parseType === 'body'
-        ? removeReadOnlyProperties(resolvedJsonSchema)
-        : resolvedJsonSchema,
-      context,
-      name,
-      strict,
-      isZodV4,
-      {
-        required: true,
-      },
-    ),
+    input: isFormData
+      ? generateFormDataZodSchema(
+          effectiveSchema,
+          context,
+          name,
+          strict,
+          isZodV4,
+          encoding,
+        )
+      : generateZodValidationSchemaDefinition(
+          effectiveSchema,
+          context,
+          name,
+          strict,
+          isZodV4,
+          { required: true },
+        ),
     isArray: false,
   };
 };
 
-const parseParameters = ({
+export const parseParameters = ({
   data,
   context,
   operationName,
@@ -1081,8 +1195,8 @@ const parseParameters = ({
   strict,
   generate,
 }: {
-  data: (ParameterObject | ReferenceObject)[] | undefined;
-  context: ContextSpecs;
+  data: (OpenApiParameterObject | OpenApiReferenceObject)[] | undefined;
+  context: ContextSpec;
   operationName: string;
   isZodV4: boolean;
   strict: {
@@ -1128,7 +1242,10 @@ const parseParameters = ({
     >
   >(
     (acc, val) => {
-      const { schema: parameter } = resolveRef<ParameterObject>(val, context);
+      const { schema: parameter } = resolveRef<OpenApiParameterObject>(
+        val,
+        context,
+      );
 
       if (!parameter.schema) {
         return acc;
@@ -1248,12 +1365,10 @@ const generateZodRoute = async (
 ) => {
   const isZodV4 =
     !!context.output.packageJson && isZodVersionV4(context.output.packageJson);
-  const spec = context.specs[context.specKey].paths[pathRoute] as
-    | PathItemObject
-    | undefined;
+  const spec = context.spec.paths?.[pathRoute];
 
   if (spec == undefined) {
-    throw new Error(`No such path ${pathRoute} in ${context.specKey}`);
+    throw new Error(`No such path ${pathRoute} in ${context.projectName}`);
   }
 
   const parameters = [
@@ -1285,7 +1400,7 @@ const generateZodRoute = async (
     context.output.override.zod.generateEachHttpStatus
       ? Object.entries(spec[verb]?.responses ?? {})
       : [['', spec[verb]?.responses[200]]]
-  ) as [string, ResponseObject | ReferenceObject][];
+  ) as [string, OpenApiResponseObject | OpenApiReferenceObject][];
   const parsedResponses = responses.map(([code, response]) =>
     parseBodyAndResponse({
       data: response,
@@ -1408,35 +1523,39 @@ const generateZodRoute = async (
     };
   }
 
+  const pascalOperationName = pascal(operationName);
+
   return {
     implementation: [
       ...(inputParams.consts ? [inputParams.consts] : []),
       ...(inputParams.zod
-        ? [`export const ${operationName}Params = ${inputParams.zod}`]
+        ? [`export const ${pascalOperationName}Params = ${inputParams.zod}`]
         : []),
       ...(inputQueryParams.consts ? [inputQueryParams.consts] : []),
       ...(inputQueryParams.zod
-        ? [`export const ${operationName}QueryParams = ${inputQueryParams.zod}`]
+        ? [
+            `export const ${pascalOperationName}QueryParams = ${inputQueryParams.zod}`,
+          ]
         : []),
       ...(inputHeaders.consts ? [inputHeaders.consts] : []),
       ...(inputHeaders.zod
-        ? [`export const ${operationName}Header = ${inputHeaders.zod}`]
+        ? [`export const ${pascalOperationName}Header = ${inputHeaders.zod}`]
         : []),
       ...(inputBody.consts ? [inputBody.consts] : []),
       ...(inputBody.zod
         ? [
             parsedBody.isArray
-              ? `export const ${operationName}BodyItem = ${inputBody.zod}
-export const ${operationName}Body = zod.array(${operationName}BodyItem)${
+              ? `export const ${pascalOperationName}BodyItem = ${inputBody.zod}
+export const ${pascalOperationName}Body = zod.array(${pascalOperationName}BodyItem)${
                   parsedBody.rules?.min ? `.min(${parsedBody.rules.min})` : ''
                 }${
                   parsedBody.rules?.max ? `.max(${parsedBody.rules.max})` : ''
                 }`
-              : `export const ${operationName}Body = ${inputBody.zod}`,
+              : `export const ${pascalOperationName}Body = ${inputBody.zod}`,
           ]
         : []),
       ...inputResponses.flatMap((inputResponse, index) => {
-        const operationResponse = camel(
+        const operationResponse = pascal(
           `${operationName}-${responses[index][0]}-response`,
         );
         return [
@@ -1485,5 +1604,7 @@ const zodClientBuilder: ClientGeneratorsBuilder = {
 };
 
 export const builder = () => () => zodClientBuilder;
+
+export { isZodVersionV4 } from './compatible-v4';
 
 export default builder;

@@ -1,4 +1,3 @@
-import { Banner } from '@/components/Banner';
 import { Footer } from '@/components/Footer';
 import { Nav } from '@/components/Nav';
 import { Seo } from '@/components/Seo';
@@ -18,7 +17,7 @@ const Home = (props) => {
     <>
       <Seo
         title="orval"
-        description="orval is able to generate client with appropriate type-signatures (TypeScript) from any valid OpenAPI v3 or Swagger v2 specification, either in yaml or json formats. 🍺"
+        description="orval generates type-safe JS clients (TypeScript) from any valid OpenAPI v3 or Swagger v2 specification, either in yaml or json formats. 🍺"
       />
       <Head>
         <title>orval - Restful client generator</title>
@@ -32,7 +31,7 @@ const Home = (props) => {
           <div className="py-24 mx-auto container px-4 sm:mt-12  relative">
             <img
               src="/images/emblem.svg"
-              className="absolute transform right-0 top-5/12 h-0 lg:h-full scale-100 translate-x-1/12 -translate-y-1/4"
+              className="absolute transform right-0 top-1/2 h-0 lg:h-96 xl:h-full scale-100 translate-x-1/12 -translate-y-1/2"
               alt="orval Emblem"
             />
             <div className="grid grid-cols-12 lg:gap-8">
@@ -217,6 +216,12 @@ my-app
                   <span className="bg-coral-light text-gray-800 w-4 h-4 mr-2 rounded-full inline-flex items-center justify-center">
                     <Check />
                   </span>
+                  SolidStart
+                </a>
+                <a className="mb-2">
+                  <span className="bg-coral-light text-gray-800 w-4 h-4 mr-2 rounded-full inline-flex items-center justify-center">
+                    <Check />
+                  </span>
                   Custom overrides
                 </a>
                 <a className="mb-2">
@@ -264,29 +269,100 @@ my-app
             <h3 className="text-2xl md:text-5xl mx-auto leading-tight font-extrabold tracking-tight   lg:leading-none mt-2">
               Thanks for the support, guys! 🍻
             </h3>
-            <div className="flex flex-wrap justify-center mt-8">
-              {sponsors.map((sponsor) => (
+
+            {/* Sponsors Section */}
+            <div className="mt-12">
+              <h4 className="text-lg font-semibold text-gray-700 mb-6">
+                Sponsors
+              </h4>
+              <div className="flex justify-center items-center">
                 <a
-                  key={sponsor.login}
+                  href="https://opencollective.com/orval"
                   target="_blank"
-                  href={`https://github.com/${sponsor.login}`}
+                  rel="noopener noreferrer"
+                  className="hover:opacity-80 transition-opacity"
                 >
                   <img
-                    className="w-10 h-10 m-1 rounded-full"
-                    src={sponsor.avatarUrl}
+                    className="h-40 w-auto"
+                    src="/images/orval-logo-horizontal.svg"
+                    alt="Sample Sponsor"
+                    title="Sample Sponsor"
                   />
                 </a>
-              ))}
+              </div>
             </div>
+
+            {/* Backers Section */}
+            <div className="mt-12">
+              <h4 className="text-lg font-semibold text-gray-700 mb-6">
+                Backers
+              </h4>
+              <div className="flex flex-wrap justify-center items-center gap-4">
+                <a
+                  href="https://opencollective.com/orval"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:opacity-80 transition-opacity"
+                >
+                  <img
+                    className="h-20 w-20 rounded-full"
+                    src="/images/emblem.svg"
+                    alt="Sample Backer"
+                    title="Sample Backer"
+                  />
+                </a>
+                <a
+                  href="https://opencollective.com/orval"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:opacity-80 transition-opacity"
+                >
+                  <img
+                    className="h-20 w-20 rounded-full"
+                    src="/images/emblem.svg"
+                    alt="Sample Backer"
+                    title="Sample Backer"
+                  />
+                </a>
+                <a
+                  href="https://opencollective.com/orval"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:opacity-80 transition-opacity"
+                >
+                  <img
+                    className="h-20 w-20 rounded-full"
+                    src="/images/emblem.svg"
+                    alt="Sample Backer"
+                    title="Sample Backer"
+                  />
+                </a>
+              </div>
+            </div>
+
             <div className="inline-flex rounded-md shadow-sm mt-12">
               <a
-                href="https://github.com/sponsors/anymaniax"
+                href="https://opencollective.com/orval"
                 target="_blank"
+                rel="noopener noreferrer"
                 className="inline-flex items-center justify-center text-center px-5 py-3 border border-transparent text-base leading-6 font-medium rounded-md text-white bg-coral-default hover:bg-coral-light focus:outline-hidden focus:shadow-outline transition duration-150 ease-in-out"
               >
-                Become a sponsor
+                Support us on Open Collective
               </a>
             </div>
+
+            <p className="mt-6 text-sm text-gray-600">
+              After becoming a sponsor or backer, please contact us on{' '}
+              <a
+                href={siteConfig.discordUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-coral-default hover:text-coral-light underline"
+              >
+                Discord
+              </a>{' '}
+              to upload your logo.
+            </p>
           </div>
         </div>
         <div className="bg-gray-50 border-b border-gray-100">

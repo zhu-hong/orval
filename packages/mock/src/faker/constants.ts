@@ -1,7 +1,7 @@
-import type { SchemaObject } from 'openapi3-ts/oas30';
+import type { OpenApiSchemaObject } from '@orval/core';
 
 export const DEFAULT_FORMAT_MOCK: Record<
-  Required<SchemaObject>['format'],
+  Required<OpenApiSchemaObject>['format'],
   string
 > = {
   bic: 'faker.finance.bic()',
@@ -9,8 +9,8 @@ export const DEFAULT_FORMAT_MOCK: Record<
     "new Blob(faker.helpers.arrayElements(faker.word.words(10).split(' ')))",
   city: 'faker.location.city()',
   country: 'faker.location.country()',
-  date: "faker.date.past().toISOString().split('T')[0]",
-  'date-time': "`${faker.date.past().toISOString().split('.')[0]}Z`",
+  date: 'faker.date.past().toISOString().slice(0, 10)',
+  'date-time': "faker.date.past().toISOString().slice(0, 19) + 'Z'",
   email: 'faker.internet.email()',
   firstName: 'faker.person.firstName()',
   gender: 'faker.person.gender()',

@@ -13,13 +13,13 @@ import { generateImportsForBuilder } from './generate-imports-for-builder';
 import { generateTarget } from './target';
 import { getOrvalGeneratedTypes, getTypedResponse } from './types';
 
-export const writeSingleMode = async ({
+export async function writeSingleMode({
   builder,
   output,
-  specsName,
+  projectName,
   header,
   needSchema,
-}: WriteModeProps): Promise<string[]> => {
+}: WriteModeProps): Promise<string[]> {
   try {
     const { path, dirname } = getFileInfo(output.target, {
       backupFilename: conventionName(
@@ -47,8 +47,12 @@ export const writeSingleMode = async ({
     const schemasPath = output.schemas
       ? upath.relativeSafe(
           dirname,
-          getFileInfo(output.schemas, { extension: output.fileExtension })
-            .dirname,
+          getFileInfo(
+            typeof output.schemas === 'string'
+              ? output.schemas
+              : output.schemas.path,
+            { extension: output.fileExtension },
+          ).dirname,
         )
       : undefined;
 
@@ -70,7 +74,7 @@ export const writeSingleMode = async ({
       client: output.client,
       implementation,
       imports: importsForBuilder,
-      specsName,
+      projectName,
       hasSchemaDir: !!output.schemas,
       isAllowSyntheticDefaultImports,
       hasGlobalMutator: !!output.override.mutator,
@@ -89,7 +93,7 @@ export const writeSingleMode = async ({
       data += builder.importsMock({
         implementation: implementationMock,
         imports: importsMockForBuilder,
-        specsName,
+        projectName,
         hasSchemaDir: !!output.schemas,
         isAllowSyntheticDefaultImports,
         options: isFunction(output.mock) ? undefined : output.mock,
@@ -150,4 +154,4 @@ export const writeSingleMode = async ({
       `Oups... 🍻. An Error occurred while writing file => ${errorMsg}`,
     );
   }
-};
+}

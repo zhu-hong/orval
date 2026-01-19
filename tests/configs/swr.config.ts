@@ -15,6 +15,20 @@ export default defineConfig({
       },
     },
   },
+  zodSchemaResponse: {
+    output: {
+      target: '../generated/swr/zod-schema-response/endpoints.ts',
+      schemas: {
+        type: 'zod',
+        path: '../generated/swr/zod-schema-response/model',
+      },
+      mock: true,
+      client: 'swr',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
   petstoreTagsSplit: {
     output: {
       target: '../generated/swr/petstore-tags-split/endpoints.ts',
@@ -186,6 +200,22 @@ export default defineConfig({
       target: '../specifications/petstore.yaml',
     },
   },
+  petstoreWithHeaders: {
+    output: {
+      target: '../generated/swr/petstore-with-headers/endpoints.ts',
+      schemas: '../generated/swr/petstore-with-headers/model',
+      client: 'swr',
+      headers: true,
+      override: {
+        swr: {
+          useInfinite: true,
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
   blobFile: {
     output: {
       target: '../generated/swr/blob-file/endpoints.ts',
@@ -307,6 +337,51 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/url-paths.yaml',
+    },
+  },
+  swrInfinitePagination: {
+    output: {
+      target: '../generated/swr/swr-infinite-pagination/endpoints.ts',
+      schemas: '../generated/swr/swr-infinite-pagination/model',
+      client: 'swr',
+      override: {
+        swr: {
+          useInfinite: true,
+        },
+      },
+    },
+    input: {
+      target: '../specifications/swr-infinite-pagination.yaml',
+    },
+  },
+  swrSuspense: {
+    output: {
+      target: '../generated/swr/swr-suspense/endpoints.ts',
+      schemas: '../generated/swr/swr-suspense/model',
+      client: 'swr',
+      override: {
+        swr: {
+          useSuspense: true,
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  swrWithErrorTypes: {
+    output: {
+      target: '../generated/swr/swr-with-error-types/endpoints.ts',
+      schemas: '../generated/swr/swr-with-error-types/model',
+      client: 'swr',
+      override: {
+        swr: {
+          generateErrorTypes: true,
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
     },
   },
 });
