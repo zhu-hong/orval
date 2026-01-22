@@ -1,7 +1,7 @@
 {
   "name": "svelte-query-custom-fetch",
   "private": true,
-  "version": "8.0.1",
+  "version": "8.0.2",
   "type": "module",
   "scripts": {
     "dev": "vite  --host",
@@ -13,7 +13,7 @@
   },
   "devDependencies": {
     "@faker-js/faker": "^10.2.0",
-    "@sveltejs/vite-plugin-svelte": "^3.1.2",
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
     "@tsconfig/svelte": "^5.0.6",
     "orval": "workspace:*",
     "svelte": "^5.46.4",
@@ -23,7 +23,6 @@
     "vite": "^7.2.2"
   },
   "dependencies": {
-    "@sveltestack/svelte-query": "^1.6.0",
     "@tanstack/svelte-query": "^4.41.0"
   }
 }

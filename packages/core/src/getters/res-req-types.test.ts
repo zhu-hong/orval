@@ -282,3 +282,45 @@ formData.append(\`wildcardFile\`, bodyRequestBody.wildcardFile);
     });
   });
 });
+
+// When requestBody schema uses $ref with file properties (contentMediaType),
+// formData variable should still use schema name, not operation-based name.
+describe('getResReqTypes (formData $ref with file properties)', () => {
+  it('uses schema name for formData variable', () => {
+    const ctx: ContextSpec = {
+      ...context,
+      spec: {
+        components: {
+          schemas: {
+            FileUpload: {
+              type: 'object',
+              properties: {
+                file: {
+                  type: 'string',
+                  contentMediaType: 'application/octet-stream',
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    const reqBody: [string, OpenApiRequestBodyObject][] = [
+      [
+        'requestBody',
+        {
+          content: {
+            'multipart/form-data': {
+              schema: { $ref: '#/components/schemas/FileUpload' },
+            },
+          },
+        },
+      ],
+    ];
+
+    const result = getResReqTypes(reqBody, 'Upload', ctx)[0];
+
+    // Schema name 'FileUpload' → param 'fileUpload' (not 'uploadRequestBody')
+    expect(result.formData).toContain('fileUpload.file');
+  });
+});
