@@ -1,112 +1,46 @@
 import {
   asyncReduce,
-  type ContextSpecs,
-  type GeneratorApiOperations,
-  type GeneratorSchema,
-  GetterPropType,
   generateVerbsOptions,
   getFullRoute,
   getRoute,
-  type ImportOpenApi,
+  GetterPropType,
   isReference,
-  isString,
-  isUrl,
+  resolveRef,
+  type ContextSpec,
+  type GeneratorApiOperations,
+  type GeneratorSchema,
   type NormalizedInputOptions,
   type NormalizedOutputOptions,
-  type OptionsExport,
-  resolveRef,
+  type OpenApiPathItemObject,
 } from '@orval/core';
-import { type PathItemObject } from 'openapi3-ts/oas30';
-import { generateOperations } from './client';
-import { generateInputSpecs } from './import-open-api';
-import { resolveSpecs } from './import-specs';
+import { applyTransformer, getApiSchemas } from './import-open-api';
 import { normalizeOptions } from './utils';
-
-// copy from ./import-specs(importSpecs)，./import-open-api(importOpenApi)
-export const _effect_generateContextSpecs = async (
-  optionConfig: OptionsExport,
-) => {
-  const workspace = process.cwd();
-
-  const options = await normalizeOptions(optionConfig);
-
-  const { input, output } = options;
-
-  let importOpenApiPayloads: ImportOpenApi | null = null;
-
-  if (!isString(input.target)) {
-    importOpenApiPayloads = {
-      data: { [workspace]: input.target },
-      input,
-      output,
-      target: workspace,
-      workspace,
-    };
-  } else {
-    const isPathUrl = isUrl(input.target);
-
-    const data = await resolveSpecs(
-      input.target,
-      input.parserOptions,
-      isPathUrl,
-      !output.target,
-    );
-
-    importOpenApiPayloads = {
-      data,
-      input,
-      output,
-      target: input.target,
-      workspace,
-    };
-  }
-
-  const specs = await generateInputSpecs({
-    specs: importOpenApiPayloads.data,
-    input: importOpenApiPayloads.input,
-    workspace: importOpenApiPayloads.workspace,
-  });
-
-  return {
-    input: importOpenApiPayloads.input,
-    output: importOpenApiPayloads.output,
-    target: importOpenApiPayloads.target,
-    workspace: importOpenApiPayloads.workspace,
-    specs,
-  };
-};
+import { generateOperations } from './client';
 
 // copy from ./api(getApiBuilder)
-export const _effect_getApiGenerate = async ({
+const _effect_getApiGenerate = async function ({
   input,
   output,
   context,
 }: {
   input: NormalizedInputOptions;
   output: NormalizedOutputOptions;
-  context: ContextSpecs;
-}) => {
+  context: ContextSpec;
+}) {
   const api = await asyncReduce(
-    Object.entries(context.specs[context.specKey].paths ?? {}),
-    async (acc, [pathRoute, verbs]: [string, PathItemObject]) => {
+    Object.entries(context.spec.paths ?? {}),
+    async (acc, [pathRoute, verbs]) => {
       const route = getRoute(pathRoute);
 
       let resolvedVerbs = verbs;
-      let resolvedContext = context;
 
       if (isReference(verbs)) {
-        const { schema, imports } = resolveRef<PathItemObject>(verbs, context);
+        const { schema, imports } = resolveRef<OpenApiPathItemObject>(
+          verbs,
+          context,
+        );
 
         resolvedVerbs = schema;
-
-        resolvedContext = {
-          ...context,
-          ...(imports.length > 0
-            ? {
-                specKey: imports[0].specKey,
-              }
-            : {}),
-        };
       }
 
       let verbsOptions = await generateVerbsOptions({
@@ -115,7 +49,7 @@ export const _effect_getApiGenerate = async ({
         output,
         route,
         pathRoute,
-        context: resolvedContext,
+        context,
       });
 
       // GitHub #564 check if we want to exclude deprecated operations
@@ -152,7 +86,7 @@ export const _effect_getApiGenerate = async ({
 
       const fullRoute = getFullRoute(
         route,
-        verbs.servers ?? context.specs[context.specKey].servers,
+        verbs.servers ?? context.spec.servers,
         output.baseUrl,
       );
       if (!output.target) {
@@ -165,7 +99,7 @@ export const _effect_getApiGenerate = async ({
           route: fullRoute,
           pathRoute,
           override: output.override,
-          context: resolvedContext,
+          context,
           mock: output.mock,
           output: output.target,
         },
@@ -186,7 +120,13 @@ export const _effect_getApiGenerate = async ({
       schemas: [],
     } as GeneratorApiOperations,
   );
+
   return api;
 };
 
-export { getAllSchemas as _effect_getAllSchemas } from './import-open-api';
+export {
+  applyTransformer,
+  getApiSchemas,
+  normalizeOptions,
+  _effect_getApiGenerate,
+};

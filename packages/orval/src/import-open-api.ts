@@ -61,7 +61,7 @@ export async function importOpenApi({
   };
 }
 
-async function applyTransformer(
+export async function applyTransformer(
   openApi: OpenApiDocument,
   transformer: OverrideInput['transformer'],
   workspace: string,
@@ -92,7 +92,7 @@ interface GetApiSchemasOptions {
   spec: OpenApiDocument;
 }
 
-function getApiSchemas({
+export function getApiSchemas({
   input,
   output,
   target,
