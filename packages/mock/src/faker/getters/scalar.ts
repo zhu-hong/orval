@@ -154,8 +154,8 @@ export function getMockScalar({
           existingReferencedProperties,
           'number',
         );
-      } else if ('const' in item && typeof item.const === 'string') {
-        value = item.const;
+      } else if ('const' in item) {
+        value = JSON.stringify(item.const);
       }
 
       return {
@@ -168,8 +168,8 @@ export function getMockScalar({
 
     case 'boolean': {
       let value = 'faker.datatype.boolean()';
-      if ('const' in item && typeof item.const === 'string') {
-        value = item.const;
+      if ('const' in item) {
+        value = JSON.stringify(item.const);
       }
       return {
         value,
@@ -258,7 +258,7 @@ export function getMockScalar({
       } else if (item.pattern) {
         value = `faker.helpers.fromRegExp('${item.pattern}')`;
       } else if ('const' in item) {
-        value = `'${(item as OpenApiSchemaObject).const}'`;
+        value = JSON.stringify((item as OpenApiSchemaObject).const);
       }
 
       return {

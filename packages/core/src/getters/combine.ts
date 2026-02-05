@@ -1,21 +1,20 @@
-import { unique } from 'remeda';
+import { isNullish, unique } from 'remeda';
 
 import { resolveExampleRefs, resolveObject } from '../resolvers';
 import {
   type ContextSpec,
+  EnumGeneration,
   type GeneratorImport,
   type GeneratorSchema,
+  type OpenApiReferenceObject,
   type OpenApiSchemaObject,
   type ScalarValue,
   SchemaType,
 } from '../types';
-import { getNumberWord, isSchema, pascal } from '../utils';
-import {
-  getEnumDescriptions,
-  getEnumImplementation,
-  getEnumNames,
-} from './enum';
+import { dedupeUnionType, getNumberWord, isSchema, pascal } from '../utils';
+import { getCombinedEnumValue } from './enum';
 import { getAliasedImports, getImportAliasForRefOrValue } from './imports';
+import type { FormDataContext } from './object';
 import { getScalar } from './scalar';
 
 type CombinedData = {
@@ -37,12 +36,77 @@ type CombinedData = {
 };
 
 type Separator = 'allOf' | 'anyOf' | 'oneOf';
+const mergeableAllOfKeys = new Set(['type', 'properties', 'required']);
+
+function isMergeableAllOfObject(schema: OpenApiSchemaObject): boolean {
+  // Must have properties to be worth merging
+  if (isNullish(schema.properties)) {
+    return false;
+  }
+
+  // Cannot merge if it contains nested composition
+  if (schema.allOf || schema.anyOf || schema.oneOf) {
+    return false;
+  }
+
+  // Only object types can be merged
+  if (!isNullish(schema.type) && schema.type !== 'object') {
+    return false;
+  }
+
+  // Only merge schemas with safe keys (type, properties, required)
+  return Object.keys(schema).every((key) => mergeableAllOfKeys.has(key));
+}
+
+function normalizeAllOfSchema(
+  schema: OpenApiSchemaObject,
+): OpenApiSchemaObject {
+  if (!schema.allOf) {
+    return schema;
+  }
+
+  let didMerge = false;
+  const mergedProperties = { ...schema.properties };
+  const mergedRequired = new Set(schema.required);
+  const remainingAllOf: (OpenApiSchemaObject | OpenApiReferenceObject)[] = [];
+
+  for (const subSchema of schema.allOf) {
+    if (isSchema(subSchema) && isMergeableAllOfObject(subSchema)) {
+      didMerge = true;
+      if (subSchema.properties) {
+        Object.assign(mergedProperties, subSchema.properties);
+      }
+      if (subSchema.required) {
+        for (const prop of subSchema.required) {
+          mergedRequired.add(prop);
+        }
+      }
+      continue;
+    }
+
+    remainingAllOf.push(subSchema);
+  }
+
+  if (!didMerge || remainingAllOf.length === 0) {
+    return schema;
+  }
+
+  return {
+    ...schema,
+    ...(Object.keys(mergedProperties).length > 0 && {
+      properties: mergedProperties,
+    }),
+    ...(mergedRequired.size > 0 && { required: [...mergedRequired] }),
+    ...(remainingAllOf.length > 0 && { allOf: remainingAllOf }),
+  };
+}
 
 interface CombineValuesOptions {
   resolvedData: CombinedData;
   resolvedValue?: ScalarValue;
   separator: Separator;
   context: ContextSpec;
+  parentSchema?: OpenApiSchemaObject;
 }
 
 function combineValues({
@@ -50,6 +114,7 @@ function combineValues({
   resolvedValue,
   separator,
   context,
+  parentSchema,
 }: CombineValuesOptions) {
   const isAllEnums = resolvedData.isEnum.every(Boolean);
 
@@ -91,6 +156,10 @@ function combineValues({
         !resolvedData.originalSchema.some(
           (schema) =>
             schema?.properties?.[prop] && schema.required?.includes(prop),
+        ) &&
+        !(
+          parentSchema?.properties?.[prop] &&
+          parentSchema.required?.includes(prop)
         ),
     );
     if (overrideRequiredProperties.length > 0) {
@@ -140,16 +209,30 @@ export function combineSchemas({
   separator,
   context,
   nullable,
+  formDataContext,
 }: {
   name?: string;
   schema: OpenApiSchemaObject;
   separator: Separator;
   context: ContextSpec;
   nullable: string;
+  formDataContext?: FormDataContext;
 }): ScalarValue {
-  const items = schema[separator] ?? [];
+  // Normalize allOf schemas by merging inline objects into parent (fixes #2458)
+  // Only applies when: using allOf, not in v7 compat mode, no sibling oneOf/anyOf
+  const canMergeInlineAllOf =
+    separator === 'allOf' &&
+    !context.output.override.aliasCombinedTypes &&
+    !schema.oneOf &&
+    !schema.anyOf;
 
-  const resolvedData = items.reduce<CombinedData>(
+  const normalizedSchema = canMergeInlineAllOf
+    ? normalizeAllOfSchema(schema)
+    : schema;
+
+  const items = normalizedSchema[separator] ?? [];
+
+  const resolvedData: CombinedData = items.reduce<CombinedData>(
     (acc, subSchema) => {
       // aliasCombinedTypes (v7 compat): create intermediate types like ResponseAnyOf
       // v8 default: propName stays undefined so combined types are inlined directly
@@ -170,6 +253,7 @@ export function combineSchemas({
         propName,
         combined: true,
         context,
+        formDataContext,
       });
 
       const aliasedImports = getAliasedImports({
@@ -223,14 +307,33 @@ export function combineSchemas({
   );
 
   const isAllEnums = resolvedData.isEnum.every(Boolean);
+  const isAvailableToGenerateCombinedEnum =
+    isAllEnums &&
+    name &&
+    items.length > 1 &&
+    context.output.override.enumGenerationType !== EnumGeneration.UNION;
 
-  // For oneOf, we should generate union types instead of const objects
-  // even when all subschemas are enums
-  if (isAllEnums && name && items.length > 1 && separator !== 'oneOf') {
-    const newEnum = `export const ${pascal(name)} = ${getCombineEnumValue(resolvedData)}`;
+  // Only generate a combined const when enum values exist at runtime.
+  if (isAvailableToGenerateCombinedEnum) {
+    const {
+      value: combinedEnumValue,
+      valueImports,
+      hasNull,
+    } = getCombinedEnumValue(
+      resolvedData.values.map((value, index) => ({
+        value,
+        isRef: resolvedData.isRef[index],
+        schema: resolvedData.originalSchema[index],
+      })),
+    );
+    const newEnum = `export const ${pascal(name)} = ${combinedEnumValue}`;
+    const valueImportSet = new Set(valueImports);
+    const enumNullSuffix =
+      hasNull && !nullable.includes('null') ? ' | null' : '';
+    const typeSuffix = `${nullable}${enumNullSuffix}`;
 
     return {
-      value: `typeof ${pascal(name)}[keyof typeof ${pascal(name)}] ${nullable}`,
+      value: `typeof ${pascal(name)}[keyof typeof ${pascal(name)}]${typeSuffix}`,
       imports: [
         {
           name: pascal(name),
@@ -239,10 +342,14 @@ export function combineSchemas({
       schemas: [
         ...resolvedData.schemas,
         {
-          imports: resolvedData.imports.map<GeneratorImport>((toImport) => ({
-            ...toImport,
-            values: true,
-          })),
+          imports: resolvedData.imports
+            .filter((toImport) =>
+              valueImportSet.has(toImport.alias ?? toImport.name),
+            )
+            .map<GeneratorImport>((toImport) => ({
+              ...toImport,
+              values: true,
+            })),
           model: newEnum,
           name: name,
         },
@@ -259,13 +366,14 @@ export function combineSchemas({
 
   let resolvedValue: ScalarValue | undefined;
 
-  if (schema.properties) {
+  if (normalizedSchema.properties) {
     resolvedValue = getScalar({
       item: Object.fromEntries(
-        Object.entries(schema).filter(([key]) => key !== separator),
+        Object.entries(normalizedSchema).filter(([key]) => key !== separator),
       ),
       name,
       context,
+      formDataContext,
     });
   } else if (separator === 'allOf' && (schema.oneOf || schema.anyOf)) {
     // Handle sibling pattern: allOf + oneOf/anyOf at same level
@@ -285,10 +393,11 @@ export function combineSchemas({
     separator,
     resolvedValue,
     context,
+    parentSchema: normalizedSchema,
   });
 
   return {
-    value: value + nullable,
+    value: dedupeUnionType(value + nullable),
     imports: resolvedValue
       ? [...resolvedData.imports, ...resolvedValue.imports]
       : resolvedData.imports,
@@ -302,39 +411,8 @@ export function combineSchemas({
     type: 'object' as SchemaType,
     isRef: false,
     hasReadonlyProps:
-      resolvedData?.hasReadonlyProps ||
-      resolvedValue?.hasReadonlyProps ||
-      false,
+      resolvedData.hasReadonlyProps || resolvedValue?.hasReadonlyProps || false,
     example: schema.example,
     examples: resolveExampleRefs(schema.examples, context),
   };
 }
-
-const getCombineEnumValue = ({
-  values,
-  isRef,
-  originalSchema,
-}: CombinedData) => {
-  if (values.length === 1) {
-    if (isRef[0]) {
-      return values[0];
-    }
-
-    return `{${getEnumImplementation(values[0])}} as const`;
-  }
-
-  const enums = values
-    .map((e, i) => {
-      if (isRef[i]) {
-        return `...${e},`;
-      }
-
-      const names = getEnumNames(originalSchema[i]);
-      const descriptions = getEnumDescriptions(originalSchema[i]);
-
-      return getEnumImplementation(e, names, descriptions);
-    })
-    .join('');
-
-  return `{${enums}} as const`;
-};

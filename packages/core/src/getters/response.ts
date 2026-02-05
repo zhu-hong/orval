@@ -5,6 +5,7 @@ import type {
   OverrideOutputContentType,
   ResReqTypesValue,
 } from '../types';
+import { dedupeUnionType, filterByContentType } from '../utils';
 import { getResReqTypes } from './res-req-types';
 
 interface GetResponseOptions {
@@ -42,22 +43,7 @@ export function getResponse({
     (type) => `${type.key}-${type.value}`,
   );
 
-  const filteredTypes = contentType
-    ? types.filter((type) => {
-        let include = true;
-        let exclude = false;
-
-        if (contentType.include) {
-          include = contentType.include.includes(type.contentType);
-        }
-
-        if (contentType.exclude) {
-          exclude = contentType.exclude.includes(type.contentType);
-        }
-
-        return include && !exclude;
-      })
-    : types;
+  const filteredTypes = filterByContentType(types, contentType);
 
   const imports = filteredTypes.flatMap(({ imports }) => imports);
   const schemas = filteredTypes.flatMap(({ schemas }) => schemas);
@@ -81,10 +67,14 @@ export function getResponse({
     { success: [], errors: [] },
   );
 
-  const success = groupedByStatus.success
-    .map(({ value, formData }) => (formData ? 'Blob' : value))
-    .join(' | ');
-  const errors = groupedByStatus.errors.map(({ value }) => value).join(' | ');
+  const success = dedupeUnionType(
+    groupedByStatus.success
+      .map(({ value, formData }) => (formData ? 'Blob' : value))
+      .join(' | '),
+  );
+  const errors = dedupeUnionType(
+    groupedByStatus.errors.map(({ value }) => value).join(' | '),
+  );
 
   const defaultType = filteredTypes.find(({ key }) => key === 'default')?.value;
 

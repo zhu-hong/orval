@@ -108,6 +108,11 @@ export type NormalizedOverrideOutput = {
   suppressReadonlyModifier?: boolean;
   jsDoc: NormalizedJsDocOptions;
   aliasCombinedTypes: boolean;
+  /**
+   * When enabled, optional properties will be typed as `T | null` instead of just `T`.
+   * @default false
+   */
+  useNullForOptional?: boolean;
 };
 
 export type NormalizedMutator = {
@@ -473,6 +478,11 @@ export type OverrideOutput = {
   suppressReadonlyModifier?: boolean;
   jsDoc?: JsDocOptions;
   aliasCombinedTypes?: boolean;
+  /**
+   * When enabled, optional properties will be typed as `T | null` instead of just `T`.
+   * @default false
+   */
+  useNullForOptional?: boolean;
 };
 
 export type JsDocOptions = {
@@ -797,6 +807,8 @@ export interface PackageJson {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
+  catalog?: Record<string, string>;
+  catalogs?: Record<string, Record<string, string>>;
 }
 
 export type GeneratorSchema = {
@@ -1127,6 +1139,7 @@ export const SchemaType = {
 
 export type ScalarValue = {
   value: string;
+  useTypeAlias?: boolean;
   isEnum: boolean;
   hasReadonlyProps: boolean;
   type: SchemaType;

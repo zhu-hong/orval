@@ -59,6 +59,37 @@ export const getAxiosDependencies: ClientDependenciesBuilder = (
   ...(hasParamsSerializerOptions ? PARAMS_SERIALIZER_DEPENDENCIES : []),
 ];
 
+// Factory mode needs axios default import (for optional parameter default value)
+// plus AxiosInstance type for the parameter type
+// When using mutator, AxiosInstance is not needed as the mutator handles the axios instance
+export const getAxiosFactoryDependencies: ClientDependenciesBuilder = (
+  hasGlobalMutator,
+  hasParamsSerializerOptions: boolean,
+  _packageJson,
+  _httpClient,
+  hasTagsMutator,
+) => [
+  {
+    exports: [
+      {
+        name: 'axios',
+        default: true,
+        values: true,
+        syntheticDefaultImport: true,
+      },
+      // Only include AxiosInstance if we're not using a mutator (global or tags)
+      ...(!hasGlobalMutator && !hasTagsMutator
+        ? [{ name: 'AxiosInstance' }]
+        : []),
+      ...(hasGlobalMutator
+        ? []
+        : [{ name: 'AxiosRequestConfig' }, { name: 'AxiosResponse' }]),
+    ],
+    dependency: 'axios',
+  },
+  ...(hasParamsSerializerOptions ? PARAMS_SERIALIZER_DEPENDENCIES : []),
+];
+
 const generateAxiosImplementation = (
   {
     headers,
@@ -75,6 +106,7 @@ const generateAxiosImplementation = (
     paramsSerializer,
   }: GeneratorVerbOptions,
   { route, context }: GeneratorOptions,
+  isFactoryMode = false,
 ) => {
   const isRequestOptions = override.requestOptions !== false;
   const isFormData = !override.formData.disabled;
@@ -171,14 +203,18 @@ const generateAxiosImplementation = (
       }>`,
   );
 
-  return `const ${operationName} = <TData = AxiosResponse<${
-    response.definition.success || 'unknown'
-  }>>(\n    ${toObjectString(props, 'implementation')} ${
-    isRequestOptions ? `options?: AxiosRequestConfig\n` : ''
-  } ): Promise<TData> => {${bodyForm}
-    return axios${
-      isSyntheticDefaultImportsAllowed ? '' : '.default'
-    }.${verb}(${options});
+  // In factory mode, use the axiosInstance parameter
+  // In functions mode with global import, .default may be needed based on tsconfig
+  const axiosRef = isFactoryMode
+    ? 'axiosInstance'
+    : `axios${isSyntheticDefaultImportsAllowed ? '' : '.default'}`;
+
+  return `const ${operationName} = (\n    ${toObjectString(props, 'implementation')} ${
+    isRequestOptions
+      ? `options${context.output.optionsParamRequired ? '' : '?'}: AxiosRequestConfig\n`
+      : ''
+  } ): Promise<AxiosResponse<${response.definition.success || 'unknown'}>> => {${bodyForm}
+    return ${axiosRef}.${verb}(${options});
   }
 `;
 };
@@ -188,18 +224,37 @@ export const generateAxiosTitle: ClientTitleBuilder = (title) => {
   return `get${pascal(sanTitle)}`;
 };
 
+// Header for factory mode - axios is optional parameter with default value
+// When using mutator (global or tags-level), axiosInstance parameter is not needed
 export const generateAxiosHeader: ClientHeaderBuilder = ({
   title,
   isRequestOptions,
   isMutator,
+  isGlobalMutator,
   noFunction,
-}) => `
+  output,
+  verbOptions,
+}) => {
+  const isSyntheticDefaultImportsAllowed = isSyntheticDefaultImportsAllow(
+    output.tsconfig,
+  );
+  const axiosDefault = isSyntheticDefaultImportsAllowed
+    ? 'axios'
+    : 'axios.default';
+
+  // Check if any operation uses a mutator (either global or tags-level)
+  const hasAnyMutator =
+    isGlobalMutator ||
+    Object.values(verbOptions).some((verbOption) => !!verbOption.mutator);
+
+  return `
 ${
   isRequestOptions && isMutator
     ? `type SecondParameter<T extends (...args: never) => unknown> = Parameters<T>[1];\n\n`
     : ''
 }
-  ${noFunction ? '' : `export const ${title} = () => {\n`}`;
+  ${noFunction ? '' : hasAnyMutator ? `export const ${title} = () => {\n` : `export const ${title} = (axiosInstance: AxiosInstance = ${axiosDefault}) => {\n`}`;
+};
 
 export const generateAxiosFooter: ClientFooterBuilder = ({
   operationNames,
@@ -236,10 +291,21 @@ export const generateAxiosFooter: ClientFooterBuilder = ({
 export const generateAxios = (
   verbOptions: GeneratorVerbOptions,
   options: GeneratorOptions,
+  isFactoryMode = false,
 ) => {
   const imports = generateVerbImports(verbOptions);
-  const implementation = generateAxiosImplementation(verbOptions, options);
+  const implementation = generateAxiosImplementation(
+    verbOptions,
+    options,
+    isFactoryMode,
+  );
 
+  return { implementation, imports };
+};
+
+// Factory mode generator - axios is optional parameter
+export const generateAxiosFactory: ClientBuilder = (verbOptions, options) => {
+  const { implementation, imports } = generateAxios(verbOptions, options, true);
   return { implementation, imports };
 };
 
@@ -252,10 +318,11 @@ export const generateAxiosFunctions: ClientBuilder = (verbOptions, options) => {
   };
 };
 
+// axios client with factory pattern (axios as optional parameter)
 const axiosClientBuilder: ClientGeneratorsBuilder = {
-  client: generateAxios,
+  client: generateAxiosFactory,
   header: generateAxiosHeader,
-  dependencies: getAxiosDependencies,
+  dependencies: getAxiosFactoryDependencies,
   footer: generateAxiosFooter,
   title: generateAxiosTitle,
 };
@@ -268,14 +335,17 @@ const axiosFunctionsClientBuilder: ClientGeneratorsBuilder = {
   title: generateAxiosTitle,
 };
 
-const builders: Record<'axios' | 'axios-functions', ClientGeneratorsBuilder> = {
-  axios: axiosClientBuilder,
-  'axios-functions': axiosFunctionsClientBuilder,
+export type AxiosBuilderOptions = {
+  type?: 'axios' | 'axios-functions';
 };
 
 export const builder =
-  ({ type = 'axios-functions' }: { type?: 'axios' | 'axios-functions' } = {}) =>
-  () =>
-    builders[type];
+  ({ type = 'axios-functions' }: AxiosBuilderOptions = {}) =>
+  () => {
+    if (type === 'axios-functions') {
+      return axiosFunctionsClientBuilder;
+    }
+    return axiosClientBuilder;
+  };
 
 export default builder;

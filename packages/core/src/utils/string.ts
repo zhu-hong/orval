@@ -1,13 +1,7 @@
 import { keyword } from 'esutils';
+import { isNullish } from 'remeda';
 
-import {
-  isBoolean,
-  isFunction,
-  isNull,
-  isNumber,
-  isString,
-  isUndefined,
-} from './assertion';
+import { isBoolean, isFunction, isNumber, isString } from './assertion';
 
 /**
  * Converts data to a string representation suitable for code generation.
@@ -24,7 +18,7 @@ import {
 export function stringify(
   data?: string | any[] | Record<string, any>,
 ): string | undefined {
-  if (isUndefined(data) || isNull(data)) {
+  if (isNullish(data)) {
     return;
   }
 
@@ -225,11 +219,13 @@ export function escape(str: string | null, char = "'") {
  * @param input String to escape
  */
 export function jsStringEscape(input: string) {
-  return input.replaceAll(/["'\\\n\r\u2028\u2029]/g, (character) => {
+  return input.replaceAll(/["'\\\n\r\u2028\u2029/*]/g, (character) => {
     switch (character) {
       case '"':
       case "'":
-      case '\\': {
+      case '\\':
+      case '/':
+      case '*': {
         return '\\' + character;
       }
       // Four possible LineTerminator characters need to be escaped:
@@ -250,4 +246,39 @@ export function jsStringEscape(input: string) {
       }
     }
   });
+}
+
+/**
+ * Deduplicates a TypeScript union type string.
+ * Handles types like "A | B | B" → "A | B" and "null | null" → "null".
+ * Only splits on top-level | (not inside {} () [] <> or string literals).
+ */
+export function dedupeUnionType(unionType: string): string {
+  const parts: string[] = [];
+  let current = '';
+  let depth = 0;
+  let quote = ''; // current open quote char, or '' if outside string
+  let escaped = false; // true if previous char was unescaped \ inside string
+
+  for (const c of unionType) {
+    if (!escaped && (c === "'" || c === '"')) {
+      if (!quote) quote = c;
+      else if (quote === c) quote = '';
+    }
+
+    if (!quote) {
+      if ('{([<'.includes(c)) depth++;
+      if ('})]>'.includes(c)) depth--;
+      if (c === '|' && depth === 0) {
+        parts.push(current.trim());
+        current = '';
+        continue;
+      }
+    }
+    current += c;
+    escaped = !!quote && !escaped && c === '\\';
+  }
+  if (current.trim()) parts.push(current.trim());
+
+  return [...new Set(parts)].join(' | ');
 }
