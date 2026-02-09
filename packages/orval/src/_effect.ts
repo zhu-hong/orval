@@ -18,7 +18,7 @@ import { normalizeOptions } from './utils';
 import { generateOperations } from './client';
 
 // copy from ./api(getApiBuilder)
-const _effect_getApiGenerate = async function ({
+const _effect_getApiBuilder = async function ({
   input,
   output,
   context,
@@ -128,5 +128,5 @@ export {
   applyTransformer,
   getApiSchemas,
   normalizeOptions,
-  _effect_getApiGenerate,
+  _effect_getApiBuilder,
 };
