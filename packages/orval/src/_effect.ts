@@ -35,10 +35,7 @@ const _effect_getApiBuilder = async function ({
       let resolvedVerbs = verbs;
 
       if (isReference(verbs)) {
-        const { schema, imports } = resolveRef<OpenApiPathItemObject>(
-          verbs,
-          context,
-        );
+        const { schema } = resolveRef<OpenApiPathItemObject>(verbs, context);
 
         resolvedVerbs = schema;
       }
@@ -59,30 +56,28 @@ const _effect_getApiBuilder = async function ({
         });
       }
 
-      const schemas = verbsOptions.reduce<GeneratorSchema[]>(
-        (acc, { queryParams, headers, body, response, props }) => {
-          if (props) {
-            acc.push(
-              ...props.flatMap((param) =>
-                param.type === GetterPropType.NAMED_PATH_PARAMS
-                  ? param.schema
-                  : [],
-              ),
-            );
-          }
-          if (queryParams) {
-            acc.push(queryParams.schema, ...queryParams.deps);
-          }
-          if (headers) {
-            acc.push(headers.schema, ...headers.deps);
-          }
+      const schemas: GeneratorSchema[] = [];
+      for (const {
+        queryParams,
+        headers,
+        body,
+        response,
+        props,
+      } of verbsOptions) {
+        schemas.push(
+          ...props.flatMap((param) =>
+            param.type === GetterPropType.NAMED_PATH_PARAMS ? param.schema : [],
+          ),
+        );
+        if (queryParams) {
+          schemas.push(queryParams.schema, ...queryParams.deps);
+        }
+        if (headers) {
+          schemas.push(headers.schema, ...headers.deps);
+        }
 
-          acc.push(...body.schemas, ...response.schemas);
-
-          return acc;
-        },
-        [],
-      );
+        schemas.push(...body.schemas, ...response.schemas);
+      }
 
       const fullRoute = getFullRoute(
         route,
