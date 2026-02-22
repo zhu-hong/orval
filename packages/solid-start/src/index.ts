@@ -101,14 +101,18 @@ const generateImplementation = (
           )
         : toObjectString(props, 'implementation');
 
-    // Build query params string
-    const queryParamsCode = queryParams
-      ? `const queryString = new URLSearchParams(params as any).toString();
-    const url = queryString ? \`${route}?\${queryString}\` : \`${route}\`;`
-      : `const url = \`${route}\`;`;
+    // Build config object for mutator
+    const configParts: string[] = [
+      `url: \`${route}\``,
+      `method: '${verb.toUpperCase()}'`,
+    ];
 
-    // Build fetch options using Fetch API signature
-    const fetchMethodOption = `method: '${verb.toUpperCase()}'`;
+    // Add params for query parameters
+    if (queryParams) {
+      configParts.push('params');
+    }
+
+    // Add headers
     const ignoreContentTypes = ['multipart/form-data'];
     const overrideHeaders =
       isObject(override.requestOptions) && override.requestOptions.headers
@@ -125,36 +129,35 @@ const generateImplementation = (
       ...(headers ? ['...headers'] : []),
     ];
 
-    const fetchHeadersOption =
-      headersToAdd.length > 0 ? `headers: { ${headersToAdd.join(',')} }` : '';
+    if (headersToAdd.length > 0) {
+      configParts.push(`headers: { ${headersToAdd.join(',')} }`);
+    }
 
+    // Add body/data for mutations
     const requestBodyParams = generateBodyOptions(
       body,
       isFormData,
       isFormUrlEncoded,
     );
-    const fetchBodyOption = requestBodyParams
-      ? (isFormData && body.formData) ||
-        (isFormUrlEncoded && body.formUrlEncoded) ||
-        body.contentType === 'text/plain'
-        ? `body: ${requestBodyParams}`
-        : `body: JSON.stringify(${requestBodyParams})`
-      : '';
+    if (requestBodyParams) {
+      if (
+        (isFormData && body.formData) ||
+        (isFormUrlEncoded && body.formUrlEncoded)
+      ) {
+        configParts.push(`data: ${requestBodyParams}`);
+      } else {
+        configParts.push(`data: ${requestBodyParams}`);
+      }
+    }
 
-    const fetchOptions = `{
-      ${fetchMethodOption}${fetchHeadersOption ? ',' : ''}
-      ${fetchHeadersOption}${fetchBodyOption ? ',' : ''}
-      ${fetchBodyOption}
+    const axiosConfig = `{
+      ${configParts.join(',\n      ')}
     }`;
 
     const functionName = isGetVerb ? 'query' : 'action';
 
     return `  ${operationName}: ${functionName}(async (${propsImplementation}) => {${bodyForm}
-    ${queryParamsCode}
-    return ${mutator.name}<${dataType}>(
-      url,
-      ${fetchOptions}
-    );
+    return ${mutator.name}<${dataType}>(${axiosConfig});
   }, "${operationName}"),
 `;
   }
