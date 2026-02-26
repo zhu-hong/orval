@@ -1,5 +1,6 @@
 import { faker } from '@faker-js/faker';
 import { defineConfig } from 'orval';
+import transformer from './src/orval/transformer/add-version';
 
 export default defineConfig({
   petstore: {
@@ -8,9 +9,13 @@ export default defineConfig({
       target: 'src/api/endpoints/petstoreFromFileSpecWithTransformer.ts',
       schemas: 'src/api/model',
       client: 'angular',
-      mock: { indexMockFiles: true },
+      mock: {
+        type: 'msw',
+        indexMockFiles: true,
+      },
       tsconfig: './tsconfig.app.json',
       clean: true,
+      prettier: true,
       override: {
         paramsSerializer: 'src/orval/mutator/custom-params-serializer.ts',
         operations: {
@@ -47,8 +52,31 @@ export default defineConfig({
     input: {
       target: './petstore.yaml',
       override: {
-        transformer: 'src/orval/transformer/add-version.ts',
+        transformer,
       },
+    },
+  },
+  petstoreZod: {
+    output: {
+      mode: 'tags-split',
+      target: 'src/api/endpoints-zod',
+      schemas: { path: 'src/api/model-zod', type: 'zod' },
+      client: 'angular',
+      mock: {
+        type: 'msw',
+        indexMockFiles: true,
+      },
+      tsconfig: './tsconfig.app.json',
+      clean: true,
+      prettier: true,
+      override: {
+        angular: {
+          runtimeValidation: true,
+        },
+      },
+    },
+    input: {
+      target: './petstore.yaml',
     },
   },
 });

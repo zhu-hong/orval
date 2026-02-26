@@ -34,19 +34,22 @@ export async function writeSplitTagsMode({
     output.tsconfig,
   );
 
-  const indexFilePath =
-    output.mock && !isFunction(output.mock) && output.mock.indexMockFiles
-      ? upath.join(
-          dirname,
-          'index.' + getMockFileExtensionByTypeName(output.mock!) + extension,
-        )
-      : undefined;
+  const mockOption =
+    output.mock && !isFunction(output.mock) ? output.mock : undefined;
+  const indexFilePath = mockOption?.indexMockFiles
+    ? upath.join(
+        dirname,
+        'index.' + getMockFileExtensionByTypeName(mockOption) + extension,
+      )
+    : undefined;
   if (indexFilePath) {
     await fs.outputFile(indexFilePath, '');
   }
 
+  const tagEntries = Object.entries(target);
+
   const generatedFilePathsArray = await Promise.all(
-    Object.entries(target).map(async ([tag, target]) => {
+    tagEntries.map(async ([tag, target]) => {
       try {
         const {
           imports,
@@ -201,17 +204,6 @@ export async function writeSplitTagsMode({
 
         if (mockPath) {
           await fs.outputFile(mockPath, mockData);
-          if (indexFilePath) {
-            const localMockPath = upath.joinSafe(
-              './',
-              tag,
-              tag + '.' + getMockFileExtensionByTypeName(output.mock!),
-            );
-            fs.appendFile(
-              indexFilePath,
-              `export { get${pascal(tag)}Mock } from '${localMockPath}'\n`,
-            );
-          }
         }
 
         return [
@@ -221,11 +213,29 @@ export async function writeSplitTagsMode({
         ];
       } catch (error) {
         throw new Error(
-          `Oups... 🍻. An Error occurred while splitting tag ${tag} => ${error}`,
+          `Oups... 🍻. An Error occurred while splitting tag ${tag} => ${String(error)}`,
         );
       }
     }),
   );
 
-  return generatedFilePathsArray.flat();
+  // Write mock index file after Promise.all to ensure deterministic export order.
+  if (indexFilePath && mockOption) {
+    const indexContent = tagEntries
+      .map(([tag]) => {
+        const localMockPath = upath.joinSafe(
+          './',
+          tag,
+          tag + '.' + getMockFileExtensionByTypeName(mockOption),
+        );
+        return `export { get${pascal(tag)}Mock } from '${localMockPath}'\n`;
+      })
+      .join('');
+    await fs.appendFile(indexFilePath, indexContent);
+  }
+
+  return [
+    ...(indexFilePath ? [indexFilePath] : []),
+    ...generatedFilePathsArray.flat(),
+  ];
 }

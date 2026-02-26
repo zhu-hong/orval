@@ -1,4 +1,5 @@
 import {
+  camel,
   type ClientBuilder,
   type ClientDependenciesBuilder,
   type ClientFooterBuilder,
@@ -13,6 +14,8 @@ import {
   type GeneratorDependency,
   type GeneratorOptions,
   type GeneratorVerbOptions,
+  getAngularFilteredParamsCallExpression,
+  getAngularFilteredParamsHelperBody,
   getDefaultContentType,
   isBoolean,
   pascal,
@@ -20,11 +23,11 @@ import {
   toObjectString,
 } from '@orval/core';
 
-const ANGULAR_DEPENDENCIES: GeneratorDependency[] = [
+const ANGULAR_DEPENDENCIES = [
   {
     exports: [
       { name: 'HttpClient', values: true },
-      { name: 'HttpHeaders' },
+      { name: 'HttpHeaders', values: true },
       { name: 'HttpParams' },
       { name: 'HttpContext' },
       { name: 'HttpResponse', alias: 'AngularHttpResponse' }, // alias to prevent naming conflict with msw
@@ -43,50 +46,82 @@ const ANGULAR_DEPENDENCIES: GeneratorDependency[] = [
     exports: [{ name: 'Observable', values: true }],
     dependency: 'rxjs',
   },
-  {
-    exports: [{ name: 'DeepNonNullable' }],
-    dependency: '@orval/core',
-  },
+] as const satisfies readonly GeneratorDependency[];
+
+const PRIMITIVE_RESPONSE_TYPES = [
+  'string',
+  'number',
+  'boolean',
+  'void',
+  'unknown',
+] as const;
+
+const isPrimitiveResponseType = (typeName: string | undefined): boolean =>
+  typeName != undefined &&
+  (PRIMITIVE_RESPONSE_TYPES as readonly string[]).includes(typeName);
+
+const hasSchemaImport = (
+  imports: readonly { name: string }[],
+  typeName: string | undefined,
+): boolean =>
+  typeName != undefined && imports.some((imp) => imp.name === typeName);
+
+const getSchemaValueRef = (typeName: string): string =>
+  typeName === 'Error' ? 'ErrorSchema' : typeName;
+
+type ReturnTypesToWrite = Map<string, string>;
+
+export const getAngularDependencies: ClientDependenciesBuilder = () => [
+  ...ANGULAR_DEPENDENCIES,
 ];
-
-const returnTypesToWrite = new Map<string, string>();
-
-export const getAngularDependencies: ClientDependenciesBuilder = () =>
-  ANGULAR_DEPENDENCIES;
 
 export const generateAngularTitle: ClientTitleBuilder = (title) => {
   const sanTitle = sanitize(title);
   return `${pascal(sanTitle)}Service`;
 };
 
-export const generateAngularHeader: ClientHeaderBuilder = ({
-  title,
-  isRequestOptions,
-  isMutator,
-  isGlobalMutator,
-  provideIn,
-}) => `
+const createAngularHeader =
+  (): ClientHeaderBuilder =>
+  ({
+    title,
+    isRequestOptions,
+    isMutator,
+    isGlobalMutator,
+    provideIn,
+    verbOptions,
+    tag,
+  }) => {
+    const stringTag = tag as string | undefined;
+    const relevantVerbs = stringTag
+      ? Object.values(verbOptions).filter((v) =>
+          v.tags.some((t) => camel(t) === camel(stringTag)),
+        )
+      : Object.values(verbOptions);
+    const hasQueryParams = relevantVerbs.some((v) => v.queryParams);
+    return `
 ${
   isRequestOptions && !isGlobalMutator
     ? `interface HttpClientOptions {
-  headers?: HttpHeaders | Record<string, string | string[]>;
-  context?: HttpContext;
-  params?:
+  readonly headers?: HttpHeaders | Record<string, string | string[]>;
+  readonly context?: HttpContext;
+  readonly params?:
         | HttpParams
-        | Record<string, string | number | boolean | ReadonlyArray<string | number | boolean>>;
-  reportProgress?: boolean;
-  withCredentials?: boolean;
-  credentials?: RequestCredentials;
-  keepalive?: boolean;
-  priority?: RequestPriority;
-  cache?: RequestCache;
-  mode?: RequestMode;
-  redirect?: RequestRedirect;
-  referrer?: string;
-  integrity?: string;
-  transferCache?: {includeHeaders?: string[]} | boolean;
-  timeout?: number;
-}`
+      | Record<string, string | number | boolean | Array<string | number | boolean>>;
+  readonly reportProgress?: boolean;
+  readonly withCredentials?: boolean;
+  readonly credentials?: RequestCredentials;
+  readonly keepalive?: boolean;
+  readonly priority?: RequestPriority;
+  readonly cache?: RequestCache;
+  readonly mode?: RequestMode;
+  readonly redirect?: RequestRedirect;
+  readonly referrer?: string;
+  readonly integrity?: string;
+  readonly referrerPolicy?: ReferrerPolicy;
+  readonly transferCache?: {includeHeaders?: string[]} | boolean;
+}
+
+${hasQueryParams ? getAngularFilteredParamsHelperBody() : ''}`
     : ''
 }
 
@@ -103,33 +138,39 @@ ${
     : ''
 }
 
-@Injectable(${
-  provideIn
-    ? `{ providedIn: '${isBoolean(provideIn) ? 'root' : provideIn}' }`
-    : ''
-})
+@Injectable(${provideIn ? `{ providedIn: '${isBoolean(provideIn) ? 'root' : provideIn}' }` : ''})
 export class ${title} {
   private readonly http = inject(HttpClient);
 `;
+  };
 
-export const generateAngularFooter: ClientFooterBuilder = ({
-  operationNames,
-}) => {
-  let footer = '};\n\n';
+export const generateAngularHeader: ClientHeaderBuilder = (params) =>
+  createAngularHeader()(params);
 
-  for (const operationName of operationNames) {
-    if (returnTypesToWrite.has(operationName)) {
-      // Map.has ensures Map.get will not return undefined, but TS still complains
-      // bug https://github.com/microsoft/TypeScript/issues/13086
-      // eslint-disable-next-line @typescript-eslint/restrict-plus-operands
-      footer += returnTypesToWrite.get(operationName) + '\n';
+const standaloneFooterReturnTypesToWrite = new Map<string, string>();
+
+const createAngularFooter =
+  (returnTypesToWrite: ReturnTypesToWrite): ClientFooterBuilder =>
+  ({ operationNames }) => {
+    let footer = '}\n\n';
+
+    for (const operationName of operationNames) {
+      if (returnTypesToWrite.has(operationName)) {
+        // Map.has ensures Map.get will not return undefined, but TS still complains
+        // bug https://github.com/microsoft/TypeScript/issues/13086
+        // eslint-disable-next-line @typescript-eslint/restrict-plus-operands
+        footer += returnTypesToWrite.get(operationName) + '\n';
+      }
     }
-  }
 
-  return footer;
-};
+    return footer;
+  };
+
+export const generateAngularFooter: ClientFooterBuilder = (params) =>
+  createAngularFooter(standaloneFooterReturnTypesToWrite)(params);
 
 const generateImplementation = (
+  returnTypesToWrite: ReturnTypesToWrite,
   {
     headers,
     queryParams,
@@ -161,6 +202,27 @@ const generateImplementation = (
 
   const dataType = response.definition.success || 'unknown';
 
+  // Detect if Zod runtime validation should be applied
+  const isPrimitiveType = isPrimitiveResponseType(dataType);
+  const hasSchema = hasSchemaImport(response.imports, dataType);
+  const isZodOutput =
+    typeof context.output.schemas === 'object' &&
+    context.output.schemas.type === 'zod';
+  const shouldValidateResponse =
+    override.angular.runtimeValidation &&
+    isZodOutput &&
+    !isPrimitiveType &&
+    hasSchema;
+  const schemaValueRef = shouldValidateResponse
+    ? getSchemaValueRef(dataType)
+    : dataType;
+  // The observe-mode branches use <TData> generics, so cast the parse
+  // result to keep TypeScript happy.  The multi-content-type branch uses
+  // concrete types and does not need the cast (see jsonValidationPipe).
+  const validationPipe = shouldValidateResponse
+    ? `.pipe(map(data => ${schemaValueRef}.parse(data) as TData))`
+    : '';
+
   returnTypesToWrite.set(
     operationName,
     `export type ${pascal(
@@ -180,6 +242,7 @@ const generateImplementation = (
       isFormUrlEncoded,
       hasSignal: false,
       isExactOptionalPropertyTypes,
+      isAngular: true,
     });
 
     const requestOptions = isRequestOptions
@@ -210,7 +273,7 @@ const generateImplementation = (
   `;
   }
 
-  const options = generateOptions({
+  const optionsBase = {
     route,
     body,
     headers,
@@ -225,7 +288,7 @@ const generateImplementation = (
     isAngular: true,
     isExactOptionalPropertyTypes,
     hasSignal: false,
-  });
+  } as const;
 
   const propsDefinition = toObjectString(props, 'definition');
 
@@ -236,14 +299,106 @@ const generateImplementation = (
   ];
   const hasMultipleContentTypes = uniqueContentTypes.length > 1;
 
+  // When observe branching is active AND there are query params, extract
+  // the params computation to a local const to avoid duplicating it in
+  // every observe branch.
+  const needsObserveBranching = isRequestOptions && !hasMultipleContentTypes;
+  const angularParamsRef =
+    needsObserveBranching && queryParams ? 'filteredParams' : undefined;
+
+  let paramsDeclaration = '';
+  if (angularParamsRef && queryParams) {
+    const callExpr = getAngularFilteredParamsCallExpression(
+      '{...params, ...options?.params}',
+      queryParams.requiredNullableKeys ?? [],
+    );
+    paramsDeclaration = paramsSerializer
+      ? `const ${angularParamsRef} = ${paramsSerializer.name}(${callExpr});\n\n    `
+      : `const ${angularParamsRef} = ${callExpr};\n\n    `;
+  }
+
+  const optionsInput = {
+    ...optionsBase,
+    ...(angularParamsRef ? { angularParamsRef } : {}),
+  } as const;
+
+  const options = generateOptions(optionsInput);
+
   // For multiple content types, determine the default
   const defaultContentType = hasMultipleContentTypes
-    ? getDefaultContentType(uniqueContentTypes)
+    ? uniqueContentTypes.includes('text/plain')
+      ? 'text/plain'
+      : getDefaultContentType(uniqueContentTypes)
     : (uniqueContentTypes[0] ?? 'application/json');
-  const defaultType = hasMultipleContentTypes
-    ? successTypes.find((t) => t.contentType === defaultContentType)
+  const getContentTypeReturnType = (
+    contentType: string | undefined,
+    value: string,
+  ): string => {
+    if (!contentType) {
+      return value;
+    }
+
+    if (contentType.includes('json') || contentType.includes('+json')) {
+      return value;
+    }
+
+    if (contentType.startsWith('text/') || contentType.includes('xml')) {
+      return 'string';
+    }
+
+    return 'Blob';
+  };
+
+  const jsonSuccessValues = [
+    ...new Set(
+      successTypes
+        .filter(
+          ({ contentType }) =>
+            !!contentType &&
+            (contentType.includes('json') || contentType.includes('+json')),
+        )
+        .map(({ value }) => value),
+    ),
+  ];
+
+  const jsonReturnType =
+    jsonSuccessValues.length > 0 ? jsonSuccessValues.join(' | ') : 'unknown';
+
+  // For multi-content-type operations the overall dataType may be primitive
+  // (e.g., 'string' when text/plain is the first content type) but the JSON
+  // branch still needs validation against its own schema.  Multi-content-type
+  // branches use concrete return types (not <TData>), so no generic cast.
+  let jsonValidationPipe = shouldValidateResponse
+    ? `.pipe(map(data => ${schemaValueRef}.parse(data)))`
+    : '';
+  if (
+    hasMultipleContentTypes &&
+    !shouldValidateResponse &&
+    override.angular.runtimeValidation &&
+    isZodOutput &&
+    jsonSuccessValues.length === 1
+  ) {
+    const jsonType = jsonSuccessValues[0];
+    const jsonIsPrimitive = isPrimitiveResponseType(jsonType);
+    const jsonHasSchema = hasSchemaImport(response.imports, jsonType);
+    if (!jsonIsPrimitive && jsonHasSchema) {
+      const jsonSchemaRef = getSchemaValueRef(jsonType);
+      jsonValidationPipe = `.pipe(map(data => ${jsonSchemaRef}.parse(data)))`;
+    }
+  }
+
+  const multiImplementationReturnType = `Observable<${jsonReturnType} | string | Blob>`;
+
+  const observeOptions = needsObserveBranching
+    ? {
+        body: generateOptions({ ...optionsInput, angularObserve: 'body' }),
+        events: generateOptions({ ...optionsInput, angularObserve: 'events' }),
+        response: generateOptions({
+          ...optionsInput,
+          angularObserve: 'response',
+        }),
+      }
     : undefined;
-  const defaultReturnType = defaultType?.value ?? dataType;
 
   const isModelType = dataType !== 'Blob' && dataType !== 'string';
   let functionName = operationName;
@@ -259,6 +414,7 @@ const generateImplementation = (
     contentTypeOverloads = successTypes
       .filter((t) => t.contentType)
       .map(({ contentType, value }) => {
+        const returnType = getContentTypeReturnType(contentType, value);
         const requiredPart = requiredProps
           .map((p) => p.definition)
           .join(',\n    ');
@@ -270,7 +426,7 @@ const generateImplementation = (
         const allParams = [requiredPart, acceptPart, optionalPart]
           .filter(Boolean)
           .join(',\n    ');
-        return `${operationName}(${allParams}, options?: HttpClientOptions): Observable<${value}>;`;
+        return `${operationName}(${allParams}, options?: HttpClientOptions): Observable<${returnType}>;`;
       })
       .join('\n  ');
 
@@ -279,7 +435,7 @@ const generateImplementation = (
     const allParams = [requiredPart, 'accept?: string', optionalPart]
       .filter(Boolean)
       .join(',\n    ');
-    contentTypeOverloads += `\n  ${operationName}(${allParams}, options?: HttpClientOptions): Observable<${defaultReturnType}>;`;
+    contentTypeOverloads += `\n  ${operationName}(${allParams}, options?: HttpClientOptions): ${multiImplementationReturnType};`;
   }
 
   const observeOverloads =
@@ -290,6 +446,11 @@ const generateImplementation = (
       : '';
 
   const overloads = contentTypeOverloads || observeOverloads;
+
+  const observableDataType = isModelType ? 'TData' : dataType;
+  const singleImplementationReturnType = isRequestOptions
+    ? `Observable<${observableDataType} | HttpEvent<${observableDataType}> | AngularHttpResponse<${observableDataType}>>`
+    : `Observable<${observableDataType}>`;
 
   if (hasMultipleContentTypes) {
     const requiredProps = props.filter((p) => p.required && !p.default);
@@ -313,55 +474,192 @@ const generateImplementation = (
   ${operationName}(
     ${allParams},
     ${isRequestOptions ? 'options?: HttpClientOptions' : ''}
-  ): Observable<any> {${bodyForm}
+  ): ${multiImplementationReturnType} {${bodyForm}
+    const headers = options?.headers instanceof HttpHeaders
+      ? options.headers.set('Accept', accept)
+      : { ...(options?.headers ?? {}), Accept: accept };
+
     if (accept.includes('json') || accept.includes('+json')) {
-      return this.http.${verb}<any>(\`${route}\`, {
+      return this.http.${verb}<${jsonReturnType}>(\`${route}\`, {
         ...options,
         responseType: 'json',
-        headers: { Accept: accept, ...options?.headers },
-      });
+        headers,
+      })${jsonValidationPipe};
     } else if (accept.startsWith('text/') || accept.includes('xml')) {
       return this.http.${verb}(\`${route}\`, {
         ...options,
         responseType: 'text',
-        headers: { Accept: accept, ...options?.headers },
-      }) as any;
+        headers,
+      }) as Observable<string>;
     } else {
       return this.http.${verb}(\`${route}\`, {
         ...options,
         responseType: 'blob',
-        headers: { Accept: accept, ...options?.headers },
-      }) as any;
+        headers,
+      }) as Observable<Blob>;
     }
   }
 `;
   }
 
+  const observeImplementation = isRequestOptions
+    ? `${paramsDeclaration}if (options?.observe === 'events') {
+      return this.http.${verb}${isModelType ? '<TData>' : ''}(${
+        observeOptions?.events ?? options
+      });
+    }
+
+    if (options?.observe === 'response') {
+      return this.http.${verb}${isModelType ? '<TData>' : ''}(${
+        observeOptions?.response ?? options
+      });
+    }
+
+    return this.http.${verb}${isModelType ? '<TData>' : ''}(${
+      observeOptions?.body ?? options
+    })${validationPipe};`
+    : `return this.http.${verb}${isModelType ? '<TData>' : ''}(${options})${validationPipe};`;
+
   return ` ${overloads}
   ${functionName}(
     ${toObjectString(props, 'implementation')} ${
-      isRequestOptions ? `options?: HttpClientOptions & { observe?: any }` : ''
-    }): Observable<any> {${bodyForm}
-    return this.http.${verb}${isModelType ? '<TData>' : ''}(${options});
+      isRequestOptions
+        ? `options?: HttpClientOptions & { observe?: 'body' | 'events' | 'response' }`
+        : ''
+    }): ${singleImplementationReturnType} {${bodyForm}
+    ${observeImplementation}
   }
 `;
 };
 
-export const generateAngular: ClientBuilder = (verbOptions, options) => {
-  const imports = generateVerbImports(verbOptions);
-  const implementation = generateImplementation(verbOptions, options);
+const createAngularClient =
+  (returnTypesToWrite: ReturnTypesToWrite): ClientBuilder =>
+  (verbOptions, options, _outputClient, _output) => {
+    // Keep signature aligned with ClientBuilder without tripping TS noUnusedParameters
+    void _outputClient;
+    void _output;
 
-  return { implementation, imports };
+    // Detect if Zod runtime validation should be applied
+    const isZodOutput =
+      typeof options.context.output.schemas === 'object' &&
+      options.context.output.schemas.type === 'zod';
+    const responseType = verbOptions.response.definition.success;
+    const isPrimitiveResponse = isPrimitiveResponseType(responseType);
+    const shouldUseRuntimeValidation =
+      verbOptions.override.angular.runtimeValidation && isZodOutput;
+
+    // Promote schema import from type-only to value import when runtime
+    // validation is active, so the generated code can call Schema.parse()
+    const normalizedVerbOptions = (() => {
+      if (!shouldUseRuntimeValidation) return verbOptions;
+
+      let result = verbOptions;
+
+      // Promote the primary response schema
+      if (
+        !isPrimitiveResponse &&
+        hasSchemaImport(result.response.imports, responseType)
+      ) {
+        result = {
+          ...result,
+          response: {
+            ...result.response,
+            imports: result.response.imports.map((imp) =>
+              imp.name === responseType ? { ...imp, values: true } : imp,
+            ),
+          },
+        };
+      }
+
+      // For multi-content-type operations, also promote the JSON-specific
+      // schema even when the primary content type is non-JSON (e.g.,
+      // showPetById where text/plain is the default but application/json
+      // returns Pet which needs .parse()).
+      const successTypes = result.response.types.success;
+      const uniqueContentTypes = [
+        ...new Set(successTypes.map((t) => t.contentType).filter(Boolean)),
+      ];
+      if (uniqueContentTypes.length > 1) {
+        const jsonSchemaNames = [
+          ...new Set(
+            successTypes
+              .filter(
+                ({ contentType }) =>
+                  !!contentType &&
+                  (contentType.includes('json') ||
+                    contentType.includes('+json')),
+              )
+              .map(({ value }) => value),
+          ),
+        ];
+        if (jsonSchemaNames.length === 1) {
+          const jsonType = jsonSchemaNames[0];
+          const jsonIsPrimitive = isPrimitiveResponseType(jsonType);
+          if (
+            !jsonIsPrimitive &&
+            hasSchemaImport(result.response.imports, jsonType)
+          ) {
+            result = {
+              ...result,
+              response: {
+                ...result.response,
+                imports: result.response.imports.map((imp) =>
+                  imp.name === jsonType ? { ...imp, values: true } : imp,
+                ),
+              },
+            };
+          }
+        }
+      }
+
+      return result;
+    })();
+
+    const implementation = generateImplementation(
+      returnTypesToWrite,
+      normalizedVerbOptions,
+      options,
+    );
+
+    const imports = [
+      ...generateVerbImports(normalizedVerbOptions),
+      ...(implementation.includes('.pipe(map(')
+        ? [{ name: 'map', values: true, importPath: 'rxjs' }]
+        : []),
+    ];
+
+    return { implementation, imports };
+  };
+
+const standaloneReturnTypesToWrite = new Map<string, string>();
+
+export const generateAngular: ClientBuilder = (
+  verbOptions,
+  options,
+  outputClient,
+  output,
+) =>
+  createAngularClient(standaloneReturnTypesToWrite)(
+    verbOptions,
+    options,
+    outputClient,
+    output,
+  );
+
+const createAngularClientBuilder = (): ClientGeneratorsBuilder => {
+  const returnTypesToWrite = new Map<string, string>();
+
+  return {
+    client: createAngularClient(returnTypesToWrite),
+    header: createAngularHeader(),
+    dependencies: getAngularDependencies,
+    footer: createAngularFooter(returnTypesToWrite),
+    title: generateAngularTitle,
+  };
 };
 
-const angularClientBuilder: ClientGeneratorsBuilder = {
-  client: generateAngular,
-  header: generateAngularHeader,
-  dependencies: getAngularDependencies,
-  footer: generateAngularFooter,
-  title: generateAngularTitle,
+export const builder: () => () => ClientGeneratorsBuilder = () => {
+  return () => createAngularClientBuilder();
 };
-
-export const builder = () => () => angularClientBuilder;
 
 export default builder;

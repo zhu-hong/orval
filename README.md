@@ -45,6 +45,8 @@ You can find some samples below:
 - [react query](https://github.com/orval-labs/orval/tree/master/samples/react-query)
 - [svelte query](https://github.com/orval-labs/orval/tree/master/samples/svelte-query)
 - [vue query](https://github.com/orval-labs/orval/tree/master/samples/vue-query)
+- [solid query](https://github.com/orval-labs/orval/tree/master/samples/solid-query)
+- [solid start](https://github.com/orval-labs/orval/tree/master/samples/solid-start)
 - [react app with swr](https://github.com/orval-labs/orval/tree/master/samples/react-app-with-swr)
 - [angular app](https://github.com/orval-labs/orval/tree/master/samples/angular-app)
 - [angular query](https://github.com/orval-labs/orval/tree/master/samples/angular-query)
@@ -58,21 +60,7 @@ Try Orval out for yourself using our [Playground](https://orval.dev/playground) 
 
 ## Developers
 
-This project uses [Yarn](https://yarnpkg.com/) for package management and building. Here are the key scripts available for development:
-
-### Prerequisites
-
-Before using Yarn scripts, ensure you have Yarn installed. You can install it globally using npm:
-
-```bash
-npm install -g yarn
-```
-
-Alternatively, you can enable Corepack (which comes with Node.js 16.10+) to manage Yarn:
-
-```bash
-corepack enable
-```
+This project uses [Yarn](https://yarnpkg.com/) for package management and building. Yarn [install guide](https://yarnpkg.com/getting-started/install).
 
 ### Build Scripts
 
@@ -88,6 +76,10 @@ corepack enable
 
 - **`yarn test:samples`** - Run tests in the samples directory using the newly generated output from `update-samples`.
 
+- **`yarn test:snapshots`** - Run snapshot tests to verify generated sample outputs match the committed snapshots. Fails if any generated file differs from its snapshot.
+
+- **`yarn test:snapshots:update`** - Regenerate snapshot files to match the current generated output. Run this after `yarn update-samples` when the generated output has intentionally changed.
+
 - **`yarn test:cli`** - Test that the generated output (not samples) is valid TypeScript. This validates the TypeScript compilation of the generated code.
 
 ### Development Workflow
@@ -96,10 +88,11 @@ A typical development workflow would be:
 
 1. Make your code changes
 2. Run `yarn build` to compile your changes
-3. Run `yarn test` to ensure unit tests pass
-4. Run `yarn update-samples` to regenerate sample outputs
-5. Run `yarn test:samples` to verify samples work correctly
-6. Run `yarn test:cli` to validate TypeScript compilation
+3. Run `yarn lint` to catch lint issues early
+4. Run `yarn test` to run unit tests in packages
+5. Run `yarn test:snapshots` to verify generated output matches snapshots
+
+If step 5 fails because the generated output has intentionally changed, run `yarn test:snapshots:update` to update the snapshots.
 
 If you encounter issues or want to start completely fresh:
 
