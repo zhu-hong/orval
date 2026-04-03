@@ -1,4 +1,4 @@
-import fs from 'fs-extra';
+import path from 'node:path';
 
 import { generateModelsInline, generateMutatorImports } from '../generators';
 import { OutputClient, type WriteModeProps } from '../types';
@@ -11,6 +11,7 @@ import {
   upath,
 } from '../utils';
 import { getMockFileExtensionByTypeName } from '../utils/file-extensions';
+import { writeGeneratedFile } from './file';
 import { generateImportsForBuilder } from './generate-imports-for-builder';
 import { generateTarget } from './target';
 import { getOrvalGeneratedTypes, getTypedResponse } from './types';
@@ -23,9 +24,14 @@ export async function writeSplitMode({
   needSchema,
 }: WriteModeProps): Promise<string[]> {
   try {
-    const { filename, dirname, extension } = getFileInfo(output.target, {
+    const {
+      path: targetPath,
+      filename,
+      dirname,
+      extension,
+    } = getFileInfo(output.target, {
       backupFilename: conventionName(
-        builder.info.title,
+        builder.info.title ?? 'filename',
         output.namingConvention,
       ),
       extension: output.fileExtension,
@@ -48,8 +54,8 @@ export async function writeSplitMode({
     let mockData = header;
 
     const relativeSchemasPath = output.schemas
-      ? upath.relativeSafe(
-          dirname,
+      ? upath.getRelativeImportPath(
+          targetPath,
           getFileInfo(
             isString(output.schemas) ? output.schemas : output.schemas.path,
             { extension: output.fileExtension },
@@ -100,15 +106,12 @@ export async function writeSplitMode({
 
     const schemasPath = output.schemas
       ? undefined
-      : upath.join(dirname, filename + '.schemas' + extension);
+      : path.join(dirname, filename + '.schemas' + extension);
 
     if (schemasPath && needSchema) {
       const schemasData = header + generateModelsInline(builder.schemas);
 
-      await fs.outputFile(
-        upath.join(dirname, filename + '.schemas' + extension),
-        schemasData,
-      );
+      await writeGeneratedFile(schemasPath, schemasData);
     }
 
     if (mutators) {
@@ -164,14 +167,11 @@ export async function writeSplitMode({
       (OutputClient.ANGULAR === output.client ? '.service' : '') +
       extension;
 
-    const implementationPath = upath.join(dirname, implementationFilename);
-    await fs.outputFile(
-      upath.join(dirname, implementationFilename),
-      implementationData,
-    );
+    const implementationPath = path.join(dirname, implementationFilename);
+    await writeGeneratedFile(implementationPath, implementationData);
 
     const mockPath = output.mock
-      ? upath.join(
+      ? path.join(
           dirname,
           filename +
             '.' +
@@ -181,7 +181,7 @@ export async function writeSplitMode({
       : undefined;
 
     if (mockPath) {
-      await fs.outputFile(mockPath, mockData);
+      await writeGeneratedFile(mockPath, mockData);
     }
 
     return [
@@ -192,6 +192,7 @@ export async function writeSplitMode({
   } catch (error) {
     throw new Error(
       `Oups... 🍻. An Error occurred while splitting => ${String(error)}`,
+      { cause: error },
     );
   }
 }

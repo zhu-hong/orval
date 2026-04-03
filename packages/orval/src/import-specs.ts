@@ -40,6 +40,9 @@ async function resolveSpec(
   const dereferencedData = dereferenceExternalRef(
     data as Record<string, unknown>,
   );
+
+  validateComponentKeys(dereferencedData);
+
   const { valid, errors } = await validateSpec(dereferencedData);
   if (!valid) {
     throw new Error('Validation failed', { cause: errors });
@@ -63,10 +66,59 @@ export async function importSpecs(
     spec,
     input,
     output,
-    target: input.target,
+    target: isString(input.target) ? input.target : workspace,
     workspace,
     projectName,
   });
+}
+
+const COMPONENT_KEY_PATTERN = /^[a-zA-Z0-9.\-_]+$/;
+
+const COMPONENT_SECTIONS = [
+  'schemas',
+  'responses',
+  'parameters',
+  'examples',
+  'requestBodies',
+  'headers',
+  'securitySchemes',
+  'links',
+  'callbacks',
+  'pathItems', // OAS 3.1.0+
+] as const;
+
+/**
+ * Validate that all component keys conform to the OAS regex: ^[a-zA-Z0-9.\-_]+$
+ * @see https://spec.openapis.org/oas/v3.0.3.html#fixed-fields-5
+ * @see https://spec.openapis.org/oas/v3.1.0#fixed-fields-5
+ */
+export function validateComponentKeys(data: Record<string, unknown>): void {
+  const components = data.components;
+  if (!isObject(components)) return;
+
+  const invalidKeys: string[] = [];
+
+  for (const section of COMPONENT_SECTIONS) {
+    const sectionObj = components[section];
+    if (!isObject(sectionObj)) continue;
+
+    for (const key of Object.keys(sectionObj)) {
+      if (!COMPONENT_KEY_PATTERN.test(key)) {
+        invalidKeys.push(`components.${section}.${key}`);
+      }
+    }
+  }
+
+  if (invalidKeys.length > 0) {
+    throw new Error(
+      `Invalid component key${invalidKeys.length > 1 ? 's' : ''} found. ` +
+        `OpenAPI component keys must match the pattern ${COMPONENT_KEY_PATTERN} ` +
+        `(non-ASCII characters are not allowed per the spec).\n` +
+        `  See: https://spec.openapis.org/oas/v3.0.3.html#components-object\n` +
+        `  Invalid keys:\n` +
+        invalidKeys.map((k) => `    - ${k}`).join('\n'),
+    );
+  }
 }
 
 /**
@@ -120,8 +172,7 @@ function mergeExternalSchemas(
     schemaNameMappings[extKey] = {};
 
     if (isObject(extDoc) && 'components' in extDoc) {
-      const extComponents = (extDoc as Record<string, unknown>)
-        .components as Record<string, unknown>;
+      const extComponents = extDoc.components as Record<string, unknown>;
       if (isObject(extComponents) && 'schemas' in extComponents) {
         const extSchemas = extComponents.schemas as Record<string, unknown>;
         for (const [schemaName, schema] of Object.entries(extSchemas)) {
@@ -130,10 +181,8 @@ function mergeExternalSchemas(
           const isXExtRef =
             isObject(existingSchema) &&
             '$ref' in existingSchema &&
-            isString((existingSchema as Record<string, unknown>).$ref) &&
-            (
-              (existingSchema as Record<string, unknown>).$ref as string
-            ).startsWith('#/x-ext/');
+            isString(existingSchema.$ref) &&
+            existingSchema.$ref.startsWith('#/x-ext/');
 
           let finalSchemaName = schemaName;
 
@@ -179,7 +228,7 @@ function scrubUnwantedKeys(obj: unknown): unknown {
   if (obj === null || obj === undefined) return obj;
   if (Array.isArray(obj)) return obj.map((x) => scrubUnwantedKeys(x));
   if (isObject(obj)) {
-    const rec = obj as Record<string, unknown>;
+    const rec = obj;
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(rec)) {
       if (UNWANTED_KEYS.has(k)) continue;
@@ -207,7 +256,7 @@ function updateInternalRefs(
   }
 
   if (isObject(obj)) {
-    const record = obj as Record<string, unknown>;
+    const record = obj;
 
     // Check if this is a $ref to #/components/schemas/...
     if ('$ref' in record && isString(record.$ref)) {

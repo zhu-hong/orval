@@ -8,10 +8,10 @@ import {
   NamingConvention,
 } from '../types';
 import { conventionName } from '../utils';
+import { escapeRegExp } from '../utils/string';
 
 interface GenerateImportsOptions {
   imports: readonly GeneratorImport[];
-  target: string;
   namingConvention?: NamingConvention;
 }
 
@@ -233,7 +233,15 @@ export function addDependency({
   isAllowSyntheticDefaultImports,
 }: AddDependencyOptions) {
   const toAdds = exports.filter((e) => {
-    const searchWords = [e.alias, e.name].filter((p) => p?.length).join('|');
+    const searchWords = [e.alias, e.name]
+      .filter((p): p is string => Boolean(p?.length))
+      .map((part) => escapeRegExp(part))
+      .join('|');
+
+    if (!searchWords) {
+      return false;
+    }
+
     const pattern = new RegExp(String.raw`\b(${searchWords})\b`, 'g');
 
     return implementation.match(pattern);
@@ -306,7 +314,7 @@ export function addDependency({
 
 function getLibName(code: string) {
   const splitString = code.split(' from ');
-  return splitString[splitString.length - 1].split(';')[0].trim();
+  return (splitString.at(-1) ?? '').split(';')[0].trim();
 }
 
 export function generateDependencyImports(

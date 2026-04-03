@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import {
   type ContextSpec,
   conventionName,
@@ -8,7 +10,6 @@ import {
   type OpenApiRequestBodyObject,
   type OpenApiSchemaObject,
   pascal,
-  upath,
   type ZodCoerceType,
 } from '@orval/core';
 import {
@@ -19,17 +20,17 @@ import {
 } from '@orval/zod';
 import fs from 'fs-extra';
 
-type ZodSchemaFileEntry = {
+interface ZodSchemaFileEntry {
   schemaName: string;
   consts: string;
   zodExpression: string;
-};
+}
 
 type ZodSchemaFileToWrite = ZodSchemaFileEntry & {
   filePath: string;
 };
 
-type WriteZodOutputOptions = {
+interface WriteZodOutputOptions {
   namingConvention: NamingConvention;
   indexFiles: boolean;
   packageJson?: NormalizedOutputOptions['packageJson'];
@@ -43,22 +44,22 @@ type WriteZodOutputOptions = {
       };
     };
   };
-};
+}
 
-type WriteZodSchemasInput = {
+interface WriteZodSchemasInput {
   spec: ContextSpec['spec'];
   target: string;
   schemas: {
     name: string;
     schema?: OpenApiSchemaObject | OpenApiReferenceObject;
   }[];
-};
+}
 
-type WriteZodVerbResponseType = {
+interface WriteZodVerbResponseType {
   value: string;
   isRef?: boolean;
   originalSchema?: OpenApiSchemaObject;
-};
+}
 
 type WriteZodSchemasFromVerbsInput = Record<
   string,
@@ -77,20 +78,20 @@ type WriteZodSchemasFromVerbsInput = Record<
   }
 >;
 
-type WriteZodSchemasFromVerbsContext = {
+interface WriteZodSchemasFromVerbsContext {
   output: {
     override: {
-      useDates?: boolean;
-      zod: {
-        dateTimeOptions?: Record<string, unknown>;
-        timeOptions?: Record<string, unknown>;
-      };
+      useDates?: NormalizedOutputOptions['override']['useDates'];
+      zod: Pick<
+        NormalizedOutputOptions['override']['zod'],
+        'dateTimeOptions' | 'timeOptions'
+      >;
     };
   };
   spec: ContextSpec['spec'];
   target: string;
   workspace: string;
-};
+}
 
 function generateZodSchemaFileContent(
   header: string,
@@ -102,7 +103,8 @@ function generateZodSchemaFileContent(
 
       return `${schemaConsts}export const ${schemaName} = ${zodExpression}
 
-export type ${schemaName} = zod.input<typeof ${schemaName}>;`;
+export type ${schemaName} = zod.input<typeof ${schemaName}>;
+export type ${schemaName}Output = zod.output<typeof ${schemaName}>;`;
     })
     .join('\n\n');
 
@@ -164,7 +166,7 @@ async function writeZodSchemaIndex(
   shouldMergeExisting = false,
 ) {
   const importFileExtension = fileExtension.replace(/\.ts$/, '');
-  const indexPath = upath.join(schemasPath, `index${fileExtension}`);
+  const indexPath = path.join(schemasPath, `index.ts`);
 
   let existingExports = '';
   if (shouldMergeExisting && (await fs.pathExists(indexPath))) {
@@ -215,7 +217,7 @@ export async function writeZodSchemas(
     }
 
     const fileName = conventionName(name, output.namingConvention);
-    const filePath = upath.join(schemasPath, `${fileName}${fileExtension}`);
+    const filePath = path.join(schemasPath, `${fileName}${fileExtension}`);
     const context: ContextSpec = {
       spec: builder.spec,
       target: builder.target,
@@ -284,7 +286,7 @@ export async function writeZodSchemasFromVerbs(
   output: WriteZodOutputOptions,
   context: WriteZodSchemasFromVerbsContext,
 ) {
-  const zodContext = context as ContextSpec;
+  const zodContext = context as unknown as ContextSpec;
   const verbOptionsArray = Object.values(verbOptions);
 
   if (verbOptionsArray.length === 0) {
@@ -298,10 +300,7 @@ export async function writeZodSchemasFromVerbs(
   const generateVerbsSchemas = verbOptionsArray.flatMap((verbOption) => {
     const operation = verbOption.originalOperation;
 
-    const requestBody = operation.requestBody as
-      | OpenApiRequestBodyObject
-      | OpenApiReferenceObject
-      | undefined;
+    const requestBody = operation.requestBody;
     const requestBodyContent =
       requestBody && 'content' in requestBody
         ? (requestBody as OpenApiRequestBodyObject).content
@@ -410,7 +409,7 @@ export async function writeZodSchemasFromVerbs(
 
   for (const { name, schema } of uniqueVerbsSchemas) {
     const fileName = conventionName(name, output.namingConvention);
-    const filePath = upath.join(schemasPath, `${fileName}${fileExtension}`);
+    const filePath = path.join(schemasPath, `${fileName}${fileExtension}`);
 
     const zodDefinition = generateZodValidationSchemaDefinition(
       schema,

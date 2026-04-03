@@ -2,9 +2,18 @@ import type { allLocales } from '@faker-js/faker';
 import type { OpenAPIV3_1 } from '@scalar/openapi-types';
 import type { TypeDocOptions } from 'typedoc';
 
+export const SupportedFormatter = {
+  PRETTIER: 'prettier',
+  BIOME: 'biome',
+  OXFMT: 'oxfmt',
+} as const;
+
+export type SupportedFormatter =
+  (typeof SupportedFormatter)[keyof typeof SupportedFormatter];
+
 export interface Options {
   output?: string | OutputOptions;
-  input?: string | InputOptions;
+  input?: string | string[] | InputOptions;
   hooks?: Partial<HooksOptions>;
 }
 
@@ -24,7 +33,7 @@ export interface NormalizedOptions {
   hooks: NormalizedHookOptions;
 }
 
-export type NormalizedOutputOptions = {
+export interface NormalizedOutputOptions {
   workspace?: string;
   target: string;
   schemas?: string | SchemaOptions;
@@ -38,8 +47,7 @@ export type NormalizedOutputOptions = {
   httpClient: OutputHttpClient;
   clean: boolean | string[];
   docs: boolean | OutputDocsOptions;
-  prettier: boolean;
-  biome: boolean;
+  formatter?: SupportedFormatter;
   tsconfig?: Tsconfig;
   packageJson?: PackageJson;
   headers: boolean;
@@ -50,13 +58,33 @@ export type NormalizedOutputOptions = {
   unionAddMissingProperties: boolean;
   optionsParamRequired: boolean;
   propertySortOrder: PropertySortOrder;
-};
+}
 
-export type NormalizedParamsSerializerOptions = {
+export interface NormalizedParamsSerializerOptions {
   qs?: Record<string, unknown>;
-};
+}
 
-export type NormalizedOverrideOutput = {
+/**
+ * Controls how readonly properties are treated when a schema is reused as a request body.
+ *
+ * Best practice:
+ * - `strip` (default): recommended for most OpenAPI specs, because `readOnly`
+ *   properties are response-oriented and generally should not constrain request
+ *   payload authoring.
+ * - `preserve`: use when your schema intentionally models immutable request DTOs
+ *   and you want generated request-body types to keep readonly modifiers.
+ *
+ * Note: this applies to request bodies regardless of the generated client style
+ * (`httpClient`, `httpResource`, etc.). `httpResource` still issues request
+ * payloads, so the same OpenAPI guidance applies.
+ *
+ * If we later want a stricter OpenAPI-aligned mode that omits `readOnly`
+ * properties from request bodies entirely, that should be introduced as a new
+ * explicit mode rather than overloading `preserve`.
+ */
+export type ReadonlyRequestBodiesMode = 'strip' | 'preserve';
+
+export interface NormalizedOverrideOutput {
   title?: (title: string) => string;
   transformer?: OutputTransformer;
   mutator?: NormalizedMutator;
@@ -89,7 +117,7 @@ export type NormalizedOverrideOutput = {
   };
   hono: NormalizedHonoOptions;
   query: NormalizedQueryOptions;
-  angular: Required<AngularOptions>;
+  angular: NormalizedAngularOptions;
   swr: SwrOptions;
   zod: NormalizedZodOptions;
   fetch: NormalizedFetchOptions;
@@ -98,6 +126,7 @@ export type NormalizedOverrideOutput = {
     route: string,
     verb: Verbs,
   ) => string;
+
   requestOptions: Record<string, unknown> | boolean;
   useDates?: boolean;
   useTypeOverInterfaces?: boolean;
@@ -106,6 +135,14 @@ export type NormalizedOverrideOutput = {
   useNamedParameters?: boolean;
   enumGenerationType: EnumGeneration;
   suppressReadonlyModifier?: boolean;
+  /**
+   * Controls how readonly properties are handled for generated request-body types.
+   *
+   * Prefer `strip` for most OpenAPI specs because `readOnly` fields are
+   * response-oriented. Use `preserve` only when your request DTOs are
+   * intentionally immutable and should remain readonly in generated types.
+   */
+  preserveReadonlyRequestBodies?: ReadonlyRequestBodiesMode;
   jsDoc: NormalizedJsDocOptions;
   aliasCombinedTypes: boolean;
   /**
@@ -113,18 +150,18 @@ export type NormalizedOverrideOutput = {
    * @default false
    */
   useNullForOptional?: boolean;
-};
+}
 
-export type NormalizedMutator = {
+export interface NormalizedMutator {
   path: string;
   name?: string;
   default: boolean;
   alias?: Record<string, string>;
   external?: string[];
   extension?: string;
-};
+}
 
-export type NormalizedOperationOptions = {
+export interface NormalizedOperationOptions {
   transformer?: OutputTransformer;
   mutator?: NormalizedMutator;
   mock?: {
@@ -133,7 +170,7 @@ export type NormalizedOperationOptions = {
   };
   contentType?: OverrideOutputContentType;
   query?: NormalizedQueryOptions;
-  angular?: Required<AngularOptions>;
+  angular?: NormalizedAngularOptions;
   swr?: SwrOptions;
   zod?: NormalizedZodOptions;
   operationName?: (
@@ -146,9 +183,9 @@ export type NormalizedOperationOptions = {
   formUrlEncoded?: boolean | NormalizedMutator;
   paramsSerializer?: NormalizedMutator;
   requestOptions?: object | boolean;
-};
+}
 
-export type NormalizedInputOptions = {
+export interface NormalizedInputOptions {
   target: string | OpenApiDocument;
   override: OverrideInput;
   filters?: InputFiltersOptions;
@@ -158,25 +195,25 @@ export type NormalizedInputOptions = {
       headers: Record<string, string>;
     }[];
   };
-};
+}
 
 export type OutputClientFunc = (
   clients: GeneratorClients,
 ) => ClientGeneratorsBuilder;
 
-export type BaseUrlFromSpec = {
+export interface BaseUrlFromSpec {
   getBaseUrlFromSpecification: true;
   variables?: Record<string, string>;
   index?: number;
   baseUrl?: never;
-};
+}
 
-export type BaseUrlFromConstant = {
+export interface BaseUrlFromConstant {
   getBaseUrlFromSpecification: false;
   variables?: never;
   index?: never;
   baseUrl: string;
-};
+}
 
 export const PropertySortOrder = {
   ALPHABETICAL: 'Alphabetical',
@@ -207,17 +244,17 @@ export type EnumGeneration =
 
 export type SchemaGenerationType = 'typescript' | 'zod';
 
-export type SchemaOptions = {
+export interface SchemaOptions {
   path: string;
   type: SchemaGenerationType;
-};
+}
 
-export type NormalizedSchemaOptions = {
+export interface NormalizedSchemaOptions {
   path: string;
   type: SchemaGenerationType;
-};
+}
 
-export type OutputOptions = {
+export interface OutputOptions {
   workspace?: string;
   target: string;
   schemas?: string | SchemaOptions;
@@ -237,8 +274,7 @@ export type OutputOptions = {
   httpClient?: OutputHttpClient;
   clean?: boolean | string[];
   docs?: boolean | OutputDocsOptions;
-  prettier?: boolean;
-  biome?: boolean;
+  formatter?: SupportedFormatter;
   tsconfig?: string | Tsconfig;
   packageJson?: string;
   headers?: boolean;
@@ -249,16 +285,16 @@ export type OutputOptions = {
   unionAddMissingProperties?: boolean;
   optionsParamRequired?: boolean;
   propertySortOrder?: PropertySortOrder;
-};
+}
 
-export type InputFiltersOptions = {
+export interface InputFiltersOptions {
   mode?: 'include' | 'exclude';
   tags?: (string | RegExp)[];
   schemas?: (string | RegExp)[];
-};
+}
 
-export type InputOptions = {
-  target: string | Record<string, unknown> | OpenApiDocument;
+export interface InputOptions {
+  target: string | string[] | Record<string, unknown> | OpenApiDocument;
   override?: OverrideInput;
   filters?: InputFiltersOptions;
   parserOptions?: {
@@ -267,7 +303,7 @@ export type InputOptions = {
       headers: Record<string, string>;
     }[];
   };
-};
+}
 
 export const OutputClient = {
   ANGULAR: 'angular',
@@ -326,7 +362,7 @@ export type PreferredContentType =
   | 'application/octet-stream'
   | (string & {});
 
-export type GlobalMockOptions = {
+export interface GlobalMockOptions {
   // This is the type of the mock that will be generated
   type: OutputMockType;
   // This is the option to use the examples from the openapi specification where possible to generate mock data
@@ -342,11 +378,10 @@ export type GlobalMockOptions = {
   baseUrl?: string;
   // This is used to set the locale of the faker library
   locale?: keyof typeof allLocales;
-  // Prefer a specific response content type when multiple are defined
-  // (falls back to the order in the OpenAPI spec when not set)
-  preferredContentType?: PreferredContentType;
+  // Preferred response content type when multiple success content types exist
+  preferredContentType?: string;
   indexMockFiles?: boolean;
-};
+}
 
 export type OverrideMockOptions = Partial<GlobalMockOptions> & {
   arrayMin?: number;
@@ -392,20 +427,20 @@ type OutputTransformerFn = (verb: GeneratorVerbOptions) => GeneratorVerbOptions;
 
 type OutputTransformer = string | OutputTransformerFn;
 
-export type MutatorObject = {
+export interface MutatorObject {
   path: string;
   name?: string;
   default?: boolean;
   alias?: Record<string, string>;
   external?: string[];
   extension?: string;
-};
+}
 
 export type Mutator = string | MutatorObject;
 
-export type ParamsSerializerOptions = {
+export interface ParamsSerializerOptions {
   qs?: Record<string, unknown>;
-};
+}
 
 export const FormDataArrayHandling = {
   SERIALIZE: 'serialize',
@@ -437,7 +472,7 @@ export type FormDataType<TMutator> =
       arrayHandling: FormDataArrayHandling;
     };
 
-export type OverrideOutput = {
+export interface OverrideOutput {
   title?: (title: string) => string;
   transformer?: OutputTransformer;
   mutator?: Mutator;
@@ -479,6 +514,7 @@ export type OverrideOutput = {
     verb: Verbs,
   ) => string;
   fetch?: FetchOptions;
+
   requestOptions?: Record<string, unknown> | boolean;
   useDates?: boolean;
   useTypeOverInterfaces?: boolean;
@@ -487,6 +523,14 @@ export type OverrideOutput = {
   useNamedParameters?: boolean;
   enumGenerationType?: EnumGeneration;
   suppressReadonlyModifier?: boolean;
+  /**
+   * Controls how readonly properties are handled for generated request-body types.
+   *
+   * Prefer `strip` for most OpenAPI specs because `readOnly` fields are
+   * response-oriented. Use `preserve` only when your request DTOs are
+   * intentionally immutable and should remain readonly in generated types.
+   */
+  preserveReadonlyRequestBodies?: ReadonlyRequestBodiesMode;
   jsDoc?: JsDocOptions;
   aliasCombinedTypes?: boolean;
   /**
@@ -494,43 +538,43 @@ export type OverrideOutput = {
    * @default false
    */
   useNullForOptional?: boolean;
-};
+}
 
-export type JsDocOptions = {
+export interface JsDocOptions {
   filter?: (
     schema: Record<string, unknown>,
   ) => { key: string; value: string }[];
-};
+}
 
-export type NormalizedJsDocOptions = {
+export interface NormalizedJsDocOptions {
   filter?: (
     schema: Record<string, unknown>,
   ) => { key: string; value: string }[];
-};
+}
 
-export type OverrideOutputContentType = {
+export interface OverrideOutputContentType {
   include?: string[];
   exclude?: string[];
-};
+}
 
-export type NormalizedHonoOptions = {
+export interface NormalizedHonoOptions {
   handlers?: string;
   compositeRoute: string;
   validator: boolean | 'hono';
   validatorOutputPath: string;
-};
+}
 
-export type ZodDateTimeOptions = {
+export interface ZodDateTimeOptions {
   offset?: boolean;
   local?: boolean;
   precision?: number;
-};
+}
 
-export type ZodTimeOptions = {
+export interface ZodTimeOptions {
   precision?: -1 | 0 | 1 | 2 | 3;
-};
+}
 
-export type ZodOptions = {
+export interface ZodOptions {
   strict?: {
     param?: boolean;
     query?: boolean;
@@ -562,11 +606,12 @@ export type ZodOptions = {
   dateTimeOptions?: ZodDateTimeOptions;
   timeOptions?: ZodTimeOptions;
   generateEachHttpStatus?: boolean;
-};
+  useBrandedTypes?: boolean;
+}
 
 export type ZodCoerceType = 'string' | 'number' | 'boolean' | 'bigint' | 'date';
 
-export type NormalizedZodOptions = {
+export interface NormalizedZodOptions {
   strict: {
     param: boolean;
     query: boolean;
@@ -596,9 +641,10 @@ export type NormalizedZodOptions = {
     response?: NormalizedMutator;
   };
   generateEachHttpStatus: boolean;
+  useBrandedTypes: boolean;
   dateTimeOptions: ZodDateTimeOptions;
   timeOptions: ZodTimeOptions;
-};
+}
 
 export type InvalidateTarget =
   | string
@@ -609,21 +655,21 @@ export type InvalidateTarget =
       file?: string;
     };
 
-export type MutationInvalidatesRule = {
+export interface MutationInvalidatesRule {
   onMutations: string[];
   invalidates: InvalidateTarget[];
-};
+}
 
 export type MutationInvalidatesConfig = MutationInvalidatesRule[];
 
-export type HonoOptions = {
+export interface HonoOptions {
   handlers?: string;
   compositeRoute?: string;
   validator?: boolean | 'hono';
   validatorOutputPath?: string;
-};
+}
 
-export type NormalizedQueryOptions = {
+export interface NormalizedQueryOptions {
   useQuery?: boolean;
   useSuspenseQuery?: boolean;
   useMutation?: boolean;
@@ -632,6 +678,9 @@ export type NormalizedQueryOptions = {
   useInfiniteQueryParam?: string;
   usePrefetch?: boolean;
   useInvalidate?: boolean;
+  useSetQueryData?: boolean;
+  useGetQueryData?: boolean;
+
   options?: Record<string, unknown>;
   queryKey?: NormalizedMutator;
   queryOptions?: NormalizedMutator;
@@ -645,9 +694,9 @@ export type NormalizedQueryOptions = {
   version?: 3 | 4 | 5;
   mutationInvalidates?: MutationInvalidatesConfig;
   runtimeValidation?: boolean;
-};
+}
 
-export type QueryOptions = {
+export interface QueryOptions {
   useQuery?: boolean;
   useSuspenseQuery?: boolean;
   useMutation?: boolean;
@@ -656,6 +705,9 @@ export type QueryOptions = {
   useInfiniteQueryParam?: string;
   usePrefetch?: boolean;
   useInvalidate?: boolean;
+  useSetQueryData?: boolean;
+  useGetQueryData?: boolean;
+
   options?: Record<string, unknown>;
   queryKey?: Mutator;
   queryOptions?: Mutator;
@@ -669,14 +721,62 @@ export type QueryOptions = {
   version?: 3 | 4 | 5;
   mutationInvalidates?: MutationInvalidatesConfig;
   runtimeValidation?: boolean;
-};
+}
 
-export type AngularOptions = {
+export interface AngularOptions {
   provideIn?: 'root' | 'any' | boolean;
+  /**
+   * Preferred name for configuring how retrieval-style operations are emitted.
+   *
+   * - `httpClient`: keep retrievals as service methods
+   * - `httpResource`: emit retrievals as Angular `httpResource` helpers
+   * - `both`: emit retrieval helpers and keep service methods where needed
+   *
+   * Mutation-style operations still use generated `HttpClient` service methods
+   * by default unless a per-operation override forces a different behavior.
+   */
+  retrievalClient?: 'httpClient' | 'httpResource' | 'both';
+  /**
+   * Backward-compatible alias for `retrievalClient`.
+   *
+   * Kept for compatibility with existing configs.
+   */
+  client?: 'httpClient' | 'httpResource' | 'both';
   runtimeValidation?: boolean;
-};
+  httpResource?: AngularHttpResourceOptions;
+}
 
-export type SwrOptions = {
+export interface NormalizedAngularOptions {
+  provideIn: 'root' | 'any' | boolean;
+  client: 'httpClient' | 'httpResource' | 'both';
+  runtimeValidation: boolean;
+  httpResource?: AngularHttpResourceOptions;
+}
+
+export interface AngularHttpResourceOptions {
+  /**
+   * Value to expose while the resource is idle/loading.
+   *
+   * Serialized as a literal into generated code.
+   */
+  defaultValue?: unknown;
+  /**
+   * Debug name shown in Angular DevTools.
+   */
+  debugName?: string;
+  /**
+   * Raw code expression for HttpResourceOptions.injector.
+   * Example: `inject(Injector)`.
+   */
+  injector?: string;
+  /**
+   * Raw code expression for HttpResourceOptions.equal.
+   * Example: `(a, b) => a.id === b.id`.
+   */
+  equal?: string;
+}
+
+export interface SwrOptions {
   useInfinite?: boolean;
   useSWRMutationForGet?: boolean;
   useSuspense?: boolean;
@@ -684,31 +784,31 @@ export type SwrOptions = {
   swrOptions?: unknown;
   swrMutationOptions?: unknown;
   swrInfiniteOptions?: unknown;
-};
+}
 
-export type NormalizedFetchOptions = {
+export interface NormalizedFetchOptions {
   includeHttpResponseReturnType: boolean;
   forceSuccessResponse: boolean;
   jsonReviver?: Mutator;
   runtimeValidation: boolean;
-};
+}
 
-export type FetchOptions = {
+export interface FetchOptions {
   includeHttpResponseReturnType?: boolean;
   forceSuccessResponse?: boolean;
   jsonReviver?: Mutator;
   runtimeValidation?: boolean;
-};
+}
 
 export type InputTransformerFn = (spec: OpenApiDocument) => OpenApiDocument;
 
 type InputTransformer = string | InputTransformerFn;
 
-export type OverrideInput = {
+export interface OverrideInput {
   transformer?: InputTransformer;
-};
+}
 
-export type OperationOptions = {
+export interface OperationOptions {
   transformer?: OutputTransformer;
   mutator?: Mutator;
   mock?: {
@@ -716,7 +816,7 @@ export type OperationOptions = {
     properties?: MockProperties;
   };
   query?: QueryOptions;
-  angular?: Required<AngularOptions>;
+  angular?: AngularOptions;
   swr?: SwrOptions;
   zod?: ZodOptions;
   operationName?: (
@@ -729,11 +829,13 @@ export type OperationOptions = {
   formUrlEncoded?: boolean | Mutator;
   paramsSerializer?: Mutator;
   requestOptions?: object | boolean;
-};
+}
 
 export type Hook = 'afterAllFilesWrite';
 
-export type HookFunction = (...args: unknown[]) => void | Promise<void>;
+export type HookFunction<TArgs extends unknown[] = unknown[]> = (
+  ...args: TArgs
+) => void | Promise<void>;
 
 export interface HookOption {
   command: string | HookFunction;
@@ -765,14 +867,14 @@ export const Verbs = {
   HEAD: 'head' as Verbs,
 };
 
-export type ImportOpenApi = {
+export interface ImportOpenApi {
   spec: OpenApiDocument;
   input: NormalizedInputOptions;
   output: NormalizedOutputOptions;
   target: string;
   workspace: string;
   projectName?: string;
-};
+}
 
 export interface ContextSpec {
   projectName?: string;
@@ -785,18 +887,17 @@ export interface ContextSpec {
 
 export interface GlobalOptions {
   watch?: boolean | string | string[];
+  verbose?: boolean;
   clean?: boolean | string[];
-  prettier?: boolean;
-  biome?: boolean;
+  formatter?: SupportedFormatter;
   mock?: boolean | GlobalMockOptions;
   client?: OutputClient;
   httpClient?: OutputHttpClient;
   mode?: OutputMode;
   tsconfig?: string | Tsconfig;
   packageJson?: string;
-  input?: string;
+  input?: string | string[];
   output?: string;
-  verbose?: boolean;
 }
 
 export interface Tsconfig {
@@ -833,15 +934,15 @@ export interface PackageJson {
   resolvedVersions?: Record<string, string>;
 }
 
-export type GeneratorSchema = {
+export interface GeneratorSchema {
   name: string;
   model: string;
   imports: GeneratorImport[];
   dependencies?: string[];
   schema?: OpenApiSchemaObject;
-};
+}
 
-export type GeneratorImport = {
+export interface GeneratorImport {
   readonly name: string;
   readonly schemaName?: string;
   readonly isZodSchema?: boolean;
@@ -852,21 +953,21 @@ export type GeneratorImport = {
   readonly syntheticDefaultImport?: boolean;
   readonly namespaceImport?: boolean;
   readonly importPath?: string;
-};
+}
 
-export type GeneratorDependency = {
+export interface GeneratorDependency {
   readonly exports: readonly GeneratorImport[];
   readonly dependency: string;
-};
+}
 
-export type GeneratorApiResponse = {
+export interface GeneratorApiResponse {
   operations: GeneratorOperations;
   schemas: GeneratorSchema[];
-};
+}
 
 export type GeneratorOperations = Record<string, GeneratorOperation>;
 
-export type GeneratorTarget = {
+export interface GeneratorTarget {
   imports: GeneratorImport[];
   implementation: string;
   implementationMock: string;
@@ -877,9 +978,9 @@ export type GeneratorTarget = {
   formUrlEncoded?: GeneratorMutator[];
   paramsSerializer?: GeneratorMutator[];
   fetchReviver?: GeneratorMutator[];
-};
+}
 
-export type GeneratorTargetFull = {
+export interface GeneratorTargetFull {
   imports: GeneratorImport[];
   implementation: string;
   implementationMock: {
@@ -894,9 +995,9 @@ export type GeneratorTargetFull = {
   formUrlEncoded?: GeneratorMutator[];
   paramsSerializer?: GeneratorMutator[];
   fetchReviver?: GeneratorMutator[];
-};
+}
 
-export type GeneratorOperation = {
+export interface GeneratorOperation {
   imports: GeneratorImport[];
   implementation: string;
   implementationMock: {
@@ -916,9 +1017,9 @@ export type GeneratorOperation = {
   types?: {
     result: (title?: string) => string;
   };
-};
+}
 
-export type GeneratorVerbOptions = {
+export interface GeneratorVerbOptions {
   verb: Verbs;
   route: string;
   pathRoute: string;
@@ -941,30 +1042,30 @@ export type GeneratorVerbOptions = {
   override: NormalizedOverrideOutput;
   deprecated?: boolean;
   originalOperation: OpenApiOperationObject;
-};
+}
 
 export type GeneratorVerbsOptions = GeneratorVerbOptions[];
 
-export type GeneratorOptions = {
+export interface GeneratorOptions {
   route: string;
   pathRoute: string;
   override: NormalizedOverrideOutput;
   context: ContextSpec;
   mock?: GlobalMockOptions | ClientMockBuilder;
   output: string;
-};
+}
 
-export type GeneratorClient = {
+export interface GeneratorClient {
   implementation: string;
   imports: GeneratorImport[];
   mutators?: GeneratorMutator[];
-};
+}
 
-export type GeneratorMutatorParsingInfo = {
+export interface GeneratorMutatorParsingInfo {
   numberOfParams: number;
   returnNumberOfParams?: number;
-};
-export type GeneratorMutator = {
+}
+export interface GeneratorMutator {
   name: string;
   path: string;
   default: boolean;
@@ -974,7 +1075,7 @@ export type GeneratorMutator = {
   hasThirdArg: boolean;
   isHook: boolean;
   bodyTypeName?: string;
-};
+}
 
 export type ClientBuilder = (
   verbOptions: GeneratorVerbOptions,
@@ -983,10 +1084,10 @@ export type ClientBuilder = (
   output?: NormalizedOutputOptions,
 ) => GeneratorClient | Promise<GeneratorClient>;
 
-export type ClientFileBuilder = {
+export interface ClientFileBuilder {
   path: string;
   content: string;
-};
+}
 export type ClientExtraFilesBuilder = (
   verbOptions: Record<string, GeneratorVerbOptions>,
   output: NormalizedOutputOptions,
@@ -1024,18 +1125,18 @@ export type ClientDependenciesBuilder = (
   httpClient?: OutputHttpClient,
   hasTagsMutator?: boolean,
   override?: NormalizedOverrideOutput,
-) => readonly GeneratorDependency[];
+) => GeneratorDependency[];
 
-export type ClientMockGeneratorImplementation = {
+export interface ClientMockGeneratorImplementation {
   function: string;
   handlerName: string;
   handler: string;
-};
+}
 
-export type ClientMockGeneratorBuilder = {
+export interface ClientMockGeneratorBuilder {
   imports: GeneratorImport[];
   implementation: ClientMockGeneratorImplementation;
-};
+}
 
 export type ClientMockBuilder = (
   verbOptions: GeneratorVerbOptions,
@@ -1053,7 +1154,7 @@ export interface ClientGeneratorsBuilder {
 
 export type GeneratorClients = Record<OutputClient, ClientGeneratorsBuilder>;
 
-export type GetterResponse = {
+export interface GetterResponse {
   imports: GeneratorImport[];
   definition: {
     success: string;
@@ -1068,9 +1169,9 @@ export type GetterResponse = {
   schemas: GeneratorSchema[];
 
   originalSchema?: OpenApiResponsesObject;
-};
+}
 
-export type GetterBody = {
+export interface GetterBody {
   originalSchema: OpenApiReferenceObject | OpenApiRequestBodyObject;
   imports: GeneratorImport[];
   definition: string;
@@ -1080,31 +1181,31 @@ export type GetterBody = {
   formUrlEncoded?: string;
   contentType: string;
   isOptional: boolean;
-};
+}
 
-export type GetterParameters = {
+export interface GetterParameters {
   query: { parameter: OpenApiParameterObject; imports: GeneratorImport[] }[];
   path: { parameter: OpenApiParameterObject; imports: GeneratorImport[] }[];
   header: { parameter: OpenApiParameterObject; imports: GeneratorImport[] }[];
-};
+}
 
-export type GetterParam = {
+export interface GetterParam {
   name: string;
   definition: string;
   implementation: string;
-  default: boolean;
+  default: unknown;
   required: boolean;
   imports: GeneratorImport[];
-};
+}
 
 export type GetterParams = GetterParam[];
-export type GetterQueryParam = {
+export interface GetterQueryParam {
   schema: GeneratorSchema;
   deps: GeneratorSchema[];
   isOptional: boolean;
-  requiredNullableKeys?: string[];
   originalSchema?: OpenApiSchemaObject;
-};
+  requiredNullableKeys?: string[];
+}
 
 export type GetterPropType =
   | 'param'
@@ -1121,13 +1222,13 @@ export const GetterPropType = {
   HEADER: 'header',
 } as const;
 
-type GetterPropBase = {
+interface GetterPropBase {
   name: string;
   definition: string;
   implementation: string;
-  default: boolean;
+  default: unknown;
   required: boolean;
-};
+}
 
 export type GetterProp = GetterPropBase &
   (
@@ -1160,7 +1261,7 @@ export const SchemaType = {
   unknown: 'unknown',
 };
 
-export type ScalarValue = {
+export interface ScalarValue {
   value: string;
   useTypeAlias?: boolean;
   isEnum: boolean;
@@ -1171,8 +1272,8 @@ export type ScalarValue = {
   isRef: boolean;
   dependencies: string[];
   example?: unknown;
-  examples?: Record<string, unknown>;
-};
+  examples?: Record<string, unknown> | unknown[];
+}
 
 export type ResolverValue = ScalarValue & {
   originalSchema: OpenApiSchemaObject;
@@ -1188,7 +1289,7 @@ export type ResReqTypesValue = ScalarValue & {
   originalSchema?: OpenApiSchemaObject;
 };
 
-export type WriteSpecBuilder = {
+export interface WriteSpecBuilder {
   operations: GeneratorOperations;
   verbOptions: Record<string, GeneratorVerbOptions>;
   schemas: GeneratorSchema[];
@@ -1201,27 +1302,27 @@ export type WriteSpecBuilder = {
   info: OpenApiInfoObject;
   target: string;
   spec: OpenApiDocument;
-};
+}
 
-export type WriteModeProps = {
+export interface WriteModeProps {
   builder: WriteSpecBuilder;
   output: NormalizedOutputOptions;
   workspace: string;
   projectName?: string;
   header: string;
   needSchema: boolean;
-};
+}
 
-export type GeneratorApiOperations = {
+export interface GeneratorApiOperations {
   verbOptions: Record<string, GeneratorVerbOptions>;
   operations: GeneratorOperations;
   schemas: GeneratorSchema[];
-};
+}
 
-export type GeneratorClientExtra = {
+export interface GeneratorClientExtra {
   implementation: string;
   implementationMock: string;
-};
+}
 
 export type GeneratorClientTitle = (data: {
   outputClient?: OutputClient | OutputClientFunc;
@@ -1256,10 +1357,7 @@ export type GeneratorClientFooter = (data: {
 export type GeneratorClientImports = (data: {
   client: OutputClient | OutputClientFunc;
   implementation: string;
-  imports: {
-    exports: GeneratorImport[];
-    dependency: string;
-  }[];
+  imports: readonly GeneratorDependency[];
   projectName?: string;
   hasSchemaDir: boolean;
   isAllowSyntheticDefaultImports: boolean;
@@ -1272,10 +1370,7 @@ export type GeneratorClientImports = (data: {
 
 export type GenerateMockImports = (data: {
   implementation: string;
-  imports: {
-    exports: GeneratorImport[];
-    dependency: string;
-  }[];
+  imports: readonly GeneratorDependency[];
   projectName?: string;
   hasSchemaDir: boolean;
   isAllowSyntheticDefaultImports: boolean;

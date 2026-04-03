@@ -1,6 +1,6 @@
 {
   "name": "solid-query-custom-fetch",
-  "version": "8.5.1",
+  "version": "8.6.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@tanstack/solid-query": "^5.90.21",
-    "msw": "^2.12.7",
+    "msw": "catalog:tooling",
     "solid-js": "^1.9.11"
   },
   "msw": {

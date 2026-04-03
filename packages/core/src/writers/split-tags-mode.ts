@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import fs from 'fs-extra';
 
 import { generateModelsInline, generateMutatorImports } from '../generators';
@@ -12,6 +14,7 @@ import {
   upath,
 } from '../utils';
 import { getMockFileExtensionByTypeName } from '../utils/file-extensions';
+import { writeGeneratedFile } from './file';
 import { generateImportsForBuilder } from './generate-imports-for-builder';
 import { generateTargetForTags } from './target-tags';
 import { getOrvalGeneratedTypes, getTypedResponse } from './types';
@@ -24,7 +27,10 @@ export async function writeSplitTagsMode({
   needSchema,
 }: WriteModeProps): Promise<string[]> {
   const { filename, dirname, extension } = getFileInfo(output.target, {
-    backupFilename: conventionName(builder.info.title, output.namingConvention),
+    backupFilename: conventionName(
+      builder.info.title ?? 'filename',
+      output.namingConvention,
+    ),
     extension: output.fileExtension,
   });
 
@@ -37,7 +43,7 @@ export async function writeSplitTagsMode({
   const mockOption =
     output.mock && !isFunction(output.mock) ? output.mock : undefined;
   const indexFilePath = mockOption?.indexMockFiles
-    ? upath.join(
+    ? path.join(
         dirname,
         'index.' + getMockFileExtensionByTypeName(mockOption) + extension,
       )
@@ -67,10 +73,10 @@ export async function writeSplitTagsMode({
         let implementationData = header;
         let mockData = header;
 
+        const importerPath = path.join(dirname, tag, tag + extension);
         const relativeSchemasPath = output.schemas
-          ? '../' +
-            upath.relativeSafe(
-              dirname,
+          ? upath.getRelativeImportPath(
+              importerPath,
               getFileInfo(
                 isString(output.schemas) ? output.schemas : output.schemas.path,
                 { extension: output.fileExtension },
@@ -117,12 +123,12 @@ export async function writeSplitTagsMode({
 
         const schemasPath = output.schemas
           ? undefined
-          : upath.join(dirname, filename + '.schemas' + extension);
+          : path.join(dirname, filename + '.schemas' + extension);
 
         if (schemasPath && needSchema) {
           const schemasData = header + generateModelsInline(builder.schemas);
 
-          await fs.outputFile(schemasPath, schemasData);
+          await writeGeneratedFile(schemasPath, schemasData);
         }
 
         if (mutators) {
@@ -184,15 +190,15 @@ export async function writeSplitTagsMode({
           (OutputClient.ANGULAR === output.client ? '.service' : '') +
           extension;
 
-        const implementationPath = upath.join(
+        const implementationPath = path.join(
           dirname,
           tag,
           implementationFilename,
         );
-        await fs.outputFile(implementationPath, implementationData);
+        await writeGeneratedFile(implementationPath, implementationData);
 
         const mockPath = output.mock
-          ? upath.join(
+          ? path.join(
               dirname,
               tag,
               tag +
@@ -203,7 +209,7 @@ export async function writeSplitTagsMode({
           : undefined;
 
         if (mockPath) {
-          await fs.outputFile(mockPath, mockData);
+          await writeGeneratedFile(mockPath, mockData);
         }
 
         return [
@@ -214,6 +220,7 @@ export async function writeSplitTagsMode({
       } catch (error) {
         throw new Error(
           `Oups... 🍻. An Error occurred while splitting tag ${tag} => ${String(error)}`,
+          { cause: error },
         );
       }
     }),
@@ -235,7 +242,9 @@ export async function writeSplitTagsMode({
   }
 
   return [
-    ...(indexFilePath ? [indexFilePath] : []),
-    ...generatedFilePathsArray.flat(),
+    ...new Set([
+      ...(indexFilePath ? [indexFilePath] : []),
+      ...generatedFilePathsArray.flat(),
+    ]),
   ];
 }

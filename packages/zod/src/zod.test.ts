@@ -3,17 +3,64 @@ import type {
   GeneratorOptions,
   OpenApiSchemaObject,
 } from '@orval/core';
+import { PropertySortOrder } from '@orval/core';
 import { describe, expect, it } from 'vitest';
 
+import { createTestContextSpec } from '../../core/src/test-utils/context';
 import {
   dereference,
   generateZod,
   generateZodValidationSchemaDefinition,
   parseZodValidationSchemaDefinition,
+  predefinedZodFormats,
   type ZodValidationSchemaDefinition,
 } from '.';
+import {
+  getZodDateFormat,
+  getZodDateTimeFormat,
+  getZodTimeFormat,
+} from './compatible-v4';
 
 const testOutput = {} as unknown as Parameters<typeof generateZod>[2];
+
+function makeContextSpec({
+  target,
+  workspace,
+  spec,
+  output,
+  override,
+}: {
+  target?: ContextSpec['target'];
+  workspace?: ContextSpec['workspace'];
+  spec?: Partial<ContextSpec['spec']>;
+  output?: Partial<ContextSpec['output']>;
+  override?: Partial<ContextSpec['output']['override']>;
+} = {}): ContextSpec {
+  const baseContext = createTestContextSpec({
+    output: {
+      propertySortOrder: PropertySortOrder.ALPHABETICAL,
+    },
+  });
+
+  return {
+    ...baseContext,
+    ...(target === undefined ? {} : { target }),
+    ...(workspace === undefined ? {} : { workspace }),
+    spec: {
+      ...baseContext.spec,
+      ...spec,
+    },
+    output: {
+      ...baseContext.output,
+      ...output,
+      override: {
+        ...baseContext.output.override,
+        ...output?.override,
+        ...override,
+      },
+    },
+  };
+}
 
 const record: ZodValidationSchemaDefinition = {
   functions: [
@@ -703,7 +750,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
     expect(parsed.zod).toContain('.strict()');
     // Should be a single object, not multiple objects
     expect(parsed.zod).toMatch(
-      /zod\.object\(\{[^}]*"name"[^}]*"swimming"[^}]*\}\)\.strict\(\)/,
+      /zod\.object\(\{[^}]*"name"[^}]*"swimming"[^}]*}\)\.strict\(\)/,
     );
   });
 
@@ -775,7 +822,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
     expect(parsed.zod).toContain('strictObject');
     // Should be a single object, not multiple objects
     expect(parsed.zod).toMatch(
-      /zod\.strictObject\(\{[^}]*"name"[^}]*"swimming"[^}]*\}\)/,
+      /zod\.strictObject\(\{[^}]*"name"[^}]*"swimming"[^}]*}\)/,
     );
   });
 
@@ -913,13 +960,11 @@ describe('generateZodValidationSchemaDefinition`', () => {
 
     const parsed = parseZodValidationSchemaDefinition(
       result,
-      {
-        output: {
-          override: {
-            useDates: false,
-          },
+      makeContextSpec({
+        override: {
+          useDates: false,
         },
-      } as ContextSpec,
+      }),
       true,
       false,
       false,
@@ -928,14 +973,150 @@ describe('generateZodValidationSchemaDefinition`', () => {
     expect(parsed.zod).not.toContain("'my-guid'");
   });
 
-  describe('description handling', () => {
-    const context: ContextSpec = {
-      output: {
-        override: {
-          useDates: false,
+  it('uses regex after predefined format validator in v4', () => {
+    const expectedZodFormatByOpenApiFormat = new Map([
+      ['date', getZodDateFormat(true)],
+      ['time', getZodTimeFormat(true)],
+      ['date-time', getZodDateTimeFormat(true)],
+      ['email', 'email'],
+      ['uri', 'url'],
+      ['hostname', 'hostname'],
+      ['uuid', 'uuid'],
+    ]);
+
+    for (const format of predefinedZodFormats) {
+      const zodFormat = expectedZodFormatByOpenApiFormat.get(format);
+      expect(zodFormat).toBeDefined();
+
+      const schema: OpenApiSchemaObject = {
+        type: 'string',
+        format: format,
+        pattern: '^[0-9a-f-]+$',
+      };
+
+      const result = generateZodValidationSchemaDefinition(
+        schema,
+        {
+          output: {
+            override: {
+              useDates: false,
+              zod: {
+                dateTimeOptions: {},
+                timeOptions: {},
+              },
+            },
+          },
+        } as ContextSpec,
+        'testFormatPattern',
+        true,
+        true,
+        { required: true },
+      );
+
+      const parsed = parseZodValidationSchemaDefinition(
+        result,
+        {
+          output: {
+            override: {
+              useDates: false,
+            },
+          },
+        } as ContextSpec,
+        true,
+        true,
+        true,
+      );
+
+      expect(parsed.zod).toContain(`.${zodFormat}(`);
+      expect(parsed.zod).toContain('.regex(');
+      expect(parsed.zod).not.toContain('.stringFormat(');
+    }
+  });
+
+  it('generates hostname validator in v4 for hostname format', () => {
+    const schema: OpenApiSchemaObject = {
+      type: 'string',
+      format: 'hostname',
+    };
+
+    const result = generateZodValidationSchemaDefinition(
+      schema,
+      {
+        output: {
+          override: {
+            useDates: false,
+          },
         },
+      } as ContextSpec,
+      'testHostnameV4',
+      true,
+      true, // Zod v4
+      { required: true },
+    );
+
+    const parsed = parseZodValidationSchemaDefinition(
+      result,
+      {
+        output: {
+          override: {
+            useDates: false,
+          },
+        },
+      } as ContextSpec,
+      false,
+      true,
+      true,
+    );
+
+    expect(parsed.zod).toContain('.hostname()');
+    expect(parsed.zod).not.toContain('.url()');
+  });
+
+  it('falls back to url validator for hostname format in v3', () => {
+    const schema: OpenApiSchemaObject = {
+      type: 'string',
+      format: 'hostname',
+    };
+
+    const result = generateZodValidationSchemaDefinition(
+      schema,
+      {
+        output: {
+          override: {
+            useDates: false,
+          },
+        },
+      } as ContextSpec,
+      'testHostnameV3',
+      true,
+      false, // Zod v3
+      { required: true },
+    );
+
+    const parsed = parseZodValidationSchemaDefinition(
+      result,
+      {
+        output: {
+          override: {
+            useDates: false,
+          },
+        },
+      } as ContextSpec,
+      false,
+      true,
+      false,
+    );
+
+    expect(parsed.zod).toContain('.url()');
+    expect(parsed.zod).not.toContain('.hostname()');
+  });
+
+  describe('description handling', () => {
+    const context = makeContextSpec({
+      override: {
+        useDates: false,
       },
-    } as ContextSpec;
+    });
 
     it('generates a description for a parameter', () => {
       const schemaWithDefault: OpenApiSchemaObject = {
@@ -976,13 +1157,11 @@ describe('generateZodValidationSchemaDefinition`', () => {
   });
 
   describe('default value handling', () => {
-    const context: ContextSpec = {
-      output: {
-        override: {
-          useDates: false,
-        },
+    const context = makeContextSpec({
+      override: {
+        useDates: false,
       },
-    } as ContextSpec;
+    });
 
     it('generates a default value for a non-required string schema', () => {
       const schemaWithDefault: OpenApiSchemaObject = {
@@ -1429,16 +1608,81 @@ describe('generateZodValidationSchemaDefinition`', () => {
       );
       expect(parsed.consts).toContain('export const petAgeMax = 30;');
     });
+
+    it('does not leak const suffix counters across repeated top-level generations', () => {
+      const schema: OpenApiSchemaObject = {
+        type: 'object',
+        properties: {
+          status: {
+            type: 'string',
+            enum: ['available', 'pending', 'sold'],
+            default: 'available',
+          },
+          age: {
+            type: 'number',
+            minimum: 0,
+            maximum: 30,
+          },
+        },
+      };
+
+      const firstResult = generateZodValidationSchemaDefinition(
+        schema,
+        context,
+        'pet',
+        false,
+        false,
+        { required: true },
+      );
+
+      const secondResult = generateZodValidationSchemaDefinition(
+        schema,
+        context,
+        'pet',
+        false,
+        false,
+        { required: true },
+      );
+
+      const firstParsed = parseZodValidationSchemaDefinition(
+        firstResult,
+        context,
+        false,
+        false,
+        false,
+      );
+
+      const secondParsed = parseZodValidationSchemaDefinition(
+        secondResult,
+        context,
+        false,
+        false,
+        false,
+      );
+
+      expect(firstParsed.consts).toContain(
+        'export const petStatusDefault = `available`;',
+      );
+      expect(firstParsed.consts).toContain('export const petAgeMax = 30;');
+      expect(firstParsed.consts).not.toContain('petStatusDefaultOne');
+      expect(firstParsed.consts).not.toContain('petAgeMaxOne');
+
+      expect(secondParsed.consts).toContain(
+        'export const petStatusDefault = `available`;',
+      );
+      expect(secondParsed.consts).toContain('export const petAgeMax = 30;');
+      expect(secondParsed.consts).not.toContain('petStatusDefaultOne');
+      expect(secondParsed.consts).not.toContain('petAgeMaxOne');
+      expect(secondParsed.consts).toBe(firstParsed.consts);
+    });
   });
 
   describe('enum handling', () => {
-    const context: ContextSpec = {
-      output: {
-        override: {
-          useDates: false,
-        },
+    const context = makeContextSpec({
+      override: {
+        useDates: false,
       },
-    } as ContextSpec;
+    });
 
     it('generates an enum for a string', () => {
       const schema: OpenApiSchemaObject = {
@@ -1504,6 +1748,267 @@ describe('generateZodValidationSchemaDefinition`', () => {
         false,
       );
       expect(parsed.zod).toBe("zod.enum(['+33', '+420']).optional()");
+    });
+
+    it('skips string constraints for direct enums with minLength/maxLength (#3024)', () => {
+      const schema: OpenApiSchemaObject = {
+        type: 'string',
+        enum: ['cat', 'dog'],
+        minLength: 2,
+        maxLength: 3,
+      };
+
+      const result = generateZodValidationSchemaDefinition(
+        schema,
+        context,
+        'testEnumStringMinLength',
+        false,
+        false,
+        { required: false },
+      );
+
+      expect(result).toEqual({
+        functions: [
+          ['enum', "['cat', 'dog']"],
+          ['optional', undefined],
+        ],
+        consts: [],
+      });
+
+      const parsed = parseZodValidationSchemaDefinition(
+        result,
+        context,
+        false,
+        false,
+        false,
+      );
+
+      expect(parsed.zod).toBe("zod.enum(['cat', 'dog']).optional()");
+      expect(parsed.zod).not.toContain('zod.min(');
+      expect(parsed.zod).not.toContain('.min(');
+      expect(parsed.zod).not.toContain('.max(');
+    });
+
+    it('skips constraints for dereferenced enum schemas with sibling minLength (#3024)', () => {
+      const dereferenceContext = {
+        ...context,
+        spec: {
+          components: {
+            schemas: {
+              PetStatus: {
+                type: 'string',
+                enum: ['available', 'sold'],
+              },
+            },
+          },
+        },
+      } as ContextSpec;
+
+      const resolvedSchema = dereference(
+        {
+          $ref: '#/components/schemas/PetStatus',
+          minLength: 1,
+        },
+        dereferenceContext,
+      );
+
+      const result = generateZodValidationSchemaDefinition(
+        resolvedSchema,
+        dereferenceContext,
+        'testDereferencedEnumStringMinLength',
+        false,
+        false,
+        { required: true },
+      );
+
+      expect(result).toEqual({
+        functions: [['enum', "['available', 'sold']"]],
+        consts: [],
+      });
+
+      const parsed = parseZodValidationSchemaDefinition(
+        result,
+        dereferenceContext,
+        false,
+        false,
+        false,
+      );
+
+      expect(parsed.zod).toBe("zod.enum(['available', 'sold'])");
+      expect(parsed.zod).not.toContain('zod.min(');
+      expect(parsed.zod).not.toContain('.min(');
+    });
+
+    it('skips pattern chains for enums to avoid invalid regex-enum output (#3024)', () => {
+      const schema: OpenApiSchemaObject = {
+        type: 'string',
+        enum: ['cat', 'dog'],
+        pattern: '^[a-z]+$',
+      };
+
+      const result = generateZodValidationSchemaDefinition(
+        schema,
+        context,
+        'testEnumStringPattern',
+        false,
+        false,
+        { required: false },
+      );
+
+      expect(result).toEqual({
+        functions: [
+          ['enum', "['cat', 'dog']"],
+          ['optional', undefined],
+        ],
+        consts: [],
+      });
+
+      const parsed = parseZodValidationSchemaDefinition(
+        result,
+        context,
+        false,
+        false,
+        false,
+      );
+
+      expect(parsed.zod).toBe("zod.enum(['cat', 'dog']).optional()");
+      expect(parsed.zod).not.toContain('.regex(');
+      expect(parsed.consts).toBe('');
+    });
+
+    it('skips stringFormat emission for enums in Zod v4 when format and pattern are both present (#3024)', () => {
+      const schema: OpenApiSchemaObject = {
+        type: 'string',
+        enum: ['cat', 'dog'],
+        format: 'pet-kind',
+        pattern: '^[a-z]+$',
+      };
+
+      const result = generateZodValidationSchemaDefinition(
+        schema,
+        context,
+        'testEnumStringPatternV4',
+        false,
+        true,
+        { required: false },
+      );
+
+      expect(result).toEqual({
+        functions: [
+          ['enum', "['cat', 'dog']"],
+          ['optional', undefined],
+        ],
+        consts: [],
+      });
+
+      const parsed = parseZodValidationSchemaDefinition(
+        result,
+        context,
+        false,
+        false,
+        true,
+      );
+
+      expect(parsed.zod).toBe("zod.enum(['cat', 'dog']).optional()");
+      expect(parsed.zod).not.toContain('.regex(');
+      expect(parsed.zod).not.toContain('.stringFormat(');
+      expect(parsed.consts).toBe('');
+    });
+
+    it('preserves default while skipping min/max on enums (#3024)', () => {
+      const schema: OpenApiSchemaObject = {
+        type: 'string',
+        enum: ['EUR', 'USD'],
+        minLength: 3,
+        maxLength: 3,
+        default: 'EUR',
+        description: 'Currency code for the order.',
+      };
+
+      const result = generateZodValidationSchemaDefinition(
+        schema,
+        context,
+        'testEnumStringDefault',
+        false,
+        false,
+        { required: false },
+      );
+
+      expect(result).toEqual({
+        functions: [
+          ['enum', "['EUR', 'USD']"],
+          ['default', 'testEnumStringDefaultDefault'],
+          ['describe', "'Currency code for the order.'"],
+        ],
+        consts: ['export const testEnumStringDefaultDefault = `EUR`;'],
+      });
+
+      const parsed = parseZodValidationSchemaDefinition(
+        result,
+        context,
+        false,
+        false,
+        false,
+      );
+
+      expect(parsed.zod).toBe(
+        "zod.enum(['EUR', 'USD']).default(testEnumStringDefaultDefault).describe('Currency code for the order.')",
+      );
+      expect(parsed.zod).not.toContain('zod.min(');
+      expect(parsed.zod).not.toContain('.min(');
+      expect(parsed.zod).not.toContain('.max(');
+      expect(parsed.consts).toBe(
+        'export const testEnumStringDefaultDefault = `EUR`;',
+      );
+    });
+
+    it('skips numeric constraints for enum literal unions (#3024)', () => {
+      const schema: OpenApiSchemaObject = {
+        type: 'number',
+        enum: [1, 2],
+        minimum: 1,
+        maximum: 2,
+        multipleOf: 1,
+      };
+
+      const result = generateZodValidationSchemaDefinition(
+        schema,
+        context,
+        'testEnumNumberConstraints',
+        false,
+        false,
+        { required: false },
+      );
+
+      expect(result).toEqual({
+        functions: [
+          [
+            'oneOf',
+            [
+              { functions: [['literal', 1]], consts: [] },
+              { functions: [['literal', 2]], consts: [] },
+            ],
+          ],
+          ['optional', undefined],
+        ],
+        consts: [],
+      });
+
+      const parsed = parseZodValidationSchemaDefinition(
+        result,
+        context,
+        false,
+        false,
+        false,
+      );
+
+      expect(parsed.zod).toBe(
+        'zod.union([zod.literal(1),zod.literal(2)]).optional()',
+      );
+      expect(parsed.zod).not.toContain('.min(');
+      expect(parsed.zod).not.toContain('.max(');
+      expect(parsed.zod).not.toContain('.multipleOf(');
+      expect(parsed.consts).toBe('');
     });
 
     it('generates an enum for a number', () => {
@@ -1847,7 +2352,7 @@ describe('generateZodValidationSchemaDefinition`', () => {
           useDates: false,
         },
       },
-    } as ContextSpec;
+    } as unknown as ContextSpec;
 
     it('generates an number', () => {
       const schema: OpenApiSchemaObject = {
@@ -3144,7 +3649,7 @@ describe('generateZodWithMultiTypeArray', () => {
           useDates: false,
         },
       },
-    } as ContextSpec;
+    } as unknown as ContextSpec;
 
     // Test case from the issue: type: ["string", "number", "boolean", "null"]
     const schemaWithMultiType: OpenApiSchemaObject = {
@@ -3181,7 +3686,7 @@ describe('generateZodWithMultiTypeArray', () => {
           useDates: false,
         },
       },
-    } as ContextSpec;
+    } as unknown as ContextSpec;
 
     const schemaWithMultiType: OpenApiSchemaObject = {
       type: ['string', 'number'],
@@ -3214,7 +3719,7 @@ describe('generateZodWithMultiTypeArray', () => {
           useDates: false,
         },
       },
-    } as ContextSpec;
+    } as unknown as ContextSpec;
 
     const schemaWithMultiType: OpenApiSchemaObject = {
       type: ['string', 'number'],
@@ -3251,7 +3756,7 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpec;
+    } as unknown as ContextSpec;
 
     // Test case: anyOf with multiple nullable refs that could cause duplicate names
     const schemaWithAnyOfNullableRefs: OpenApiSchemaObject = {
@@ -3308,7 +3813,7 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpec;
+    } as unknown as ContextSpec;
 
     const schemaWithOneOfNullableRefs: OpenApiSchemaObject = {
       oneOf: [
@@ -3364,7 +3869,7 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpec;
+    } as unknown as ContextSpec;
 
     const schemaWithAllOfNullableRefs: OpenApiSchemaObject = {
       allOf: [
@@ -3417,7 +3922,7 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpec;
+    } as unknown as ContextSpec;
 
     const schemaWithAllOfAndProperties: OpenApiSchemaObject = {
       allOf: [
@@ -3473,7 +3978,7 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpec;
+    } as unknown as ContextSpec;
 
     // Test case from issue #2511: nullable oneOf with multiple enum refs
     // This should not generate duplicate schema names like "Item1Hello" and "Item2Hello"
@@ -3560,7 +4065,7 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpec;
+    } as unknown as ContextSpec;
 
     // Test case: anyOf with 3 nullable refs (like Animals.animalId)
     const schemaWithThreeRefs: OpenApiSchemaObject = {
@@ -3602,7 +4107,7 @@ describe('generateZodWithNullableAnyOfRefs', () => {
           useDates: false,
         },
       },
-    } as ContextSpec;
+    } as unknown as ContextSpec;
 
     // Test case: object with multiple anyOf properties (like Animals)
     const schemaWithMultipleAnyOf: OpenApiSchemaObject = {
@@ -5047,6 +5552,513 @@ describe('zod split mode regressions', () => {
     expect(parsed.zod).toContain('.nullable()');
   });
 
+  it('resolves local component refs with schema suffix for arrays and nested objects', () => {
+    const suffixContext = {
+      output: {
+        override: {
+          useDates: false,
+          components: {
+            schemas: {
+              suffix: 'Schema',
+            },
+          },
+        },
+      },
+      spec: {
+        components: {
+          schemas: {
+            Position: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                quantity: { type: 'number' },
+              },
+              required: ['id', 'quantity'],
+            },
+          },
+        },
+      },
+    } as unknown as ContextSpec;
+
+    const resolvedSchema = dereference(
+      {
+        type: 'object',
+        properties: {
+          positions: {
+            type: 'array',
+            items: {
+              $ref: '#/components/schemas/Position',
+            },
+          },
+          primaryPosition: {
+            $ref: '#/components/schemas/Position',
+          },
+        },
+      },
+      suffixContext,
+    );
+
+    const definition = generateZodValidationSchemaDefinition(
+      resolvedSchema,
+      suffixContext,
+      'positionsEnvelope',
+      false,
+      false,
+      { required: true },
+    );
+
+    const parsed = parseZodValidationSchemaDefinition(
+      definition,
+      suffixContext,
+      false,
+      false,
+      false,
+    );
+
+    expect(parsed.zod).toContain('"positions": zod.array(zod.object(');
+    expect(parsed.zod).toContain('"primaryPosition": zod.object(');
+    expect(parsed.zod).not.toContain('zod.unknown()');
+  });
+
+  it('resolves allOf/oneOf/anyOf refs with schema suffix without unknown fallback', () => {
+    const suffixContext = {
+      output: {
+        override: {
+          useDates: false,
+          components: {
+            schemas: {
+              suffix: 'Schema',
+            },
+          },
+        },
+      },
+      spec: {
+        components: {
+          schemas: {
+            BaseEnvelope: {
+              type: 'object',
+              properties: {
+                traceId: { type: 'string' },
+              },
+              required: ['traceId'],
+            },
+            Position: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+              },
+              required: ['id'],
+            },
+            PositionAlias: {
+              type: 'object',
+              properties: {
+                alias: { type: 'string' },
+              },
+              required: ['alias'],
+            },
+          },
+        },
+      },
+    } as unknown as ContextSpec;
+
+    const resolvedSchema = dereference(
+      {
+        type: 'object',
+        properties: {
+          composed: {
+            allOf: [
+              { $ref: '#/components/schemas/BaseEnvelope' },
+              {
+                type: 'object',
+                properties: {
+                  position: {
+                    $ref: '#/components/schemas/Position',
+                  },
+                },
+                required: ['position'],
+              },
+            ],
+          },
+          oneChoice: {
+            oneOf: [
+              { $ref: '#/components/schemas/Position' },
+              { $ref: '#/components/schemas/PositionAlias' },
+            ],
+          },
+          anyChoice: {
+            anyOf: [
+              { $ref: '#/components/schemas/Position' },
+              { $ref: '#/components/schemas/PositionAlias' },
+            ],
+          },
+        },
+        required: ['composed', 'oneChoice', 'anyChoice'],
+      },
+      suffixContext,
+    );
+
+    const definition = generateZodValidationSchemaDefinition(
+      resolvedSchema,
+      suffixContext,
+      'combinatorsEnvelope',
+      false,
+      false,
+      { required: true },
+    );
+
+    const parsed = parseZodValidationSchemaDefinition(
+      definition,
+      suffixContext,
+      false,
+      false,
+      false,
+    );
+
+    expect(parsed.zod).toContain('"composed": zod.object(');
+    expect(parsed.zod).toContain('.and(');
+    expect(parsed.zod).toContain('"oneChoice": zod.union([');
+    expect(parsed.zod).toContain('"anyChoice": zod.union([');
+    expect(parsed.zod).not.toContain('zod.unknown()');
+  });
+
+  it('handles circular $ref with suffix by breaking the cycle', () => {
+    const circularContext = {
+      output: {
+        override: {
+          useDates: false,
+          components: {
+            schemas: {
+              suffix: 'Schema',
+            },
+          },
+        },
+      },
+      spec: {
+        components: {
+          schemas: {
+            TreeNode: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                children: {
+                  type: 'array',
+                  items: {
+                    $ref: '#/components/schemas/TreeNode',
+                  },
+                },
+              },
+              required: ['name'],
+            },
+          },
+        },
+      },
+    } as unknown as ContextSpec;
+
+    const resolvedSchema = dereference(
+      {
+        type: 'object',
+        properties: {
+          root: {
+            $ref: '#/components/schemas/TreeNode',
+          },
+        },
+        required: ['root'],
+      },
+      circularContext,
+    );
+
+    const definition = generateZodValidationSchemaDefinition(
+      resolvedSchema,
+      circularContext,
+      'treeEnvelope',
+      false,
+      false,
+      { required: true },
+    );
+
+    const parsed = parseZodValidationSchemaDefinition(
+      definition,
+      circularContext,
+      false,
+      false,
+      false,
+    );
+
+    // The circular ref should NOT cause infinite recursion or stack overflow.
+    // It should inline the first level and break the cycle.
+    expect(parsed.zod).toContain('"root": zod.object(');
+    expect(parsed.zod).toContain('"name": zod.string()');
+  });
+
+  it('resolves additionalProperties with $ref and schema suffix', () => {
+    const suffixContext = {
+      output: {
+        override: {
+          useDates: false,
+          components: {
+            schemas: {
+              suffix: 'Schema',
+            },
+          },
+        },
+      },
+      spec: {
+        components: {
+          schemas: {
+            Position: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+              },
+              required: ['id'],
+            },
+          },
+        },
+      },
+    } as unknown as ContextSpec;
+
+    const resolvedSchema = dereference(
+      {
+        type: 'object',
+        additionalProperties: {
+          $ref: '#/components/schemas/Position',
+        },
+      },
+      suffixContext,
+    );
+
+    const definition = generateZodValidationSchemaDefinition(
+      resolvedSchema,
+      suffixContext,
+      'positionMap',
+      false,
+      false,
+      { required: true },
+    );
+
+    const parsed = parseZodValidationSchemaDefinition(
+      definition,
+      suffixContext,
+      false,
+      false,
+      false,
+    );
+
+    expect(parsed.zod).toContain('zod.record(zod.string()');
+    expect(parsed.zod).not.toContain('zod.unknown()');
+  });
+
+  it('resolves nullable $ref property with schema suffix (OAS 3.0)', () => {
+    const suffixContext = {
+      output: {
+        override: {
+          useDates: false,
+          components: {
+            schemas: {
+              suffix: 'Schema',
+            },
+          },
+        },
+      },
+      spec: {
+        components: {
+          schemas: {
+            Position: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+              },
+              required: ['id'],
+            },
+          },
+        },
+      },
+    } as unknown as ContextSpec;
+
+    const resolvedSchema = dereference(
+      {
+        type: 'object',
+        properties: {
+          optionalPosition: {
+            $ref: '#/components/schemas/Position',
+            nullable: true,
+          } as unknown as OpenApiSchemaObject,
+        },
+      },
+      suffixContext,
+    );
+
+    const definition = generateZodValidationSchemaDefinition(
+      resolvedSchema,
+      suffixContext,
+      'nullableRefEnvelope',
+      false,
+      false,
+      { required: true },
+    );
+
+    const parsed = parseZodValidationSchemaDefinition(
+      definition,
+      suffixContext,
+      false,
+      false,
+      false,
+    );
+
+    expect(parsed.zod).toContain('"optionalPosition": zod.object(');
+    expect(parsed.zod).toMatch(/\.null(able|ish)\(\)/);
+    expect(parsed.zod).not.toContain('zod.unknown()');
+  });
+
+  it('resolves deep nested allOf chains with schema suffix', () => {
+    const suffixContext = {
+      output: {
+        override: {
+          useDates: false,
+          components: {
+            schemas: {
+              suffix: 'Schema',
+            },
+          },
+        },
+      },
+      spec: {
+        components: {
+          schemas: {
+            Base: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+              },
+              required: ['id'],
+            },
+            Extended: {
+              allOf: [
+                { $ref: '#/components/schemas/Base' },
+                {
+                  type: 'object',
+                  properties: {
+                    name: { type: 'string' },
+                  },
+                  required: ['name'],
+                },
+              ],
+            },
+            DoubleExtended: {
+              allOf: [
+                { $ref: '#/components/schemas/Extended' },
+                {
+                  type: 'object',
+                  properties: {
+                    extra: { type: 'boolean' },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    } as unknown as ContextSpec;
+
+    const resolvedSchema = dereference(
+      {
+        type: 'object',
+        properties: {
+          deep: {
+            $ref: '#/components/schemas/DoubleExtended',
+          },
+        },
+        required: ['deep'],
+      },
+      suffixContext,
+    );
+
+    const definition = generateZodValidationSchemaDefinition(
+      resolvedSchema,
+      suffixContext,
+      'deepNestedEnvelope',
+      false,
+      false,
+      { required: true },
+    );
+
+    const parsed = parseZodValidationSchemaDefinition(
+      definition,
+      suffixContext,
+      false,
+      false,
+      false,
+    );
+
+    // Deep nested allOf with $refs should resolve properly
+    expect(parsed.zod).toContain('.and(');
+    expect(parsed.zod).toContain('"id": zod.string()');
+    expect(parsed.zod).toContain('"name": zod.string()');
+    expect(parsed.zod).not.toContain('zod.unknown()');
+  });
+
+  it('resolves refs with empty suffix (default) without regression', () => {
+    const noSuffixContext = {
+      output: {
+        override: {
+          useDates: false,
+          components: {
+            schemas: {
+              suffix: '',
+            },
+          },
+        },
+      },
+      spec: {
+        components: {
+          schemas: {
+            Position: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+              },
+              required: ['id'],
+            },
+          },
+        },
+      },
+    } as unknown as ContextSpec;
+
+    const resolvedSchema = dereference(
+      {
+        type: 'object',
+        properties: {
+          position: {
+            $ref: '#/components/schemas/Position',
+          },
+        },
+        required: ['position'],
+      },
+      noSuffixContext,
+    );
+
+    const definition = generateZodValidationSchemaDefinition(
+      resolvedSchema,
+      noSuffixContext,
+      'positionEnvelope',
+      false,
+      false,
+      { required: true },
+    );
+
+    const parsed = parseZodValidationSchemaDefinition(
+      definition,
+      noSuffixContext,
+      false,
+      false,
+      false,
+    );
+
+    expect(parsed.zod).toContain('"position": zod.object(');
+    expect(parsed.zod).toContain('"id": zod.string()');
+    expect(parsed.zod).not.toContain('zod.unknown()');
+  });
+
   it('uses passthrough object for generic object schemas in zod v3', () => {
     const schema: OpenApiSchemaObject = {
       type: 'object',
@@ -5209,5 +6221,512 @@ describe('generateZodValidationSchemaDefinition (contentMediaType: application/o
       functions: [['string', undefined]],
       consts: [],
     });
+  });
+});
+
+// --- useBrandedTypes tests ---
+
+const brandedZodOverride = {
+  zod: {
+    strict: {
+      param: false,
+      body: false,
+      response: false,
+      query: false,
+      header: false,
+    },
+    generate: {
+      param: true,
+      body: true,
+      response: true,
+      query: true,
+      header: true,
+    },
+    coerce: {
+      param: false,
+      body: false,
+      response: false,
+      query: false,
+      header: false,
+    },
+    generateEachHttpStatus: false,
+    dateTimeOptions: {},
+    timeOptions: {},
+    useBrandedTypes: true,
+  },
+};
+
+const brandedZodOverrideDisabled = {
+  zod: {
+    ...brandedZodOverride.zod,
+    useBrandedTypes: false,
+  },
+};
+
+describe('generateZod (useBrandedTypes)', () => {
+  // Group 1: Default behavior — no brand
+
+  it('does not append .brand() when useBrandedTypes is false', async () => {
+    const result = await generateZod(
+      {
+        pathRoute: '/cats',
+        verb: 'post',
+        operationName: 'test',
+        override: brandedZodOverrideDisabled,
+      } as unknown as Parameters<typeof generateZod>[0],
+      basicApiSchema,
+      testOutput,
+    );
+
+    expect(result.implementation).not.toMatch(/\.brand[<(]/);
+  });
+
+  it('does not append .brand() when useBrandedTypes is not specified', async () => {
+    const result = await generateZod(
+      {
+        pathRoute: '/cats',
+        verb: 'post',
+        operationName: 'test',
+        override: {
+          zod: {
+            strict: {
+              param: false,
+              body: false,
+              response: false,
+              query: false,
+              header: false,
+            },
+            generate: {
+              param: true,
+              body: true,
+              response: true,
+              query: true,
+              header: true,
+            },
+            coerce: {
+              param: false,
+              body: false,
+              response: false,
+              query: false,
+              header: false,
+            },
+            generateEachHttpStatus: false,
+            dateTimeOptions: {},
+            timeOptions: {},
+          },
+        },
+      } as unknown as Parameters<typeof generateZod>[0],
+      basicApiSchema,
+      testOutput,
+    );
+
+    expect(result.implementation).not.toMatch(/\.brand[<(]/);
+  });
+
+  // Group 2: Brand appended (Zod v3 / v4)
+
+  it('appends .brand<"Name">() to all schemas when useBrandedTypes is true (zod v3)', async () => {
+    const result = await generateZod(
+      {
+        pathRoute: '/cats',
+        verb: 'post',
+        operationName: 'test',
+        override: brandedZodOverride,
+      } as unknown as Parameters<typeof generateZod>[0],
+      basicApiSchema,
+      testOutput,
+    );
+
+    expect(result.implementation).toBe(
+      'export const TestParams = zod.object({\n  "id": zod.string()\n}).brand<"TestParams">()\n\nexport const TestQueryParams = zod.object({\n  "page": zod.number().optional()\n}).brand<"TestQueryParams">()\n\nexport const TestHeader = zod.object({\n  "x-header": zod.string()\n}).brand<"TestHeader">()\n\nexport const TestBody = zod.object({\n  "name": zod.string().optional()\n}).brand<"TestBody">()\n\nexport const TestResponse = zod.object({\n  "name": zod.string().optional()\n}).brand<"TestResponse">()\n\n',
+    );
+  });
+
+  it('appends .brand("Name") to schemas when useBrandedTypes is true (zod v4)', async () => {
+    const v4ApiSchema = {
+      ...basicApiSchema,
+      context: {
+        ...basicApiSchema.context,
+        output: {
+          ...basicApiSchema.context.output,
+          packageJson: {
+            dependencies: {
+              zod: '^4.0.0',
+            },
+          },
+        },
+      },
+    } as unknown as GeneratorOptions;
+
+    const result = await generateZod(
+      {
+        pathRoute: '/cats',
+        verb: 'post',
+        operationName: 'test',
+        override: brandedZodOverride,
+      } as unknown as Parameters<typeof generateZod>[0],
+      v4ApiSchema,
+      testOutput,
+    );
+
+    expect(result.implementation).toBe(
+      'export const TestParams = zod.object({\n  "id": zod.string()\n}).brand("TestParams")\n\nexport const TestQueryParams = zod.object({\n  "page": zod.number().optional()\n}).brand("TestQueryParams")\n\nexport const TestHeader = zod.object({\n  "x-header": zod.string()\n}).brand("TestHeader")\n\nexport const TestBody = zod.object({\n  "name": zod.string().optional()\n}).brand("TestBody")\n\nexport const TestResponse = zod.object({\n  "name": zod.string().optional()\n}).brand("TestResponse")\n\n',
+    );
+  });
+
+  // Group 3: Array body/response
+
+  it('appends .brand() only to the array wrapper, not to the item schema (body)', async () => {
+    const arrayBodyApiSchema = {
+      pathRoute: '/cats',
+      context: {
+        spec: {
+          paths: {
+            '/cats': {
+              post: {
+                operationId: 'xyz',
+                requestBody: {
+                  required: true,
+                  content: {
+                    'application/json': {
+                      schema: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            name: {
+                              type: 'string',
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+                responses: {
+                  '200': {
+                    content: {
+                      'application/json': {
+                        schema: {
+                          type: 'object',
+                          properties: {
+                            id: { type: 'number' },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        output: {
+          override: {
+            zod: {
+              generateEachHttpStatus: false,
+            },
+          },
+        },
+      },
+    } as unknown as GeneratorOptions;
+
+    const result = await generateZod(
+      {
+        pathRoute: '/cats',
+        verb: 'post',
+        operationName: 'test',
+        override: {
+          zod: {
+            ...brandedZodOverride.zod,
+            generate: {
+              param: false,
+              body: true,
+              response: false,
+              query: false,
+              header: false,
+            },
+          },
+        },
+      } as unknown as Parameters<typeof generateZod>[0],
+      arrayBodyApiSchema,
+      testOutput,
+    );
+
+    expect(result.implementation).toContain(
+      'export const TestBodyItem = zod.object({\n  "name": zod.string().optional()\n})',
+    );
+    expect(result.implementation).not.toContain(
+      'TestBodyItem = zod.object({\n  "name": zod.string().optional()\n}).brand',
+    );
+    expect(result.implementation).toContain(
+      'export const TestBody = zod.array(TestBodyItem).brand<"TestBody">()',
+    );
+  });
+
+  it('appends .brand() only to the array wrapper, not to the item schema (response)', async () => {
+    const arrayResponseApiSchema = {
+      pathRoute: '/cats',
+      context: {
+        spec: {
+          paths: {
+            '/cats': {
+              post: {
+                operationId: 'xyz',
+                requestBody: {
+                  required: true,
+                  content: {
+                    'application/json': {
+                      schema: {
+                        type: 'object',
+                        properties: {
+                          name: { type: 'string' },
+                        },
+                      },
+                    },
+                  },
+                },
+                responses: {
+                  '200': {
+                    content: {
+                      'application/json': {
+                        schema: {
+                          type: 'array',
+                          items: {
+                            type: 'object',
+                            properties: {
+                              id: { type: 'number' },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        output: {
+          override: {
+            zod: {
+              generateEachHttpStatus: false,
+            },
+          },
+        },
+      },
+    } as unknown as GeneratorOptions;
+
+    const result = await generateZod(
+      {
+        pathRoute: '/cats',
+        verb: 'post',
+        operationName: 'test',
+        override: {
+          zod: {
+            ...brandedZodOverride.zod,
+            generate: {
+              param: false,
+              body: false,
+              response: true,
+              query: false,
+              header: false,
+            },
+          },
+        },
+      } as unknown as Parameters<typeof generateZod>[0],
+      arrayResponseApiSchema,
+      testOutput,
+    );
+
+    expect(result.implementation).toContain('export const TestResponseItem = ');
+    expect(result.implementation).not.toMatch(
+      /TestResponseItem = zod\.object\([^)]*\)\s*\.brand/,
+    );
+    expect(result.implementation).toContain(
+      'export const TestResponse = zod.array(TestResponseItem).brand<"TestResponse">()',
+    );
+  });
+
+  // Group 4: Combination with other options
+
+  it('appends .brand() after .strict() when both strict and useBrandedTypes are enabled (zod v3)', async () => {
+    const result = await generateZod(
+      {
+        pathRoute: '/cats',
+        verb: 'post',
+        operationName: 'test',
+        override: {
+          zod: {
+            ...brandedZodOverride.zod,
+            strict: {
+              param: false,
+              body: true,
+              response: false,
+              query: false,
+              header: false,
+            },
+            generate: {
+              param: false,
+              body: true,
+              response: false,
+              query: false,
+              header: false,
+            },
+          },
+        },
+      } as unknown as Parameters<typeof generateZod>[0],
+      basicApiSchema,
+      testOutput,
+    );
+
+    expect(result.implementation).toContain('.strict().brand<"TestBody">()');
+  });
+
+  it('appends .brand() to each HTTP status response when generateEachHttpStatus is true', async () => {
+    const multiStatusApiSchema = {
+      pathRoute: '/cats',
+      context: {
+        spec: {
+          paths: {
+            '/cats': {
+              post: {
+                operationId: 'xyz',
+                requestBody: {
+                  required: true,
+                  content: {
+                    'application/json': {
+                      schema: {
+                        type: 'object',
+                        properties: {
+                          name: { type: 'string' },
+                        },
+                      },
+                    },
+                  },
+                },
+                responses: {
+                  '200': {
+                    content: {
+                      'application/json': {
+                        schema: {
+                          type: 'object',
+                          properties: {
+                            id: { type: 'number' },
+                          },
+                        },
+                      },
+                    },
+                  },
+                  '201': {
+                    content: {
+                      'application/json': {
+                        schema: {
+                          type: 'object',
+                          properties: {
+                            name: { type: 'string' },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        output: {
+          override: {
+            zod: {
+              generateEachHttpStatus: true,
+            },
+          },
+        },
+      },
+    } as unknown as GeneratorOptions;
+
+    const result = await generateZod(
+      {
+        pathRoute: '/cats',
+        verb: 'post',
+        operationName: 'test',
+        override: {
+          zod: {
+            ...brandedZodOverride.zod,
+            generateEachHttpStatus: true,
+            generate: {
+              param: false,
+              body: false,
+              response: true,
+              query: false,
+              header: false,
+            },
+          },
+        },
+      } as unknown as Parameters<typeof generateZod>[0],
+      multiStatusApiSchema,
+      testOutput,
+    );
+
+    expect(result.implementation).toContain('.brand<"Test200Response">()');
+    expect(result.implementation).toContain('.brand<"Test201Response">()');
+  });
+
+  // Group 5: Partial generation with brand
+
+  it('appends .brand() when only response is generated', async () => {
+    const result = await generateZod(
+      {
+        pathRoute: '/cats',
+        verb: 'post',
+        operationName: 'test',
+        override: {
+          zod: {
+            ...brandedZodOverride.zod,
+            generate: {
+              param: false,
+              body: false,
+              response: true,
+              query: false,
+              header: false,
+            },
+          },
+        },
+      } as unknown as Parameters<typeof generateZod>[0],
+      basicApiSchema,
+      testOutput,
+    );
+
+    expect(result.implementation).toBe(
+      'export const TestResponse = zod.object({\n  "name": zod.string().optional()\n}).brand<"TestResponse">()\n\n',
+    );
+  });
+
+  it('appends .brand() when only body is generated', async () => {
+    const result = await generateZod(
+      {
+        pathRoute: '/cats',
+        verb: 'post',
+        operationName: 'test',
+        override: {
+          zod: {
+            ...brandedZodOverride.zod,
+            generate: {
+              param: false,
+              body: true,
+              response: false,
+              query: false,
+              header: false,
+            },
+          },
+        },
+      } as unknown as Parameters<typeof generateZod>[0],
+      basicApiSchema,
+      testOutput,
+    );
+
+    expect(result.implementation).toBe(
+      'export const TestBody = zod.object({\n  "name": zod.string().optional()\n}).brand<"TestBody">()\n\n',
+    );
   });
 });

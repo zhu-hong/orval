@@ -1,6 +1,6 @@
 {
   "name": "angular-app",
-  "version": "8.5.1",
+  "version": "8.6.2",
   "type": "module",
   "scripts": {
     "ng": "ng",
@@ -9,7 +9,7 @@
     "watch": "ng build --watch --configuration development",
     "test": "ng test --no-watch",
     "test:snapshots": "vitest run --config vitest.snapshots.ts",
-    "test:snapshots:update": "yarn test:snapshots --update",
+    "test:snapshots:update": "bun run test:snapshots --update",
     "lint": "ng lint",
     "generate-api": "orval",
     "clean": "rimraf .turbo dist .angular src/api",
@@ -28,15 +28,19 @@
     "zod": "catalog:zod3"
   },
   "devDependencies": {
+    "@angular-eslint/builder": "21.3.0",
     "@angular/build": "catalog:angular",
     "@angular/cli": "catalog:angular",
     "@angular/compiler-cli": "catalog:angular",
     "@faker-js/faker": "catalog:tooling",
+    "angular-eslint": "21.3.1",
+    "eslint": "catalog:",
     "msw": "catalog:tooling",
     "orval": "workspace:*",
     "prettier": "catalog:",
     "rimraf": "catalog:",
     "typescript": "catalog:",
+    "typescript-eslint": "catalog:",
     "vitest": "catalog:"
   },
   "dependenciesMeta": {

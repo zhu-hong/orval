@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { writeZodSchemas, writeZodSchemasFromVerbs } from './write-zod-specs';
 
-type MinimalVerbsContext = {
+interface MinimalVerbsContext {
   output: {
     override: {
       useDates?: boolean;
@@ -19,7 +19,7 @@ type MinimalVerbsContext = {
   spec: unknown;
   target: string;
   workspace: string;
-};
+}
 const createOutputOptions = (): Parameters<typeof writeZodSchemas>[4] =>
   ({
     namingConvention: 'PascalCase',
@@ -75,6 +75,13 @@ describe('write-zod-specs regressions', () => {
     expect(fileContent).toContain(
       'export const RangeSchema = zod.number().min(RangeSchemaMin).max(RangeSchemaMax)',
     );
+    expect(fileContent).toContain(
+      'export type RangeSchema = zod.input<typeof RangeSchema>;',
+    );
+    expect(fileContent).toContain(
+      'export type RangeSchemaOutput = zod.output<typeof RangeSchema>;',
+    );
+    expect(fileContent).not.toContain('\n    export type RangeSchema =');
     expect(fileContent).not.toContain(
       'export const RangeSchema = export const',
     );

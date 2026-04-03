@@ -13,7 +13,11 @@ import {
   type GeneratorVerbOptions,
   getIsBodyVerb,
   isObject,
+  type OpenApiParameterObject,
+  type OpenApiReferenceObject,
+  type OpenApiSchemaObject,
   pascal,
+  resolveRef,
   sanitize,
   toObjectString,
   Verbs,
@@ -30,6 +34,13 @@ const SOLID_START_DEPENDENCIES: GeneratorDependency[] = [
     dependency: '@solidjs/router',
   },
 ];
+const resolveSchemaRef = (
+  schema: OpenApiSchemaObject | OpenApiReferenceObject,
+  context: GeneratorOptions['context'],
+) =>
+  resolveRef(schema, context) as {
+    schema: OpenApiSchemaObject;
+  };
 
 export const getSolidStartDependencies: ClientDependenciesBuilder = () =>
   SOLID_START_DEPENDENCIES;
@@ -76,7 +87,7 @@ const generateImplementation = (
     formData,
     formUrlEncoded,
   }: GeneratorVerbOptions,
-  { route }: GeneratorOptions,
+  { route, context, pathRoute }: GeneratorOptions,
 ) => {
   const isFormData = !override.formData.disabled;
   const isFormUrlEncoded = override.formUrlEncoded !== false;
@@ -164,9 +175,146 @@ const generateImplementation = (
 
   const propsImplementation = toObjectString(props, 'implementation');
 
+  // Detect explode parameters from the OpenAPI spec
+  // Merge path-item and operation-level parameters per the OpenAPI spec:
+  // operation-level parameters override path-level ones with the same (in, name).
+  const pathItem = context.spec.paths?.[pathRoute];
+  const operation = pathItem?.[verb];
+  const mergedParameters = [
+    ...(pathItem?.parameters ?? []),
+    ...(operation?.parameters ?? []),
+  ] as (OpenApiParameterObject | OpenApiReferenceObject)[];
+  const byKey = new Map<
+    string,
+    OpenApiParameterObject | OpenApiReferenceObject
+  >();
+  for (const parameter of mergedParameters) {
+    const { schema } = resolveRef(parameter, context);
+    const parameterObject = schema as OpenApiParameterObject;
+    byKey.set(`${parameterObject.in}:${parameterObject.name}`, parameter);
+  }
+  const parameters = [...byKey.values()];
+  const parameterObjects = parameters.map((parameter) => {
+    const { schema } = resolveRef(parameter, context);
+    return schema as OpenApiParameterObject;
+  });
+
+  const explodeParameters = parameterObjects.filter((parameterObject) => {
+    if (!parameterObject.schema) {
+      return false;
+    }
+
+    const { schema: schemaObject } = resolveSchemaRef(
+      parameterObject.schema,
+      context,
+    );
+
+    const isArrayLike =
+      schemaObject.type === 'array' ||
+      (
+        (schemaObject.oneOf as
+          | (OpenApiSchemaObject | OpenApiReferenceObject)[]
+          | undefined) ?? []
+      ).some((s) => resolveSchemaRef(s, context).schema.type === 'array') ||
+      (
+        (schemaObject.anyOf as
+          | (OpenApiSchemaObject | OpenApiReferenceObject)[]
+          | undefined) ?? []
+      ).some((s) => resolveSchemaRef(s, context).schema.type === 'array') ||
+      (
+        (schemaObject.allOf as
+          | (OpenApiSchemaObject | OpenApiReferenceObject)[]
+          | undefined) ?? []
+      ).some((s) => resolveSchemaRef(s, context).schema.type === 'array');
+
+    // Per OpenAPI spec: query params use 'form' style by default, and 'form'
+    // style defaults explode to true when omitted.
+    const isExploded =
+      parameterObject.explode === true ||
+      (parameterObject.explode === undefined &&
+        (parameterObject.style === undefined ||
+          parameterObject.style === 'form'));
+
+    return parameterObject.in === 'query' && isArrayLike && isExploded;
+  });
+
+  const explodeParametersNames = explodeParameters.map(
+    (parameter) => parameter.name,
+  );
+
+  const hasExplodedDateParams =
+    context.output.override.useDates &&
+    explodeParameters.some((parameter) => {
+      if (!parameter.schema) {
+        return false;
+      }
+      const { schema: schemaObject } = resolveSchemaRef(
+        parameter.schema,
+        context,
+      );
+      const itemsFormat = schemaObject.items
+        ? (resolveSchemaRef(
+            schemaObject.items as OpenApiSchemaObject | OpenApiReferenceObject,
+            context,
+          ).schema.format as string | undefined)
+        : undefined;
+      return schemaObject.format === 'date-time' || itemsFormat === 'date-time';
+    });
+
+  const isExplodeParametersOnly =
+    explodeParameters.length === parameters.length;
+
+  const hasDateParams =
+    context.output.override.useDates &&
+    parameterObjects.some((parameter) => {
+      if (!parameter.schema) {
+        return false;
+      }
+      const { schema: schemaObject } = resolveSchemaRef(
+        parameter.schema,
+        context,
+      );
+      const itemsFormat = schemaObject.items
+        ? (resolveSchemaRef(
+            schemaObject.items as OpenApiSchemaObject | OpenApiReferenceObject,
+            context,
+          ).schema.format as string | undefined)
+        : undefined;
+      return schemaObject.format === 'date-time' || itemsFormat === 'date-time';
+    });
+
+  const explodeArrayImplementation =
+    explodeParameters.length > 0
+      ? `const explodeParameters = ${JSON.stringify(explodeParametersNames)};
+
+      if (Array.isArray(value) && explodeParameters.includes(key)) {
+        value.forEach((v) => {
+          normalizedParams.append(key, v === null ? 'null' : ${hasExplodedDateParams ? 'v instanceof Date ? v.toISOString() : ' : ''}v.toString());
+        });
+        return;
+      }
+        `
+      : '';
+
+  const normalParamsImplementation = `if (value !== undefined) {
+        normalizedParams.append(key, Array.isArray(value) ? value.map(v => v === null ? 'null' : ${hasDateParams ? 'v instanceof Date ? v.toISOString() : ' : ''}String(v)).join(',') : value === null ? 'null' : ${hasDateParams ? 'value instanceof Date ? value.toISOString() : ' : ''}value.toString())
+      }`;
+
   // Build query params string
   const queryParamsCode = queryParams
-    ? `const queryString = new URLSearchParams(params as any).toString();
+    ? `const normalizedParams = new URLSearchParams();
+
+    Object.entries(params || {}).forEach(([key, value]) => {
+      ${explodeArrayImplementation}
+      ${
+        // When every parameter is declared as an exploded array, scalar values
+        // are a type error at the call site (orval generates array-only types),
+        // so the scalar fallback is intentionally omitted for this case.
+        isExplodeParametersOnly ? '' : normalParamsImplementation
+      }
+    });
+
+    const queryString = normalizedParams.toString();
     const url = queryString ? \`${route}?\${queryString}\` : \`${route}\`;`
     : `const url = \`${route}\`;`;
 

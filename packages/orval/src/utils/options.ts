@@ -1,3 +1,5 @@
+import { access } from 'node:fs/promises';
+import nodePath from 'node:path';
 import { styleText } from 'node:util';
 
 import {
@@ -12,6 +14,7 @@ import {
   type HookFunction,
   type HookOption,
   type HooksOptions,
+  type InputOptions,
   type InputTransformerFn,
   isBoolean,
   isFunction,
@@ -41,7 +44,6 @@ import {
   type QueryOptions,
   RefComponentSuffix,
   type SchemaOptions,
-  upath,
 } from '@orval/core';
 import { DEFAULT_MOCK_OPTIONS } from '@orval/mock';
 
@@ -49,6 +51,7 @@ import pkg from '../../package.json';
 import { loadPackageJson } from './package-json';
 import { loadTsconfig } from './tsconfig';
 
+const INPUT_TARGET_FETCH_TIMEOUT_MS = 10_000;
 /**
  * Type helper to make it easier to use orval.config.ts
  * accepts a direct {@link ConfigExternal} object.
@@ -123,16 +126,17 @@ export async function normalizeOptions(
     : optionsExport);
 
   if (!options.input) {
-    throw new Error(styleText('red', `Config require an input`));
+    throw new Error(styleText('red', `Config requires an input.`));
   }
 
   if (!options.output) {
-    throw new Error(styleText('red', `Config require an output`));
+    throw new Error(styleText('red', `Config requires an output.`));
   }
 
-  const inputOptions = isString(options.input)
-    ? { target: options.input }
-    : options.input;
+  const inputOptions: InputOptions =
+    isString(options.input) || Array.isArray(options.input)
+      ? { target: options.input }
+      : options.input;
 
   const outputOptions = isString(options.output)
     ? { target: options.output }
@@ -143,7 +147,7 @@ export async function normalizeOptions(
     workspace,
   );
 
-  const { clean, prettier, client, httpClient, mode, biome } = globalOptions;
+  const { clean, client, httpClient, mode } = globalOptions;
 
   const tsconfig = await loadTsconfig(
     outputOptions.tsconfig ?? globalOptions.tsconfig,
@@ -186,8 +190,20 @@ export async function normalizeOptions(
   const normalizedOptions: NormalizedOptions = {
     input: {
       target: globalOptions.input
-        ? normalizePathOrUrl(globalOptions.input, process.cwd())
-        : normalizePathOrUrl(inputOptions.target, workspace),
+        ? Array.isArray(globalOptions.input)
+          ? await resolveFirstValidTarget(
+              globalOptions.input,
+              process.cwd(),
+              inputOptions.parserOptions,
+            )
+          : normalizePathOrUrl(globalOptions.input, process.cwd())
+        : Array.isArray(inputOptions.target)
+          ? await resolveFirstValidTarget(
+              inputOptions.target,
+              workspace,
+              inputOptions.parserOptions,
+            )
+          : normalizePathOrUrl(inputOptions.target, workspace),
       override: {
         transformer: normalizePath(
           inputOptions.override?.transformer,
@@ -221,8 +237,7 @@ export async function normalizeOptions(
       mock,
       clean: outputOptions.clean ?? clean ?? false,
       docs: outputOptions.docs ?? false,
-      prettier: outputOptions.prettier ?? prettier ?? false,
-      biome: outputOptions.biome ?? biome ?? false,
+      formatter: outputOptions.formatter ?? globalOptions.formatter,
       tsconfig,
       packageJson,
       headers: outputOptions.headers ?? false,
@@ -370,6 +385,8 @@ export async function normalizeOptions(
           },
           generateEachHttpStatus:
             outputOptions.override?.zod?.generateEachHttpStatus ?? false,
+          useBrandedTypes:
+            outputOptions.override?.zod?.useBrandedTypes ?? false,
           dateTimeOptions: outputOptions.override?.zod?.dateTimeOptions ?? {},
           timeOptions: outputOptions.override?.zod?.timeOptions ?? {},
         },
@@ -379,8 +396,15 @@ export async function normalizeOptions(
         },
         angular: {
           provideIn: outputOptions.override?.angular?.provideIn ?? 'root',
+          client:
+            outputOptions.override?.angular?.retrievalClient ??
+            outputOptions.override?.angular?.client ??
+            'httpClient',
           runtimeValidation:
             outputOptions.override?.angular?.runtimeValidation ?? false,
+          ...(outputOptions.override?.angular?.httpResource
+            ? { httpResource: outputOptions.override.angular.httpResource }
+            : {}),
         },
         fetch: {
           includeHttpResponseReturnType:
@@ -391,6 +415,14 @@ export async function normalizeOptions(
           runtimeValidation:
             outputOptions.override?.fetch?.runtimeValidation ?? false,
           ...outputOptions.override?.fetch,
+          ...(outputOptions.override?.fetch?.jsonReviver
+            ? {
+                jsonReviver: normalizeMutator(
+                  outputWorkspace,
+                  outputOptions.override.fetch.jsonReviver,
+                ),
+              }
+            : {}),
         },
         useDates: outputOptions.override?.useDates ?? false,
         useDeprecatedOperations:
@@ -399,6 +431,8 @@ export async function normalizeOptions(
           outputOptions.override?.enumGenerationType ?? 'const',
         suppressReadonlyModifier:
           outputOptions.override?.suppressReadonlyModifier ?? false,
+        preserveReadonlyRequestBodies:
+          outputOptions.override?.preserveReadonlyRequestBodies ?? 'strip',
         aliasCombinedTypes: outputOptions.override?.aliasCombinedTypes ?? false,
       },
       allParamsOptional: outputOptions.allParamsOptional ?? false,
@@ -411,12 +445,12 @@ export async function normalizeOptions(
   };
 
   if (!normalizedOptions.input.target) {
-    throw new Error(styleText('red', `Config require an input target`));
+    throw new Error(styleText('red', `Config requires an input target.`));
   }
 
   if (!normalizedOptions.output.target && !normalizedOptions.output.schemas) {
     throw new Error(
-      styleText('red', `Config require an output target or schemas`),
+      styleText('red', `Config requires an output target or schemas.`),
     );
   }
 
@@ -428,25 +462,123 @@ function normalizeMutator(
   mutator?: Mutator,
 ): NormalizedMutator | undefined {
   if (isObject(mutator)) {
-    if (!mutator.path) {
-      throw new Error(styleText('red', `Mutator need a path`));
+    const m = mutator as Exclude<Mutator, string>;
+    if (!m.path) {
+      throw new Error(styleText('red', `Mutator requires a path.`));
     }
 
     return {
-      ...mutator,
-      path: upath.resolve(workspace, mutator.path),
-      default: mutator.default ?? !mutator.name,
+      path: nodePath.resolve(workspace, m.path),
+      name: m.name,
+      default: m.default ?? !m.name,
+      alias: m.alias,
+      external: m.external,
+      extension: m.extension,
     };
   }
 
   if (isString(mutator)) {
     return {
-      path: upath.resolve(workspace, mutator),
+      path: nodePath.resolve(workspace, mutator),
       default: true,
     };
   }
 
-  return mutator;
+  return undefined;
+}
+
+async function resolveFirstValidTarget(
+  targets: string[],
+  workspace: string,
+  parserOptions?: InputOptions['parserOptions'],
+): Promise<string> {
+  for (const target of targets) {
+    if (isUrl(target)) {
+      try {
+        const headers = getHeadersForUrl(target, parserOptions?.headers);
+        const headResponse = await fetchWithTimeout(target, {
+          method: 'HEAD',
+          headers,
+        });
+
+        if (headResponse.ok) {
+          return target;
+        }
+
+        if (headResponse.status === 405 || headResponse.status === 501) {
+          const getResponse = await fetchWithTimeout(target, {
+            method: 'GET',
+            headers,
+          });
+
+          if (getResponse.ok) {
+            return target;
+          }
+        }
+      } catch {
+        continue;
+      }
+
+      continue;
+    }
+
+    const resolvedTarget = normalizePath(target, workspace);
+
+    try {
+      await access(resolvedTarget);
+      return resolvedTarget;
+    } catch {
+      continue;
+    }
+  }
+
+  throw new Error(
+    styleText(
+      'red',
+      `None of the input targets could be resolved:\n${targets.map((target) => `  - ${target}`).join('\n')}`,
+    ),
+  );
+}
+
+function getHeadersForUrl(
+  url: string,
+  headersConfig?: NonNullable<InputOptions['parserOptions']>['headers'],
+): Record<string, string> {
+  if (!headersConfig) return {};
+
+  const { hostname } = new URL(url);
+  const matchedHeaders: Record<string, string> = {};
+
+  for (const headerEntry of headersConfig) {
+    if (
+      headerEntry.domains.some(
+        (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
+      )
+    ) {
+      Object.assign(matchedHeaders, headerEntry.headers);
+    }
+  }
+
+  return matchedHeaders;
+}
+
+async function fetchWithTimeout(
+  target: string,
+  init: RequestInit,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, INPUT_TARGET_FETCH_TIMEOUT_MS);
+
+  try {
+    return await fetch(target, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function normalizePathOrUrl<T>(path: T, workspace: string) {
@@ -461,7 +593,7 @@ export function normalizePath<T>(path: T, workspace: string) {
   if (!isString(path)) {
     return path;
   }
-  return upath.resolve(workspace, path);
+  return nodePath.resolve(workspace, path);
 }
 
 function normalizeOperationsAndTags(
@@ -482,6 +614,7 @@ function normalizeOperationsAndTags(
           formUrlEncoded,
           paramsSerializer,
           query,
+          angular,
           zod,
           ...rest
         },
@@ -490,6 +623,19 @@ function normalizeOperationsAndTags(
           key,
           {
             ...rest,
+            ...(angular
+              ? {
+                  angular: {
+                    provideIn: angular.provideIn ?? 'root',
+                    client:
+                      angular.retrievalClient ?? angular.client ?? 'httpClient',
+                    runtimeValidation: angular.runtimeValidation ?? false,
+                    ...(angular.httpResource
+                      ? { httpResource: angular.httpResource }
+                      : {}),
+                  },
+                }
+              : {}),
             ...(query
               ? {
                   query: normalizeQueryOptions(query, workspace, global.query),
@@ -562,6 +708,7 @@ function normalizeOperationsAndTags(
                         : {}),
                     },
                     generateEachHttpStatus: zod.generateEachHttpStatus ?? false,
+                    useBrandedTypes: zod.useBrandedTypes ?? false,
                     dateTimeOptions: zod.dateTimeOptions ?? {},
                     timeOptions: zod.timeOptions ?? {},
                   },
@@ -573,7 +720,9 @@ function normalizeOperationsAndTags(
             ...(mutator
               ? { mutator: normalizeMutator(workspace, mutator) }
               : {}),
-            ...createFormData(workspace, formData),
+            ...(formData === undefined
+              ? {}
+              : { formData: createFormData(workspace, formData) }),
             ...(formUrlEncoded
               ? {
                   formUrlEncoded: isBoolean(formUrlEncoded)
@@ -603,7 +752,7 @@ function normalizeOutputMode(mode?: OutputMode): OutputMode {
 
   if (!Object.values(OutputMode).includes(mode)) {
     createLogger().warn(
-      styleText('yellow', `Unknown the provided mode => ${mode}`),
+      styleText('yellow', `Unknown provided mode => ${mode}`),
     );
     return OutputMode.SINGLE;
   }
@@ -635,12 +784,14 @@ function normalizeHonoOptions(
 ): NormalizedHonoOptions {
   return {
     ...(hono.handlers
-      ? { handlers: upath.resolve(workspace, hono.handlers) }
+      ? { handlers: nodePath.resolve(workspace, hono.handlers) }
       : {}),
-    compositeRoute: hono.compositeRoute ?? '',
+    compositeRoute: hono.compositeRoute
+      ? nodePath.resolve(workspace, hono.compositeRoute)
+      : '',
     validator: hono.validator ?? true,
     validatorOutputPath: hono.validatorOutputPath
-      ? upath.resolve(workspace, hono.validatorOutputPath)
+      ? nodePath.resolve(workspace, hono.validatorOutputPath)
       : '',
   };
 }
@@ -671,6 +822,12 @@ function normalizeQueryOptions(
     ...(isNullish(queryOptions.useInvalidate)
       ? {}
       : { useInvalidate: queryOptions.useInvalidate }),
+    ...(isNullish(queryOptions.useSetQueryData)
+      ? {}
+      : { useSetQueryData: queryOptions.useSetQueryData }),
+    ...(isNullish(queryOptions.useGetQueryData)
+      ? {}
+      : { useGetQueryData: queryOptions.useGetQueryData }),
     ...(isNullish(queryOptions.useQuery)
       ? {}
       : { useQuery: queryOptions.useQuery }),

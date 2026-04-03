@@ -11,6 +11,7 @@ import {
   OutputMode,
   setVerbose,
   startMessage,
+  SupportedFormatter,
 } from '@orval/core';
 
 import pkg from '../../package.json';
@@ -72,8 +73,12 @@ cli
   )
   .option('--mock', 'activate the mock')
   .option('--clean [paths...]', 'Clean output directory')
-  .option('--prettier', 'Prettier generated files')
-  .option('--biome', 'biome generated files')
+  .addOption(
+    new Option(
+      '--formatter <name>',
+      'Format generated files (prettier, biome, oxfmt)',
+    ).choices(Object.values(SupportedFormatter)),
+  )
   .option('--tsconfig <path>', 'path to your tsconfig file')
   .option('--verbose', 'Enable verbose logging')
   .action(async (options) => {
@@ -89,14 +94,24 @@ cli
         output: {
           target: options.output,
           clean: options.clean,
-          prettier: options.prettier,
-          biome: options.biome,
+          formatter: options.formatter,
           mock: options.mock,
           client: options.client,
           mode: options.mode,
           tsconfig: options.tsconfig,
         },
       });
+
+      try {
+        await generateSpec(process.cwd(), normalizedOptions);
+      } catch (error) {
+        if (error instanceof ErrorWithTag) {
+          logError(error.cause, error.tag);
+        } else {
+          logError(error);
+        }
+        process.exit(1);
+      }
 
       if (options.watch) {
         await startWatcher(
@@ -111,17 +126,6 @@ cli
           },
           normalizedOptions.input.target as string,
         );
-      } else {
-        try {
-          await generateSpec(process.cwd(), normalizedOptions);
-        } catch (error) {
-          if (error instanceof ErrorWithTag) {
-            logError(error.cause, error.tag);
-          } else {
-            logError(error);
-          }
-          process.exit(1);
-        }
       }
     } else {
       const configFilePath = findConfigFile(options.config);
@@ -152,14 +156,14 @@ cli
           options,
         );
 
-        if (options.watch === undefined) {
-          try {
-            await generateSpec(workspace, normalizedOptions, projectName);
-          } catch (error) {
-            hasErrors = true;
-            logError(error, projectName);
-          }
-        } else {
+        try {
+          await generateSpec(workspace, normalizedOptions, projectName);
+        } catch (error) {
+          hasErrors = true;
+          logError(error, projectName);
+        }
+
+        if (options.watch !== undefined) {
           const fileToWatch = isString(normalizedOptions.input.target)
             ? normalizedOptions.input.target
             : undefined;

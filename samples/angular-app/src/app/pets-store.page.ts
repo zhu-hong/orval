@@ -1,363 +1,128 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  computed,
   inject,
-  OnInit,
   signal,
 } from '@angular/core';
-import { AsyncPipe, NgOptimizedImage } from '@angular/common';
-import { PetsService } from '../api/endpoints/pets/pets.service';
+import { AsyncPipe, JsonPipe } from '@angular/common';
+import { BehaviorSubject, shareReplay, switchMap } from 'rxjs';
+
+import type { Pet, Pets } from '../api/http-client/model';
+import { PetsService } from '../api/http-client/pets/pets.service';
+import { DemoPageFrameComponent } from './demo-page-frame.component';
+import { toLoadState } from './load-state';
+import { BadgeComponent } from './ui/badge.component';
+import { DemoPanelComponent } from './ui/demo-panel.component';
+import { PetCardComponent } from './ui/pet-card.component';
 
 @Component({
   selector: 'app-pets-store-page',
-  imports: [AsyncPipe, NgOptimizedImage],
+  imports: [
+    AsyncPipe,
+    JsonPipe,
+    BadgeComponent,
+    DemoPageFrameComponent,
+    DemoPanelComponent,
+    PetCardComponent,
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <div class="pets-page">
-      <div class="page-header">
-        <div class="page-header-inner">
-          <div class="logo-glow">
-            <img
-              ngSrc="logo.svg"
-              width="40"
-              height="40"
-              priority
-              alt="Orval logo"
-            />
-          </div>
-          <div>
-            <h1 class="page-title">{{ title() }}</h1>
-            <p class="page-sub">
-              Browse pets from the default generated Angular client
-            </p>
-          </div>
-        </div>
-      </div>
-
-      @if (pets$ | async; as pets) {
-        <div class="pets-grid" role="list" aria-label="Pets list">
-          @for (pet of pets; track pet.id) {
-            <article class="pet-card" role="listitem">
-              <div class="pet-card-header">
-                <span class="pet-card-id">#{{ pet.id }}</span>
-                @if (pet.status) {
-                  <span
-                    class="status-dot"
-                    [class]="'status-' + pet.status"
-                  ></span>
-                }
-              </div>
-              <h2 class="pet-card-name">{{ pet.name }}</h2>
-              @if (pet.tag) {
-                <span class="pet-card-tag">{{ pet.tag }}</span>
-              }
-            </article>
-          }
-        </div>
-      } @else {
-        <div class="loading-state" aria-live="polite">
-          <span class="loading-dot"></span>
-          <span class="loading-dot"></span>
-          <span class="loading-dot"></span>
-          <span>Loading pets…</span>
-        </div>
-      }
-
-      <div class="devnote">
-        <span class="devnote-badge">DEV</span>
-        <span
-          >Content type overload tests (issue #2243) — check browser console for
-          text/xml/json/default response shapes.</span
-        >
-      </div>
-    </div>
-  `,
-  styles: `
-    .pets-page {
-      max-width: 900px;
-      margin: 0 auto;
-    }
-
-    /* ── Page header ── */
-    .page-header {
-      margin-bottom: 36px;
-    }
-
-    .page-header-inner {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-    }
-
-    .logo-glow {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 64px;
-      height: 64px;
-      border-radius: 14px;
-      background: var(--accent-dim);
-      border: 1px solid var(--accent-glow);
-      box-shadow:
-        0 0 24px var(--accent-glow),
-        inset 0 0 12px var(--accent-dim);
-      flex-shrink: 0;
-      transition: box-shadow 0.3s ease;
-
-      &:hover {
-        box-shadow:
-          0 0 40px var(--accent-glow),
-          inset 0 0 20px var(--accent-dim);
-      }
-    }
-
-    .page-title {
-      font-family: var(--font-display);
-      font-size: 2.2rem;
-      font-weight: 800;
-      color: var(--text);
-      letter-spacing: -0.03em;
-      margin: 0;
-    }
-
-    .page-sub {
-      color: var(--text-2);
-      font-size: 0.875rem;
-      margin-top: 4px;
-    }
-
-    /* ── Grid ── */
-    .pets-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-      gap: 12px;
-      margin-bottom: 32px;
-    }
-
-    .pet-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 16px;
-      transition:
-        border-color 0.2s ease,
-        box-shadow 0.2s ease,
-        transform 0.2s ease;
-      animation: cardIn 0.3s ease backwards;
-      cursor: default;
-
-      &:hover {
-        border-color: var(--border-2);
-        box-shadow: 0 4px 20px oklch(0 0 0 / 0.5);
-        transform: translateY(-2px);
-      }
-    }
-
-    .pet-card:nth-child(1) {
-      animation-delay: 0.05s;
-    }
-    .pet-card:nth-child(2) {
-      animation-delay: 0.1s;
-    }
-    .pet-card:nth-child(3) {
-      animation-delay: 0.15s;
-    }
-    .pet-card:nth-child(4) {
-      animation-delay: 0.2s;
-    }
-    .pet-card:nth-child(5) {
-      animation-delay: 0.25s;
-    }
-    .pet-card:nth-child(6) {
-      animation-delay: 0.3s;
-    }
-    .pet-card:nth-child(7) {
-      animation-delay: 0.35s;
-    }
-    .pet-card:nth-child(8) {
-      animation-delay: 0.4s;
-    }
-    .pet-card:nth-child(9) {
-      animation-delay: 0.45s;
-    }
-    .pet-card:nth-child(10) {
-      animation-delay: 0.5s;
-    }
-
-    .pet-card-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 10px;
-    }
-
-    .pet-card-id {
-      font-family: var(--font-mono);
-      font-size: 0.72rem;
-      color: var(--text-3);
-    }
-
-    .status-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--text-3);
-
-      &.status-available {
-        background: var(--success);
-        box-shadow: 0 0 6px var(--success);
-      }
-      &.status-pending {
-        background: var(--warning);
-        box-shadow: 0 0 6px var(--warning);
-      }
-      &.status-sold {
-        background: var(--text-3);
-      }
-    }
-
-    .pet-card-name {
-      font-family: var(--font-display);
-      font-size: 1rem;
-      font-weight: 700;
-      color: var(--text);
-      margin: 0 0 8px;
-      letter-spacing: -0.01em;
-    }
-
-    .pet-card-tag {
-      font-family: var(--font-mono);
-      font-size: 0.72rem;
-      color: var(--accent);
-      background: var(--accent-dim);
-      padding: 2px 7px;
-      border-radius: 3px;
-    }
-
-    /* ── Loading ── */
-    .loading-state {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-family: var(--font-mono);
-      font-size: 0.85rem;
-      color: var(--text-3);
-      margin-bottom: 32px;
-    }
-
-    .loading-dot {
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-      background: var(--accent);
-      animation: pulse 1.2s ease-in-out infinite;
-      opacity: 0.6;
-
-      &:nth-child(2) {
-        animation-delay: 0.2s;
-      }
-      &:nth-child(3) {
-        animation-delay: 0.4s;
-      }
-    }
-
-    /* ── Dev note ── */
-    .devnote {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      padding: 12px 16px;
-      background: var(--surface);
-      border: 1px dashed var(--border-2);
-      border-radius: 8px;
-      font-size: 0.8rem;
-      color: var(--text-3);
-    }
-
-    .devnote-badge {
-      font-family: var(--font-mono);
-      font-size: 0.65rem;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      padding: 1px 6px;
-      border-radius: 3px;
-      background: var(--surface-2);
-      color: var(--text-3);
-      border: 1px solid var(--border-2);
-      flex-shrink: 0;
-      margin-top: 1px;
-    }
-
-    /* ── Animations ── */
-    @keyframes cardIn {
-      from {
-        opacity: 0;
-        transform: translateY(8px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
-
-    @keyframes pulse {
-      0%,
-      100% {
-        opacity: 0.3;
-        transform: scale(0.8);
-      }
-      50% {
-        opacity: 1;
-        transform: scale(1.2);
-      }
-    }
-
-    @media (max-width: 480px) {
-      .pets-grid {
-        grid-template-columns: 1fr 1fr;
-      }
-    }
-  `,
+  templateUrl: './pets-store.page.html',
+  styleUrls: ['./pets-store.page.css'],
 })
-export class PetsStorePage implements OnInit {
+export class PetsStorePage {
   private readonly petService = inject(PetsService);
+  private readonly version = 1;
+  private readonly petId = '1';
+  private readonly refreshPets$ = new BehaviorSubject(0);
 
-  protected readonly pets$ = this.petService.listPets();
-  protected readonly title = signal('Pet Store');
+  protected readonly title = signal('HttpClient overview');
+  protected readonly highlights = [
+    'The default generated Angular HttpClient service shown once, without splitting the story across two overlapping pages',
+    'A merged view of list fetching, content-type overloads, and createPets() mutation behavior',
+    'The baseline reference point before moving on to custom params, httpResource, and Zod-backed variants',
+  ] as const;
 
-  ngOnInit() {
-    this.petService.showPetById('1', 'text/plain').subscribe({
-      next: (result) =>
-        console.log('[text/plain] Result:', result, '| Type:', typeof result),
-      error: (err) => console.error('[text/plain] Error:', err),
-    });
+  protected readonly draftName = signal('Buddy');
+  protected readonly draftTag = signal('demo');
+  protected readonly createLoading = signal(false);
+  protected readonly createResult = signal<{
+    success: boolean;
+    message: string;
+  } | null>(null);
 
-    this.petService.showPetById('1', 'application/xml').subscribe({
-      next: (result) =>
-        console.log(
-          '[application/xml] Result:',
-          result,
-          '| Type:',
-          typeof result,
-        ),
-      error: (err) => console.error('[application/xml] Error:', err),
-    });
+  protected readonly petsState$ = this.refreshPets$.pipe(
+    switchMap(() =>
+      toLoadState<Pets>(
+        this.petService.listPets(undefined, this.version),
+        [] as Pets,
+      ),
+    ),
+    shareReplay({ bufferSize: 1, refCount: true }),
+  );
 
-    this.petService.showPetById('1', 'application/json').subscribe({
-      next: (result) =>
-        console.log(
-          '[application/json] Result:',
-          result,
-          '| Type:',
-          typeof result,
-        ),
-      error: (err) => console.error('[application/json] Error:', err),
-    });
+  protected readonly petTextState$ = toLoadState<string>(
+    this.petService.showPetById(this.petId, 'text/plain', this.version),
+    '',
+  ).pipe(shareReplay({ bufferSize: 1, refCount: true }));
 
-    this.petService.showPetById('1').subscribe({
-      next: (result) =>
-        console.log('[default] Result:', result, '| Type:', typeof result),
-      error: (err) => console.error('[default] Error:', err),
+  protected readonly petXmlState$ = toLoadState<string>(
+    this.petService.showPetById(this.petId, 'application/xml', this.version),
+    '',
+  ).pipe(shareReplay({ bufferSize: 1, refCount: true }));
+
+  protected readonly petJsonState$ = toLoadState<Pet | string | undefined>(
+    this.petService.showPetById(this.petId, 'application/json', this.version),
+    undefined,
+  ).pipe(shareReplay({ bufferSize: 1, refCount: true }));
+
+  protected readonly canSubmitCreate = computed(
+    () =>
+      this.draftName().trim().length > 0 &&
+      this.draftTag().trim().length > 0 &&
+      !this.createLoading(),
+  );
+
+  protected updateDraftName(event: Event) {
+    const target = event.target as HTMLInputElement;
+    this.draftName.set(target.value);
+  }
+
+  protected updateDraftTag(event: Event) {
+    const target = event.target as HTMLInputElement;
+    this.draftTag.set(target.value);
+  }
+
+  protected createPet(event: Event) {
+    event.preventDefault();
+
+    const name = this.draftName().trim();
+    const tag = this.draftTag().trim();
+
+    if (!name || !tag || this.createLoading()) {
+      return;
+    }
+
+    this.createLoading.set(true);
+    this.createResult.set(null);
+
+    this.petService.createPets({ name, tag }, this.version).subscribe({
+      next: () => {
+        this.createLoading.set(false);
+        this.createResult.set({
+          success: true,
+          message: `Created ${name} successfully. The list was refreshed from the generated service.`,
+        });
+        this.refreshPets$.next(this.refreshPets$.value + 1);
+      },
+      error: (error: unknown) => {
+        this.createLoading.set(false);
+        this.createResult.set({
+          success: false,
+          message:
+            error instanceof Error ? error.message : 'Unable to create pet.',
+        });
+      },
     });
   }
 }

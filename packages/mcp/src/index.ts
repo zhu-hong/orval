@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import {
   camel,
   type ClientBuilder,
@@ -10,6 +12,7 @@ import {
   getFileInfo,
   getFullRoute,
   isObject,
+  isString,
   jsDoc,
   jsStringEscape,
   type NormalizedOutputOptions,
@@ -33,11 +36,21 @@ const getHeader = (
   return Array.isArray(header) ? jsDoc({ description: header }) : header;
 };
 
+const getSpecInfo = (context: ContextSpec): OpenApiInfoObject =>
+  context.spec.info ?? {
+    title: 'API',
+    version: '1.0.0',
+  };
+
 export const getMcpHeader: ClientHeaderBuilder = ({ verbOptions, output }) => {
   const targetInfo = getFileInfo(output.target);
-  const schemasPath = isObject(output.schemas)
-    ? output.schemas.path
-    : output.schemas;
+  const schemasPath = (
+    isObject(output.schemas)
+      ? output.schemas.path
+      : isString(output.schemas)
+        ? output.schemas
+        : undefined
+  ) as string | undefined;
   const schemaInfo = schemasPath ? getFileInfo(schemasPath) : undefined;
 
   const isZodSchemaOutput =
@@ -45,11 +58,8 @@ export const getMcpHeader: ClientHeaderBuilder = ({ verbOptions, output }) => {
   const basePath = schemaInfo?.dirname;
   const relativeSchemaImportPath = basePath
     ? isZodSchemaOutput && output.indexFiles
-      ? upath.relativeSafe(
-          targetInfo.dirname,
-          upath.joinSafe(basePath, 'index.zod'),
-        )
-      : upath.relativeSafe(targetInfo.dirname, basePath)
+      ? upath.getRelativeImportPath(targetInfo.path, basePath, true)
+      : upath.getRelativeImportPath(targetInfo.path, basePath)
     : './' + targetInfo.filename + '.schemas';
 
   const importSchemaNames = new Set(
@@ -175,9 +185,9 @@ export const generateServer = (
   output: NormalizedOutputOptions,
   context: ContextSpec,
 ) => {
-  const info = context.spec.info;
+  const info = getSpecInfo(context);
   const { extension, dirname } = getFileInfo(output.target);
-  const serverPath = upath.join(dirname, `server${extension}`);
+  const serverPath = path.join(dirname, `server${extension}`);
   const header = getHeader(output.override.header, info);
 
   const toolImplementations = Object.values(verbOptions)
@@ -203,7 +213,7 @@ export const generateServer = (
       const toolImplementation = `
 server.tool(
   '${jsStringEscape(verbOption.operationName)}',
-  '${jsStringEscape(verbOption.summary)}',${inputSchemaImplementation ? `\n${inputSchemaImplementation}` : ''}
+  '${jsStringEscape(verbOption.summary ?? '')}',${inputSchemaImplementation ? `\n${inputSchemaImplementation}` : ''}
   ${jsStringEscape(verbOption.operationName)}Handler
 );`;
 
@@ -285,7 +295,7 @@ const generateZodFiles = async (
 ) => {
   const { extension, dirname } = getFileInfo(output.target);
 
-  const header = getHeader(output.override.header, context.spec.info);
+  const header = getHeader(output.override.header, getSpecInfo(context));
 
   const zods = await Promise.all(
     Object.values(verbOptions).map(async (verbOption) =>
@@ -316,7 +326,7 @@ const generateZodFiles = async (
 
   let content = `${header}import { z as zod } from 'zod';\n${mutatorsImports}\n`;
 
-  const zodPath = upath.join(dirname, `tool-schemas.zod${extension}`);
+  const zodPath = path.join(dirname, `tool-schemas.zod${extension}`);
 
   content += zods.map((zod) => zod.implementation).join('\n');
 
@@ -333,9 +343,14 @@ const generateHttpClientFiles = async (
   output: NormalizedOutputOptions,
   context: ContextSpec,
 ) => {
-  const { extension, dirname, filename } = getFileInfo(output.target);
+  const {
+    path: targetPath,
+    extension,
+    dirname,
+    filename,
+  } = getFileInfo(output.target);
 
-  const header = getHeader(output.override.header, context.spec.info);
+  const header = getHeader(output.override.header, getSpecInfo(context));
 
   const clients = await Promise.all(
     Object.values(verbOptions).map(async (verbOption) => {
@@ -364,14 +379,18 @@ const generateHttpClientFiles = async (
 
   const isZodSchemaOutput =
     isObject(output.schemas) && output.schemas.type === 'zod';
-  const schemasPath = isObject(output.schemas)
-    ? output.schemas.path
-    : output.schemas;
+  const schemasPath = (
+    isObject(output.schemas)
+      ? output.schemas.path
+      : isString(output.schemas)
+        ? output.schemas
+        : undefined
+  ) as string | undefined;
   const basePath = schemasPath ? getFileInfo(schemasPath).dirname : undefined;
   const relativeSchemasPath = basePath
     ? isZodSchemaOutput && output.indexFiles
-      ? upath.relativeSafe(dirname, upath.joinSafe(basePath, 'index.zod'))
-      : upath.relativeSafe(dirname, basePath)
+      ? upath.getRelativeImportPath(targetPath, basePath, true)
+      : upath.getRelativeImportPath(targetPath, basePath)
     : './' + filename + '.schemas';
 
   const importNames = clients
@@ -402,7 +421,7 @@ const generateHttpClientFiles = async (
     fetchHeader,
     clientImplementation,
   ].join('\n');
-  const outputPath = upath.join(dirname, `http-client${extension}`);
+  const outputPath = path.join(dirname, `http-client${extension}`);
 
   return [
     {

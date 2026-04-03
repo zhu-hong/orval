@@ -8,7 +8,7 @@ export default defineConfig({
       mock: true,
       client: 'fetch',
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -30,7 +30,7 @@ export default defineConfig({
         },
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -43,7 +43,7 @@ export default defineConfig({
       mock: true,
       client: 'fetch',
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -57,7 +57,7 @@ export default defineConfig({
       mode: 'tags-split',
       client: 'fetch',
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -71,7 +71,7 @@ export default defineConfig({
       mode: 'split',
       client: 'fetch',
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -85,7 +85,7 @@ export default defineConfig({
       mode: 'tags',
       client: 'fetch',
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -103,7 +103,7 @@ export default defineConfig({
         },
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -118,7 +118,7 @@ export default defineConfig({
         useNamedParameters: true,
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -131,7 +131,7 @@ export default defineConfig({
       client: 'fetch',
       headers: true,
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -144,7 +144,7 @@ export default defineConfig({
       client: 'fetch',
       mock: true,
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/form-data-optional-request.yaml',
@@ -166,7 +166,7 @@ export default defineConfig({
         },
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/form-data-optional-request.yaml',
@@ -182,7 +182,7 @@ export default defineConfig({
       client: 'fetch',
       mock: true,
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/form-url-encoded.yaml',
@@ -202,7 +202,7 @@ export default defineConfig({
         },
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/form-url-encoded.yaml',
@@ -214,7 +214,7 @@ export default defineConfig({
       schemas: '../generated/fetch/parameters/model',
       client: 'fetch',
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/parameters.yaml',
@@ -226,7 +226,7 @@ export default defineConfig({
       schemas: '../generated/fetch/importFromSubdirectory/model',
       client: 'fetch',
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: '../specifications/import-from-subdirectory/petstore.yaml',
   },
@@ -235,7 +235,7 @@ export default defineConfig({
       target: '../generated/fetch/default-only-response/endpoints.ts',
       client: 'fetch',
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: '../specifications/default-response.yaml',
   },
@@ -245,7 +245,7 @@ export default defineConfig({
       schemas: '../generated/fetch/empty-response/model',
       client: 'fetch',
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/empty-response.yaml',
@@ -257,7 +257,7 @@ export default defineConfig({
       schemas: '../generated/fetch/stream/model',
       client: 'fetch',
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/stream.yaml',
@@ -272,13 +272,13 @@ export default defineConfig({
       override: {
         fetch: {
           jsonReviver: {
-            path: 'mutators/custom-reviver.ts',
+            path: '../mutators/custom-reviver.ts',
             default: true,
           },
         },
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -295,7 +295,7 @@ export default defineConfig({
         useDates: true,
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/parameters.yaml',
@@ -312,7 +312,7 @@ export default defineConfig({
         },
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -332,7 +332,7 @@ export default defineConfig({
         },
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -352,7 +352,7 @@ export default defineConfig({
         },
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -374,7 +374,7 @@ export default defineConfig({
         },
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -395,7 +395,7 @@ export default defineConfig({
         },
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
@@ -416,10 +416,225 @@ export default defineConfig({
         },
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',
+    },
+  },
+  zodSchemaResponseSuffixSingle: {
+    output: {
+      target:
+        '../generated/fetch/zod-schema-response-suffix-single/endpoints.ts',
+      schemas: {
+        path: '../generated/fetch/zod-schema-response-suffix-single/model',
+        type: 'zod',
+      },
+      client: 'fetch',
+      override: {
+        components: {
+          schemas: {
+            suffix: 'Schema',
+          },
+        },
+        fetch: {
+          runtimeValidation: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3027/issue-3027.yaml',
+    },
+  },
+  zodSchemaResponseSuffixSplit: {
+    output: {
+      target:
+        '../generated/fetch/zod-schema-response-suffix-split/endpoints.ts',
+      schemas: {
+        path: '../generated/fetch/zod-schema-response-suffix-split/model',
+        type: 'zod',
+      },
+      mode: 'split',
+      indexFiles: false,
+      client: 'fetch',
+      override: {
+        components: {
+          schemas: {
+            suffix: 'Schema',
+          },
+        },
+        fetch: {
+          runtimeValidation: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3027/issue-3027.yaml',
+    },
+  },
+  zodSchemaResponseSuffixTags: {
+    output: {
+      target: '../generated/fetch/zod-schema-response-suffix-tags/endpoints.ts',
+      schemas: {
+        path: '../generated/fetch/zod-schema-response-suffix-tags/model',
+        type: 'zod',
+      },
+      mode: 'tags',
+      client: 'fetch',
+      override: {
+        components: {
+          schemas: {
+            suffix: 'Schema',
+          },
+        },
+        fetch: {
+          runtimeValidation: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3027/issue-3027.yaml',
+    },
+  },
+  zodSchemaResponseSuffixTagsSplit: {
+    output: {
+      target:
+        '../generated/fetch/zod-schema-response-suffix-tags-split/endpoints.ts',
+      schemas: {
+        path: '../generated/fetch/zod-schema-response-suffix-tags-split/model',
+        type: 'zod',
+      },
+      mode: 'tags-split',
+      client: 'fetch',
+      override: {
+        components: {
+          schemas: {
+            suffix: 'Schema',
+          },
+        },
+        fetch: {
+          runtimeValidation: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3027/issue-3027.yaml',
+    },
+  },
+  zodSchemaResponseSuffixSingleNoRuntimeValidation: {
+    output: {
+      target:
+        '../generated/fetch/zod-schema-response-suffix-single-no-runtime-validation/endpoints.ts',
+      schemas: {
+        path: '../generated/fetch/zod-schema-response-suffix-single-no-runtime-validation/model',
+        type: 'zod',
+      },
+      client: 'fetch',
+      override: {
+        components: {
+          schemas: {
+            suffix: 'Schema',
+          },
+        },
+        fetch: {
+          runtimeValidation: false,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3027/issue-3027.yaml',
+    },
+  },
+  zodSchemaResponseSuffixSplitNoRuntimeValidation: {
+    output: {
+      target:
+        '../generated/fetch/zod-schema-response-suffix-split-no-runtime-validation/endpoints.ts',
+      schemas: {
+        path: '../generated/fetch/zod-schema-response-suffix-split-no-runtime-validation/model',
+        type: 'zod',
+      },
+      mode: 'split',
+      indexFiles: false,
+      client: 'fetch',
+      override: {
+        components: {
+          schemas: {
+            suffix: 'Schema',
+          },
+        },
+        fetch: {
+          runtimeValidation: false,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3027/issue-3027.yaml',
+    },
+  },
+  zodSchemaResponseSuffixTagsNoRuntimeValidation: {
+    output: {
+      target:
+        '../generated/fetch/zod-schema-response-suffix-tags-no-runtime-validation/endpoints.ts',
+      schemas: {
+        path: '../generated/fetch/zod-schema-response-suffix-tags-no-runtime-validation/model',
+        type: 'zod',
+      },
+      mode: 'tags',
+      client: 'fetch',
+      override: {
+        components: {
+          schemas: {
+            suffix: 'Schema',
+          },
+        },
+        fetch: {
+          runtimeValidation: false,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3027/issue-3027.yaml',
+    },
+  },
+  zodSchemaResponseSuffixTagsSplitNoRuntimeValidation: {
+    output: {
+      target:
+        '../generated/fetch/zod-schema-response-suffix-tags-split-no-runtime-validation/endpoints.ts',
+      schemas: {
+        path: '../generated/fetch/zod-schema-response-suffix-tags-split-no-runtime-validation/model',
+        type: 'zod',
+      },
+      mode: 'tags-split',
+      client: 'fetch',
+      override: {
+        components: {
+          schemas: {
+            suffix: 'Schema',
+          },
+        },
+        fetch: {
+          runtimeValidation: false,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3027/issue-3027.yaml',
     },
   },
   wildcardResponses: {
@@ -428,7 +643,7 @@ export default defineConfig({
       schemas: '../generated/fetch/wildcard-responses/model',
       client: 'fetch',
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/wildcard-responses.yaml',
@@ -447,7 +662,7 @@ export default defineConfig({
         },
       },
       clean: true,
-      prettier: true,
+      formatter: 'prettier',
     },
     input: {
       target: '../specifications/petstore.yaml',

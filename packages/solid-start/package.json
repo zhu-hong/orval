@@ -1,11 +1,23 @@
 {
   "name": "@orval/solid-start",
-  "version": "8.5.1",
+  "version": "8.6.2",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orval-labs/orval.git",
+    "directory": "packages/solid-start"
+  },
+  "homepage": "https://orval.dev/docs/guides/solid-start",
+  "bugs": {
+    "url": "https://github.com/orval-labs/orval/issues"
+  },
   "type": "module",
   "types": "./dist/index.d.mts",
   "exports": {
-    ".": "./dist/index.mjs",
+    ".": {
+      "development": "./src/index.ts",
+      "default": "./dist/index.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -18,11 +30,13 @@
     "dev": "tsdown --config-loader unrun --watch src",
     "lint": "eslint .",
     "test": "vitest",
+    "typecheck": "tsc --noEmit",
     "clean": "rimraf .turbo dist",
     "nuke": "rimraf .turbo dist node_modules"
   },
   "dependencies": {
-    "@orval/core": "workspace:*"
+    "@orval/core": "workspace:*",
+    "@scalar/openapi-types": "catalog:"
   },
   "devDependencies": {
     "eslint": "catalog:",
@@ -30,5 +44,11 @@
     "tsdown": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": "./dist/index.mjs",
+      "./package.json": "./package.json"
+    }
   }
 }

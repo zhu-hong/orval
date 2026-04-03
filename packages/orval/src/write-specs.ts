@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { styleText } from 'node:util';
 
 import {
@@ -14,6 +15,7 @@ import {
   type OpenApiInfoObject,
   OutputMode,
   splitSchemasByType,
+  SupportedFormatter,
   upath,
   writeSchemas,
   writeSingleMode,
@@ -30,6 +32,54 @@ import type { TypeDocOptions } from 'typedoc';
 import { formatWithPrettier } from './formatters/prettier';
 import { executeHook } from './utils';
 import { writeZodSchemas, writeZodSchemasFromVerbs } from './write-zod-specs';
+
+async function runExternalFormatter(
+  bin: string,
+  args: string[],
+  projectTitle?: string,
+): Promise<void> {
+  try {
+    await execa(bin, args);
+  } catch (error) {
+    let message: string;
+    if (error instanceof ExecaError) {
+      message =
+        error.code === 'ENOENT'
+          ? `⚠️  ${projectTitle ? `${projectTitle} - ` : ''}${bin} not found`
+          : error.message;
+    } else if (error instanceof Error) {
+      message = error.message;
+    } else {
+      message = `⚠️  ${projectTitle ? `${projectTitle} - ` : ''}${bin} failed`;
+    }
+    log(styleText('yellow', message));
+  }
+}
+
+export async function runFormatter(
+  formatter: SupportedFormatter | undefined,
+  paths: string[],
+  projectTitle?: string,
+): Promise<void> {
+  switch (formatter) {
+    case SupportedFormatter.PRETTIER: {
+      await formatWithPrettier(paths, projectTitle);
+      break;
+    }
+    case SupportedFormatter.BIOME: {
+      await runExternalFormatter(
+        SupportedFormatter.BIOME,
+        ['check', '--write', ...paths],
+        projectTitle,
+      );
+      break;
+    }
+    case SupportedFormatter.OXFMT: {
+      await runExternalFormatter(SupportedFormatter.OXFMT, paths, projectTitle);
+      break;
+    }
+  }
+}
 
 function getHeader(
   option: false | ((info: OpenApiInfoObject) => string | string[]),
@@ -50,12 +100,14 @@ function getHeader(
 async function addOperationSchemasReExport(
   schemaPath: string,
   operationSchemasPath: string,
-  fileExtension: string,
   header: string,
 ): Promise<void> {
-  const relativePath = upath.relativeSafe(schemaPath, operationSchemasPath);
-  const schemaIndexPath = upath.join(schemaPath, `index${fileExtension}`);
-  const exportLine = `export * from '${relativePath}';\n`;
+  const schemaIndexPath = path.join(schemaPath, `index.ts`);
+  const esmImportPath = upath.getRelativeImportPath(
+    schemaIndexPath,
+    operationSchemasPath,
+  );
+  const exportLine = `export * from '${esmImportPath}';\n`;
 
   const indexExists = await fs.pathExists(schemaIndexPath);
   if (indexExists) {
@@ -63,7 +115,7 @@ async function addOperationSchemasReExport(
     // Use regex to handle both single and double quotes
     const existingContent = await fs.readFile(schemaIndexPath, 'utf8');
     const exportPattern = new RegExp(
-      String.raw`export\s*\*\s*from\s*['"]${relativePath.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)}['"]`,
+      String.raw`export\s*\*\s*from\s*['"]${esmImportPath.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)}['"]`,
     );
     if (!exportPattern.test(existingContent)) {
       await fs.appendFile(schemaIndexPath, exportLine);
@@ -150,7 +202,6 @@ export async function writeSpecs(
             await addOperationSchemasReExport(
               schemaPath,
               output.operationSchemas,
-              fileExtension,
               header,
             );
           }
@@ -225,7 +276,6 @@ export async function writeSpecs(
               await addOperationSchemasReExport(
                 output.schemas.path,
                 output.operationSchemas,
-                fileExtension,
                 header,
               );
             }
@@ -286,16 +336,18 @@ export async function writeSpecs(
 
   if (output.workspace) {
     const workspacePath = output.workspace;
+    const indexFile = path.join(workspacePath, 'index.ts');
     const imports = implementationPaths
       .filter(
-        (path) =>
+        (p) =>
           !output.mock ||
-          !path.endsWith(`.${getMockFileExtensionByTypeName(output.mock)}.ts`),
+          !p.endsWith(`.${getMockFileExtensionByTypeName(output.mock)}.ts`),
       )
-      .map((path) =>
-        upath.relativeSafe(
-          workspacePath,
-          getFileInfo(path).pathWithoutExtension,
+      .map((p) =>
+        upath.getRelativeImportPath(
+          indexFile,
+          getFileInfo(p).pathWithoutExtension,
+          true,
         ),
       );
 
@@ -304,22 +356,23 @@ export async function writeSpecs(
         ? output.schemas
         : output.schemas.path;
       imports.push(
-        upath.relativeSafe(workspacePath, getFileInfo(schemasPath).dirname),
+        upath.getRelativeImportPath(
+          indexFile,
+          getFileInfo(schemasPath).dirname,
+        ),
       );
     }
 
     if (output.operationSchemas) {
       imports.push(
-        upath.relativeSafe(
-          workspacePath,
+        upath.getRelativeImportPath(
+          indexFile,
           getFileInfo(output.operationSchemas).dirname,
         ),
       );
     }
 
     if (output.indexFiles) {
-      const indexFile = upath.join(workspacePath, '/index.ts');
-
       if (await fs.pathExists(indexFile)) {
         const data = await fs.readFile(indexFile, 'utf8');
         const importsNotDeclared = imports.filter((imp) => !data.includes(imp));
@@ -377,21 +430,7 @@ export async function writeSpecs(
     );
   }
 
-  if (output.prettier) {
-    await formatWithPrettier(paths, projectTitle);
-  }
-
-  if (output.biome) {
-    try {
-      await execa('biome', ['check', '--write', ...paths]);
-    } catch (error) {
-      let message = `⚠️  ${projectTitle ? `${projectTitle} - ` : ''}biome not found`;
-      if (error instanceof ExecaError && error.exitCode === 1)
-        message = error.message;
-
-      log(styleText('yellow', message));
-    }
-  }
+  await runFormatter(output.formatter, paths, projectTitle);
 
   if (output.docs) {
     try {
@@ -411,7 +450,7 @@ export async function writeSpecs(
 
       const Application = await getTypedocApplication();
       const app = await Application.bootstrapWithPlugins({
-        entryPoints: paths,
+        entryPoints: paths.map((x) => upath.toUnix(x)),
         theme: 'markdown',
         // Set the custom config location if it has been provided.
         ...config,
@@ -429,9 +468,7 @@ export async function writeSpecs(
         const outputPath = app.options.getValue('out');
         await app.generateDocs(project, outputPath);
 
-        if (output.prettier) {
-          await formatWithPrettier([outputPath], projectTitle);
-        }
+        await runFormatter(output.formatter, [outputPath], projectTitle);
       } else {
         throw new Error('TypeDoc not initialized');
       }

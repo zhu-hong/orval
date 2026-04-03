@@ -47,6 +47,22 @@ const getSchemaProperties = (s: OpenApiSchemaObject) =>
   s.properties as
     | Record<string, OpenApiSchemaObject | OpenApiReferenceObject>
     | undefined;
+const resolveSchemaRef = (
+  schema: OpenApiSchemaObject | OpenApiReferenceObject,
+  context: ContextSpec,
+) =>
+  resolveRef(schema, context) as {
+    schema: OpenApiSchemaObject;
+    imports: GeneratorImport[];
+  };
+const resolveResponseOrRequestRef = (
+  schema: OpenApiReferenceObject,
+  context: ContextSpec,
+) =>
+  resolveRef(schema, context) as {
+    schema: OpenApiResponseObject | OpenApiRequestBodyObject;
+    imports: GeneratorImport[];
+  };
 
 const formDataContentTypes = new Set(['multipart/form-data']);
 
@@ -85,7 +101,8 @@ function getResReqContentTypes({
     formDataContext,
   });
 
-  // Media key has highest precedence: binary media key → Blob (overrides schema)
+  // Known binary content type → Blob (overrides schema)
+  // This ensures correct responseType ('blob') even when schema lacks format: binary.
   if (!isFormData && isBinaryContentType(contentType)) {
     return {
       ...resolvedObject,
@@ -117,10 +134,7 @@ export function getResReqTypes(
         const {
           schema: bodySchema,
           imports: [{ name, schemaName }],
-        } = resolveRef<OpenApiRequestBodyObject | OpenApiResponseObject>(
-          res,
-          context,
-        );
+        } = resolveResponseOrRequestRef(res, context);
 
         const firstEntry = Object.entries(bodySchema.content ?? {}).at(0);
 
@@ -134,11 +148,12 @@ export function getResReqTypes(
               isEnum: false,
               isRef: true,
               hasReadonlyProps: false,
+              dependencies: [name],
               originalSchema: undefined,
               example: undefined,
               examples: undefined,
               key,
-              contentType: undefined,
+              contentType: '',
             },
           ] as ResReqTypesValue[];
         }
@@ -158,6 +173,7 @@ export function getResReqTypes(
               isEnum: false,
               isRef: true,
               hasReadonlyProps: false,
+              dependencies: [name],
               originalSchema: mediaType.schema,
               example: mediaType.example as unknown,
               examples: resolveExampleRefs(
@@ -211,6 +227,7 @@ export function getResReqTypes(
             type: 'unknown',
             isEnum: false,
             hasReadonlyProps: false,
+            dependencies: [name],
             formData,
             formUrlEncoded,
             isRef: true,
@@ -235,10 +252,7 @@ export function getResReqTypes(
             // When schema is a $ref, use schema name for consistent param naming
             let effectivePropName = propName;
             if (mediaType.schema && isReference(mediaType.schema)) {
-              const { imports } = resolveRef<OpenApiSchemaObject>(
-                mediaType.schema,
-                context,
-              );
+              const { imports } = resolveSchemaRef(mediaType.schema, context);
               if (imports[0]?.name) {
                 effectivePropName = imports[0].name;
               }
@@ -284,6 +298,7 @@ export function getResReqTypes(
               return {
                 ...resolvedValue,
                 imports: resolvedValue.imports,
+                dependencies: resolvedValue.dependencies,
                 contentType,
                 example: mediaType.example,
                 examples: resolveExampleRefs(mediaType.examples, context),
@@ -373,6 +388,7 @@ export function getResReqTypes(
           schemas: [],
           type: defaultType,
           isEnum: false,
+          dependencies: [],
           key,
           isRef: false,
           hasReadonlyProps: false,
@@ -399,7 +415,7 @@ export function getSuccessResponseType(
 ): 'blob' | 'text' | undefined {
   const successContentTypes = response.types.success
     .map((t) => t.contentType)
-    .filter(Boolean) as string[];
+    .filter(Boolean);
 
   if (response.isBlob) {
     return 'blob' as const;
@@ -487,7 +503,7 @@ function getFormDataAdditionalImports({
   schemaObject,
   context,
 }: GetFormDataAdditionalImportsOptions): GeneratorImport[] {
-  const { schema } = resolveRef<OpenApiSchemaObject>(schemaObject, context);
+  const { schema } = resolveSchemaRef(schemaObject, context);
 
   if (schema.type !== 'object') {
     return [];
@@ -500,10 +516,7 @@ function getFormDataAdditionalImports({
   }
 
   return combinedSchemas
-    .map(
-      (subSchema) =>
-        resolveRef<OpenApiSchemaObject>(subSchema, context).imports[0],
-    )
+    .map((subSchema) => resolveSchemaRef(subSchema, context).imports[0])
     .filter(Boolean);
 }
 
@@ -526,10 +539,7 @@ function getSchemaFormDataAndUrlEncoded({
   isRef,
   encoding,
 }: GetSchemaFormDataAndUrlEncodedOptions): string {
-  const { schema, imports } = resolveRef<OpenApiSchemaObject>(
-    schemaObject,
-    context,
-  );
+  const { schema, imports } = resolveSchemaRef(schemaObject, context);
   const propName = camel(
     !isRef && isReference(schemaObject) ? imports[0].name : name,
   );
@@ -550,8 +560,10 @@ function getSchemaFormDataAndUrlEncoded({
 
       const combinedSchemasFormData = combinedSchemas
         .map((subSchema) => {
-          const { schema: combinedSchema, imports } =
-            resolveRef<OpenApiSchemaObject>(subSchema, context);
+          const { schema: combinedSchema, imports } = resolveSchemaRef(
+            subSchema,
+            context,
+          );
 
           let newPropName = propName;
           let newPropDefinition = '';
@@ -602,10 +614,7 @@ function getSchemaFormDataAndUrlEncoded({
     let valueStr = 'value';
     const schemaItems = getSchemaItems(schema);
     if (schemaItems) {
-      const { schema: itemSchema } = resolveRef<OpenApiSchemaObject>(
-        schemaItems,
-        context,
-      );
+      const { schema: itemSchema } = resolveSchemaRef(schemaItems, context);
       if (itemSchema.type === 'object' || itemSchema.type === 'array') {
         valueStr = 'JSON.stringify(value)';
       } else if (
@@ -655,10 +664,7 @@ function resolveSchemaPropertiesToFormData({
   let formDataValues = '';
   const schemaProps = getSchemaProperties(schema) ?? {};
   for (const [key, value] of Object.entries(schemaProps)) {
-    const { schema: property } = resolveRef<OpenApiSchemaObject>(
-      value,
-      context,
-    );
+    const { schema: property } = resolveSchemaRef(value, context);
 
     // Skip readOnly properties for formData
     if (property.readOnly) {
@@ -716,10 +722,7 @@ function resolveSchemaPropertiesToFormData({
       let hasNonPrimitiveChild = false;
       const propertyItems = getSchemaItems(property);
       if (propertyItems) {
-        const { schema: itemSchema } = resolveRef<OpenApiSchemaObject>(
-          propertyItems,
-          context,
-        );
+        const { schema: itemSchema } = resolveSchemaRef(propertyItems, context);
         if (itemSchema.type === 'object' || itemSchema.type === 'array') {
           if (
             context.output.override.formData.arrayHandling ===

@@ -1,4 +1,4 @@
-import fs from 'fs-extra';
+import path from 'node:path';
 
 import { generateModelsInline, generateMutatorImports } from '../generators';
 import type { WriteModeProps } from '../types';
@@ -11,6 +11,8 @@ import {
   kebab,
   upath,
 } from '../utils';
+import { escapeRegExp } from '../utils/string';
+import { writeGeneratedFile } from './file';
 import { generateImportsForBuilder } from './generate-imports-for-builder';
 import { generateTargetForTags } from './target-tags';
 import { getOrvalGeneratedTypes, getTypedResponse } from './types';
@@ -22,8 +24,16 @@ export async function writeTagsMode({
   header,
   needSchema,
 }: WriteModeProps): Promise<string[]> {
-  const { filename, dirname, extension } = getFileInfo(output.target, {
-    backupFilename: conventionName(builder.info.title, output.namingConvention),
+  const {
+    path: targetPath,
+    filename,
+    dirname,
+    extension,
+  } = getFileInfo(output.target, {
+    backupFilename: conventionName(
+      builder.info.title ?? 'filename',
+      output.namingConvention,
+    ),
     extension: output.fileExtension,
   });
 
@@ -52,8 +62,8 @@ export async function writeTagsMode({
         let data = header;
 
         const schemasPathRelative = output.schemas
-          ? upath.relativeSafe(
-              dirname,
+          ? upath.getRelativeImportPath(
+              targetPath,
               getFileInfo(
                 isString(output.schemas) ? output.schemas : output.schemas.path,
                 { extension: output.fileExtension },
@@ -61,11 +71,45 @@ export async function writeTagsMode({
             )
           : './' + filename + '.schemas';
 
+        const implementationImports = imports.filter((imp) => {
+          const searchWords = [imp.alias, imp.name]
+            .filter((part): part is string => Boolean(part?.length))
+            .map((part) => escapeRegExp(part))
+            .join('|');
+          if (!searchWords) {
+            return false;
+          }
+
+          return new RegExp(String.raw`\b(${searchWords})\b`, 'g').test(
+            implementation,
+          );
+        });
+
+        const normalizedImports = implementationImports.map((imp) => ({
+          ...imp,
+        }));
+        for (const mockImport of importsMock) {
+          const matchingImport = normalizedImports.find(
+            (imp) =>
+              imp.name === mockImport.name &&
+              (imp.alias ?? '') === (mockImport.alias ?? ''),
+          );
+          if (!matchingImport) continue;
+
+          const mockNeedsRuntimeValue =
+            !!mockImport.values ||
+            !!mockImport.isConstant ||
+            !!mockImport.default ||
+            !!mockImport.namespaceImport ||
+            !!mockImport.syntheticDefaultImport;
+          if (mockNeedsRuntimeValue) {
+            matchingImport.values = true;
+          }
+        }
+
         const importsForBuilder = generateImportsForBuilder(
           output,
-          imports.filter(
-            (imp) => !importsMock.some((impMock) => imp.name === impMock.name),
-          ),
+          normalizedImports,
           schemasPathRelative,
         );
 
@@ -88,7 +132,14 @@ export async function writeTagsMode({
         if (output.mock) {
           const importsMockForBuilder = generateImportsForBuilder(
             output,
-            importsMock,
+            importsMock.filter(
+              (impMock) =>
+                !normalizedImports.some(
+                  (imp) =>
+                    imp.name === impMock.name &&
+                    (imp.alias ?? '') === (impMock.alias ?? ''),
+                ),
+            ),
             schemasPathRelative,
           );
 
@@ -104,12 +155,12 @@ export async function writeTagsMode({
 
         const schemasPath = output.schemas
           ? undefined
-          : upath.join(dirname, filename + '.schemas' + extension);
+          : path.join(dirname, filename + '.schemas' + extension);
 
         if (schemasPath && needSchema) {
           const schemasData = header + generateModelsInline(builder.schemas);
 
-          await fs.outputFile(schemasPath, schemasData);
+          await writeGeneratedFile(schemasPath, schemasData);
         }
 
         if (mutators) {
@@ -158,16 +209,17 @@ export async function writeTagsMode({
           data += implementationMock;
         }
 
-        const implementationPath = upath.join(
+        const implementationPath = path.join(
           dirname,
           `${kebab(tag)}${extension}`,
         );
-        await fs.outputFile(implementationPath, data);
+        await writeGeneratedFile(implementationPath, data);
 
         return [implementationPath, ...(schemasPath ? [schemasPath] : [])];
       } catch (error) {
         throw new Error(
           `Oups... 🍻. An Error occurred while writing tag ${tag} => ${String(error)}`,
+          { cause: error },
         );
       }
     }),
