@@ -30,12 +30,19 @@ const _effect_getApiBuilder = async function ({
   const api = await asyncReduce(
     Object.entries(context.spec.paths ?? {}),
     async (acc, [pathRoute, verbs]) => {
+      if (!verbs) {
+        return acc;
+      }
+
       const route = getRoute(pathRoute);
 
-      let resolvedVerbs = verbs;
+      let resolvedVerbs: OpenApiPathItemObject = verbs;
 
       if (isReference(verbs)) {
-        const { schema } = resolveRef<OpenApiPathItemObject>(verbs, context);
+        const { schema }: { schema: OpenApiPathItemObject } = resolveRef(
+          verbs,
+          context,
+        );
 
         resolvedVerbs = schema;
       }
@@ -81,7 +88,7 @@ const _effect_getApiBuilder = async function ({
 
       const fullRoute = getFullRoute(
         route,
-        verbs.servers ?? context.spec.servers,
+        resolvedVerbs.servers ?? context.spec.servers,
         output.baseUrl,
       );
       if (!output.target) {
