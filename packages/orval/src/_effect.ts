@@ -16,6 +16,7 @@ import {
 import { applyTransformer, getApiSchemas } from './import-open-api';
 import { normalizeOptions } from './utils';
 import { generateOperations } from './client';
+import { resolveSpec } from './import-specs';
 
 // copy from ./api(getApiBuilder)
 const _effect_getApiBuilder = async function ({
@@ -127,6 +128,7 @@ const _effect_getApiBuilder = async function ({
 };
 
 export {
+  resolveSpec,
   applyTransformer,
   getApiSchemas,
   normalizeOptions,

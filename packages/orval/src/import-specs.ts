@@ -17,7 +17,7 @@ import { isNullish } from 'remeda';
 
 import { importOpenApi } from './import-open-api';
 
-async function resolveSpec(
+export async function resolveSpec(
   input: string | Record<string, unknown>,
   parserOptions?: {
     headers?: {
