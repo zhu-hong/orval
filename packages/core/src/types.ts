@@ -52,7 +52,7 @@ export interface NormalizedOutputOptions {
   packageJson?: PackageJson;
   headers: boolean;
   indexFiles: boolean;
-  baseUrl?: string | BaseUrlFromSpec | BaseUrlFromConstant;
+  baseUrl?: string | BaseUrlFromSpec | BaseUrlFromConstant | BaseUrlRuntime;
   allParamsOptional: boolean;
   urlEncodeParameters: boolean;
   unionAddMissingProperties: boolean;
@@ -143,6 +143,23 @@ export interface NormalizedOverrideOutput {
    * intentionally immutable and should remain readonly in generated types.
    */
   preserveReadonlyRequestBodies?: ReadonlyRequestBodiesMode;
+  /**
+   * When enabled, operations with multiple request body content-types
+   * (e.g. both `multipart/form-data` and `application/json`) will generate
+   * separate functions for each content type instead of a single function
+   * with a union type parameter.
+   *
+   * @example
+   * // With splitByContentType: true
+   * updateProfileWithFormData(body: FormDataType) => { ... }
+   * updateProfileWithJson(body: JsonType) => { ... }
+   *
+   * // With splitByContentType: false (default)
+   * updateProfile(body: FormDataType | JsonType) => { ... }
+   *
+   * @default false
+   */
+  splitByContentType: boolean;
   jsDoc: NormalizedJsDocOptions;
   aliasCombinedTypes: boolean;
   /**
@@ -215,6 +232,18 @@ export interface BaseUrlFromConstant {
   baseUrl: string;
 }
 
+/**
+ * Embed a runtime JavaScript expression into generated URL template literals
+ * (e.g. `process.env.API_BASE_URL`) so the same build can target different hosts at runtime.
+ */
+export interface BaseUrlRuntime {
+  runtime: string;
+  /** Named imports for symbols used in `runtime` (e.g. `{ name: 'apiBase', importPath: '../config' }`). */
+  imports?: GeneratorImport[];
+  getBaseUrlFromSpecification?: never;
+  baseUrl?: never;
+}
+
 export const PropertySortOrder = {
   ALPHABETICAL: 'Alphabetical',
   SPECIFICATION: 'Specification',
@@ -279,7 +308,7 @@ export interface OutputOptions {
   packageJson?: string;
   headers?: boolean;
   indexFiles?: boolean;
-  baseUrl?: string | BaseUrlFromSpec | BaseUrlFromConstant;
+  baseUrl?: string | BaseUrlFromSpec | BaseUrlFromConstant | BaseUrlRuntime;
   allParamsOptional?: boolean;
   urlEncodeParameters?: boolean;
   unionAddMissingProperties?: boolean;
@@ -531,6 +560,15 @@ export interface OverrideOutput {
    * intentionally immutable and should remain readonly in generated types.
    */
   preserveReadonlyRequestBodies?: ReadonlyRequestBodiesMode;
+  /**
+   * When enabled, operations with multiple request body content-types
+   * (e.g. both `multipart/form-data` and `application/json`) will generate
+   * separate functions for each content type instead of a single function
+   * with a union type parameter.
+   *
+   * @default false
+   */
+  splitByContentType?: boolean;
   jsDoc?: JsDocOptions;
   aliasCombinedTypes?: boolean;
   /**
@@ -791,6 +829,7 @@ export interface NormalizedFetchOptions {
   forceSuccessResponse: boolean;
   jsonReviver?: Mutator;
   runtimeValidation: boolean;
+  useRuntimeFetcher: boolean;
 }
 
 export interface FetchOptions {
@@ -798,6 +837,7 @@ export interface FetchOptions {
   forceSuccessResponse?: boolean;
   jsonReviver?: Mutator;
   runtimeValidation?: boolean;
+  useRuntimeFetcher?: boolean;
 }
 
 export type InputTransformerFn = (spec: OpenApiDocument) => OpenApiDocument;
@@ -898,6 +938,7 @@ export interface GlobalOptions {
   packageJson?: string;
   input?: string | string[];
   output?: string;
+  failOnWarnings?: boolean;
 }
 
 export interface Tsconfig {
@@ -1311,6 +1352,7 @@ export interface WriteModeProps {
   projectName?: string;
   header: string;
   needSchema: boolean;
+  generateSchemasInline?: () => string;
 }
 
 export interface GeneratorApiOperations {

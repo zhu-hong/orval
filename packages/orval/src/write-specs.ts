@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { styleText } from 'node:util';
 
 import {
   createSuccessMessage,
@@ -10,7 +9,7 @@ import {
   isObject,
   isString,
   jsDoc,
-  log,
+  logWarning,
   type NormalizedOptions,
   type OpenApiInfoObject,
   OutputMode,
@@ -31,7 +30,11 @@ import type { TypeDocOptions } from 'typedoc';
 
 import { formatWithPrettier } from './formatters/prettier';
 import { executeHook } from './utils';
-import { writeZodSchemas, writeZodSchemasFromVerbs } from './write-zod-specs';
+import {
+  generateZodSchemasInline,
+  writeZodSchemas,
+  writeZodSchemasFromVerbs,
+} from './write-zod-specs';
 
 async function runExternalFormatter(
   bin: string,
@@ -52,7 +55,7 @@ async function runExternalFormatter(
     } else {
       message = `⚠️  ${projectTitle ? `${projectTitle} - ` : ''}${bin} failed`;
     }
-    log(styleText('yellow', message));
+    logWarning(message);
   }
 }
 
@@ -324,13 +327,21 @@ export async function writeSpecs(
 
   if (output.target) {
     const writeMode = getWriteMode(output.mode);
+    const isZodClient = output.client === 'zod';
+    const hasOperations = Object.keys(builder.operations).length > 0;
+    const needZodSchemasInline =
+      isZodClient && !output.schemas && !hasOperations;
+
     implementationPaths = await writeMode({
       builder,
       workspace,
       output,
       projectName,
       header,
-      needSchema: !output.schemas && output.client !== 'zod',
+      needSchema: (!output.schemas && !isZodClient) || needZodSchemasInline,
+      generateSchemasInline: needZodSchemasInline
+        ? () => generateZodSchemasInline(builder, output)
+        : undefined,
     });
   }
 
@@ -478,7 +489,7 @@ export async function writeSpecs(
           ? error.message
           : `⚠️  ${projectTitle ? `${projectTitle} - ` : ''}Unable to generate docs`;
 
-      log(styleText('yellow', message));
+      logWarning(message);
     }
   }
 
