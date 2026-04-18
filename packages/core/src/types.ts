@@ -116,6 +116,7 @@ export interface NormalizedOverrideOutput {
     };
   };
   hono: NormalizedHonoOptions;
+  mcp: NormalizedMcpOptions;
   query: NormalizedQueryOptions;
   angular: NormalizedAngularOptions;
   swr: SwrOptions;
@@ -286,7 +287,7 @@ export interface NormalizedSchemaOptions {
 export interface OutputOptions {
   workspace?: string;
   target: string;
-  schemas?: string | SchemaOptions;
+  schemas?: string | SchemaOptions | false;
   /**
    * Separate path for operation-derived types (params, bodies, responses).
    * When set, types matching operation patterns (e.g., *Params, *Body) are written here
@@ -533,6 +534,7 @@ export interface OverrideOutput {
     };
   };
   hono?: HonoOptions;
+  mcp?: McpOptions;
   query?: QueryOptions;
   swr?: SwrOptions;
   angular?: AngularOptions;
@@ -684,11 +686,19 @@ export interface NormalizedZodOptions {
   timeOptions: ZodTimeOptions;
 }
 
+/**
+ * A single parameter value for `mutationInvalidates` params.
+ *
+ * - `string` – treated as a variable reference, e.g. `"petId"` → `variables.petId`
+ * - `{ literal: string }` – emitted as a string literal, e.g. `{ literal: "@me" }` → `"@me"`
+ */
+export type InvalidateTargetParam = string | { literal: string };
+
 export type InvalidateTarget =
   | string
   | {
       query: string;
-      params?: string[] | Record<string, string>;
+      params?: InvalidateTargetParam[] | Record<string, InvalidateTargetParam>;
       invalidateMode?: 'invalidate' | 'reset';
       file?: string;
     };
@@ -705,6 +715,26 @@ export interface HonoOptions {
   compositeRoute?: string;
   validator?: boolean | 'hono';
   validatorOutputPath?: string;
+}
+
+export interface McpServerOptions {
+  path: string;
+  name?: string;
+  default?: boolean;
+}
+
+export interface NormalizedMcpServerOptions {
+  path: string;
+  name?: string;
+  default: boolean;
+}
+
+export interface McpOptions {
+  server?: McpServerOptions;
+}
+
+export interface NormalizedMcpOptions {
+  server?: NormalizedMcpServerOptions;
 }
 
 export interface NormalizedQueryOptions {

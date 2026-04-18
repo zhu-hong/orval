@@ -11,6 +11,7 @@ import {
   type GeneratorVerbOptions,
   getFileInfo,
   getFullRoute,
+  getParamsInPath,
   isObject,
   isString,
   jsDoc,
@@ -110,9 +111,10 @@ export const getMcpHeader: ClientHeaderBuilder = ({ verbOptions, output }) => {
 
 export const generateMcp: ClientBuilder = (verbOptions) => {
   const handlerArgsTypes = [];
+  const originalParamNames = getParamsInPath(verbOptions.pathRoute);
   const pathParamsType = verbOptions.params
-    .map((param) => {
-      const paramName = param.name.split(': ')[0];
+    .map((param, index) => {
+      const paramName = originalParamNames[index];
       const paramType = param.implementation.split(': ')[1];
       return `    ${paramName}: ${paramType}`;
     })
@@ -141,12 +143,8 @@ ${handlerArgsTypes.join('\n')}
 
   const fetchParams = [];
   if (verbOptions.params.length > 0) {
-    const pathParamsArgs = verbOptions.params
-      .map((param) => {
-        const paramName = param.name.split(': ')[0];
-
-        return `args.pathParams.${paramName}`;
-      })
+    const pathParamsArgs = originalParamNames
+      .map((paramName) => `args.pathParams.${paramName}`)
       .join(', ');
 
     fetchParams.push(pathParamsArgs);
@@ -156,8 +154,8 @@ ${handlerArgsTypes.join('\n')}
 
   const handlerName = `${verbOptions.operationName}Handler`;
   const handlerImplementation = `
-export const ${handlerName} = async (${handlerArgsTypes.length > 0 ? `args: ${handlerArgsName}` : ''}) => {
-  const res = await ${verbOptions.operationName}(${fetchParams.join(', ')});
+export const ${handlerName} = async (${handlerArgsTypes.length > 0 ? `args: ${handlerArgsName}, ` : ''}options?: RequestInit) => {
+  const res = await ${verbOptions.operationName}(${fetchParams.length > 0 ? `${fetchParams.join(', ')}, ` : ''}options);
 
   return {
     content: [
@@ -190,6 +188,8 @@ export const generateServer = (
   const serverPath = path.join(dirname, `server${extension}`);
   const header = getHeader(output.override.header, info);
 
+  const mcpServerOptions = output.override.mcp.server;
+
   const toolImplementations = Object.values(verbOptions)
     .map((verbOption) => {
       const pascalOperationName = pascal(verbOption.operationName);
@@ -210,11 +210,15 @@ export const generateServer = (
   },`
           : '';
 
+      const handlerCallImplementation = inputSchemaImplementation
+        ? `(args) => ${verbOption.operationName}Handler(args, options)`
+        : `() => ${verbOption.operationName}Handler(options)`;
+
       const toolImplementation = `
 server.tool(
   '${jsStringEscape(verbOption.operationName)}',
   '${jsStringEscape(verbOption.summary ?? '')}',${inputSchemaImplementation ? `\n${inputSchemaImplementation}` : ''}
-  ${jsStringEscape(verbOption.operationName)}Handler
+  ${handlerCallImplementation}
 );`;
 
       return toolImplementation;
@@ -248,21 +252,44 @@ server.tool(
     .join(`,\n`);
   const importHandlersImplementation = `import {\n${importHandlers}\n} from './handlers';`;
 
-  const importDependenciesImplementation = `import {
+  const createMcpServerImplementation = `
+const createMcpServer = (options?: RequestInit) => {
+  const server = new McpServer({
+    name: '${camel(info.title)}Server',
+    version: '1.0.0',
+  });
+${toolImplementations}
+
+  return server;
+};
+`;
+
+  const serverFunctionName = mcpServerOptions?.name ?? 'customServer';
+  const relativeServerPath = mcpServerOptions
+    ? upath.getRelativeImportPath(serverPath, mcpServerOptions.path)
+    : '';
+  const importSpecifier = mcpServerOptions?.default
+    ? serverFunctionName
+    : `{ ${serverFunctionName} }`;
+
+  const importMcpServer = `import {
   McpServer
 } from '@modelcontextprotocol/sdk/server/mcp.js';
-  
-import {
+`;
+
+  const importTransport = mcpServerOptions
+    ? `import ${importSpecifier} from '${relativeServerPath}';`
+    : `import {
   StdioServerTransport
-} from '@modelcontextprotocol/sdk/server/stdio.js';  
+} from '@modelcontextprotocol/sdk/server/stdio.js';`;
+
+  const importDependenciesImplementation = `${importMcpServer}
+${importTransport}
 `;
-  const newMcpServerImplementation = `
-const server = new McpServer({
-  name: '${camel(info.title)}Server',
-  version: '1.0.0',
-});
-`;
-  const serverConnectImplementation = `
+
+  const customServerConnectImplementation = `\n${serverFunctionName}(createMcpServer);\n`;
+  const stdioServerConnectImplementation = `
+const server = createMcpServer();
 const transport = new StdioServerTransport();
 
 server.connect(transport).then(() => {
@@ -270,13 +297,16 @@ server.connect(transport).then(() => {
 }).catch(console.error);
 `;
 
+  const serverConnectImplementation = mcpServerOptions
+    ? customServerConnectImplementation
+    : stdioServerConnectImplementation;
+
   const content = [
     header,
     importDependenciesImplementation,
     importHandlersImplementation,
     importToolSchemasImplementation,
-    newMcpServerImplementation,
-    toolImplementations,
+    createMcpServerImplementation,
     serverConnectImplementation,
   ].join('\n');
 
