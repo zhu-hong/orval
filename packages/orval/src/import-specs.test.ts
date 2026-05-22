@@ -159,6 +159,77 @@ describe('validation', () => {
     );
   });
 
+  it('should run override.transformer before validation so users can repair malformed specs', async () => {
+    const workspace = 'test';
+    const normalizedOptions = await normalizeOptions(
+      {
+        output: { target: '' },
+        input: {
+          target: SSE_ITEM_SCHEMA_SPEC,
+          override: {
+            transformer: (spec: OpenApiDocument) => {
+              // Strip the non-standard `itemSchema` field that would otherwise
+              // fail validation, replacing it with a compliant `schema` field.
+              type MediaContent = Record<string, Record<string, unknown>>;
+              const next = structuredClone(spec);
+              const sseResponse = next.paths?.['/api/events/']?.post
+                ?.responses?.['200'] as { content?: MediaContent } | undefined;
+              const eventStream = sseResponse?.content?.['text/event-stream'];
+              if (eventStream && 'itemSchema' in eventStream) {
+                eventStream.schema = eventStream.itemSchema;
+                delete eventStream.itemSchema;
+              }
+              return next;
+            },
+          },
+        },
+      },
+      workspace,
+      {},
+    );
+
+    const spec = await importSpecs(workspace, normalizedOptions);
+    expect(spec.verbOptions).toHaveProperty('sse_endpoint');
+    expect(spec.verbOptions).toHaveProperty('list_pets');
+    // The transformer rewrote `itemSchema` -> `schema`, so the SSE response
+    // should resolve to a real generated type rather than the default `void`.
+    // Resolve the schema dynamically from the verb's response type instead of
+    // hard-coding the synthesized name so this doesn't break if orval's
+    // response-schema naming convention changes.
+    const sseReturn = spec.verbOptions.sse_endpoint.response.definition.success;
+    expect(sseReturn).not.toBe('void');
+    const sseSchema = spec.schemas.find((s) => s.name === sseReturn);
+    expect(sseSchema?.model).toContain('data');
+    expect(sseSchema?.model).toContain('event');
+  });
+
+  it('should throw a clear error when override.transformer returns nothing', async () => {
+    const workspace = 'test';
+    const normalizedOptions = await normalizeOptions(
+      {
+        output: { target: '' },
+        input: {
+          target: SSE_ITEM_SCHEMA_SPEC,
+          override: {
+            transformer: (() =>
+              undefined as unknown as OpenApiDocument) satisfies (
+              spec: OpenApiDocument,
+            ) => OpenApiDocument,
+          },
+        },
+      },
+      workspace,
+      {},
+    );
+
+    // JS assigns `.name` from the property key when an inline function is
+    // bound to an object literal, so the source pointer is `transformer`
+    // here. A truly anonymous function falls back to `<inline function>`.
+    await expect(importSpecs(workspace, normalizedOptions)).rejects.toThrow(
+      /input\.override\.transformer must return an OpenAPI document object; got undefined from transformer/,
+    );
+  });
+
   it('should skip validation when input.unsafeDisableValidation is true', async () => {
     const workspace = 'test';
     const normalizedOptions = await normalizeOptions(
@@ -685,6 +756,91 @@ describe('dereferenceExternalRefs', () => {
     expect(result).not.toHaveProperty('x-ext');
   });
 
+  it('should resolve external path-item refs with escaped JSON Pointer tokens (#3380)', () => {
+    // A cross-file path-item `$ref` (e.g. `common.yaml#/paths/~1pets`) is
+    // bundled into an x-ext ref whose pointer keeps the JSON Pointer escape
+    // `~1` (for `/`) and percent-encoding (`%7B`/`%7D` for `{`/`}` in
+    // templated paths). Both must be decoded before walking the external doc.
+    const input = {
+      openapi: '3.0.0',
+      info: { version: '1.0.0', title: 'API' },
+      paths: {
+        '/pets': {
+          $ref: '#/x-ext/abc1234/paths/~1pets',
+        },
+        '/pets/{petId}': {
+          $ref: '#/x-ext/abc1234/paths/~1pets~1%7BpetId%7D',
+        },
+        // `~0` is the JSON Pointer escape for a literal `~` (RFC 6901).
+        '/pets~dogs': {
+          $ref: '#/x-ext/abc1234/paths/~1pets~0dogs',
+        },
+      },
+      'x-ext': {
+        abc1234: {
+          paths: {
+            '/pets': {
+              get: {
+                operationId: 'listPets',
+                responses: { '200': { description: 'ok' } },
+              },
+            },
+            '/pets/{petId}': {
+              get: {
+                operationId: 'getPet',
+                parameters: [
+                  {
+                    name: 'petId',
+                    in: 'path',
+                    required: true,
+                    schema: { type: 'string' },
+                  },
+                ],
+                responses: { '200': { description: 'ok' } },
+              },
+            },
+            '/pets~dogs': {
+              get: {
+                operationId: 'listPetsDogs',
+                responses: { '200': { description: 'ok' } },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const result = dereferenceExternalRef(input) as OpenApiDocument;
+
+    expect(result.paths?.['/pets']).toEqual({
+      get: {
+        operationId: 'listPets',
+        responses: { '200': { description: 'ok' } },
+      },
+    });
+    expect(result.paths?.['/pets/{petId}']).toEqual({
+      get: {
+        operationId: 'getPet',
+        parameters: [
+          {
+            name: 'petId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
+        responses: { '200': { description: 'ok' } },
+      },
+    });
+    expect(result.paths?.['/pets~dogs']).toEqual({
+      get: {
+        operationId: 'listPetsDogs',
+        responses: { '200': { description: 'ok' } },
+      },
+    });
+    expect(result).not.toHaveProperty('x-ext');
+  });
+
   it('should dereference external doc schemas with internal refs', () => {
     const input = {
       openapi: '3.0.3',
@@ -748,6 +904,78 @@ describe('dereferenceExternalRefs', () => {
         ],
       }),
     );
+
+    expect(result).not.toHaveProperty('x-ext');
+  });
+
+  // Regression test for https://github.com/orval-labs/orval/issues/1935
+  it('should resolve a barrel $ref that crosses into a second external doc', () => {
+    // The middle external doc ("barrel") only re-exports a schema as a $ref
+    // into a third external doc ("concrete"). The cross-doc rewrite in
+    // `replaceXExtRefs` must collapse the chain so the merged barrel schema
+    // ends up pointing at the resolved schema in the main spec, not at the
+    // raw `#/x-ext/concrete/...` ref it was bundled with.
+    const input = {
+      openapi: '3.0.3',
+      info: { title: 'Demo', version: '0.0.0' },
+      paths: {},
+      components: {
+        schemas: {
+          UserProjectDTO: {
+            $ref: '#/x-ext/barrel/components/schemas/UserProjectDTO',
+          },
+        },
+      },
+      'x-ext': {
+        barrel: {
+          openapi: '3.0.3',
+          info: { title: 'Barrel', version: '0.0.0' },
+          components: {
+            schemas: {
+              UserProjectDTO: {
+                $ref: '#/x-ext/concrete/components/schemas/UserProject',
+              },
+            },
+          },
+        },
+        concrete: {
+          openapi: '3.0.3',
+          info: { title: 'Concrete', version: '0.0.0' },
+          components: {
+            schemas: {
+              UserProject: {
+                type: 'object',
+                required: ['id', 'title'],
+                properties: {
+                  id: { type: 'string' },
+                  title: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const result = dereferenceExternalRef(input) as OpenApiDocument;
+    const schemas = result.components?.schemas;
+
+    // Both ends of the chain are merged into the main spec.
+    expect(schemas?.UserProject).toEqual({
+      type: 'object',
+      required: ['id', 'title'],
+      properties: {
+        id: { type: 'string' },
+        title: { type: 'string' },
+      },
+    });
+
+    // The barrel entry collapses to an internal $ref pointing at the
+    // resolved concrete schema — the x-ext hop must be rewritten, otherwise
+    // downstream resolveRef() throws "Ref not found".
+    expect(schemas?.UserProjectDTO).toEqual({
+      $ref: '#/components/schemas/UserProject',
+    });
 
     expect(result).not.toHaveProperty('x-ext');
   });

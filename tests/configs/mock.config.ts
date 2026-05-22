@@ -40,8 +40,7 @@ export default defineConfig({
       schemas: '../generated/mock/endpoints-named-delay/model',
       target: '../generated/mock/endpoints-named-delay/endpoints.ts',
       mock: {
-        type: 'msw',
-        delay: false,
+        generators: [{ type: 'msw', delay: false }],
       },
       clean: true,
       formatter: 'prettier',
@@ -227,13 +226,25 @@ export default defineConfig({
       target: '../specifications/circular.yaml',
     },
   },
+  recursiveDiscriminatorAllof: {
+    output: {
+      target: '../generated/mock/recursive-discriminator-allof/endpoints.ts',
+      schemas: '../generated/mock/recursive-discriminator-allof/model',
+      mock: true,
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/recursive-discriminator-allof.yaml',
+    },
+  },
   mswMixedContentUnion: {
     output: {
       target: '../generated/mock/msw-mixed-content-union/endpoints.ts',
       schemas: '../generated/mock/msw-mixed-content-union/model',
       client: 'axios',
       mock: {
-        type: 'msw',
+        generators: [{ type: 'msw' }],
       },
       clean: true,
       formatter: 'prettier',
@@ -249,8 +260,7 @@ export default defineConfig({
       schemas: '../generated/mock/msw-mixed-content-union-preferred-json/model',
       client: 'axios',
       mock: {
-        type: 'msw',
-        preferredContentType: 'application/json',
+        generators: [{ type: 'msw', preferredContentType: 'application/json' }],
       },
       clean: true,
       formatter: 'prettier',
@@ -266,8 +276,7 @@ export default defineConfig({
       schemas: '../generated/mock/msw-mixed-content-union-each-status/model',
       client: 'axios',
       mock: {
-        type: 'msw',
-        generateEachHttpStatus: true,
+        generators: [{ type: 'msw', generateEachHttpStatus: true }],
       },
       clean: true,
       formatter: 'prettier',
@@ -282,7 +291,7 @@ export default defineConfig({
       schemas: '../generated/mock/msw-mixed-content-union-vendor/model',
       client: 'axios',
       mock: {
-        type: 'msw',
+        generators: [{ type: 'msw' }],
       },
       clean: true,
       formatter: 'prettier',
@@ -310,7 +319,7 @@ export default defineConfig({
       schemas: '../generated/mock/enums-inline-tags-split-native/model',
       mode: 'tags-split',
       mock: {
-        type: 'msw',
+        generators: [{ type: 'msw' }],
       },
       override: {
         enumGenerationType: 'enum',
@@ -328,7 +337,7 @@ export default defineConfig({
       schemas: '../generated/mock/msw-binary-multi-content/model',
       client: 'axios',
       mock: {
-        type: 'msw',
+        generators: [{ type: 'msw' }],
       },
       clean: true,
       formatter: 'prettier',

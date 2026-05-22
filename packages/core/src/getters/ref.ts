@@ -1,14 +1,21 @@
 import type { ContextSpec, NormalizedOverrideOutput } from '../types';
 import { pascal, sanitize, upath } from '../utils';
 
-type RefComponent = 'schemas' | 'responses' | 'parameters' | 'requestBodies';
+/**
+ * `$ref`s targeting these sections under `#/components/...` are emitted as
+ * named TypeScript imports (e.g. `import type { Pet } from './model'`).
+ * Refs to any other location — for example `#/paths/.../schema` produced by
+ * JSON-Schema-Ref-Parser `bundle()` — have no corresponding `export type`
+ * and must be inlined by the resolver. See issue #398.
+ */
+export const NAMED_COMPONENT_SECTIONS = [
+  'schemas',
+  'responses',
+  'parameters',
+  'requestBodies',
+] as const;
 
-const RefComponent = {
-  schemas: 'schemas' as RefComponent,
-  responses: 'responses' as RefComponent,
-  parameters: 'parameters' as RefComponent,
-  requestBodies: 'requestBodies' as RefComponent,
-};
+type RefComponent = (typeof NAMED_COMPONENT_SECTIONS)[number];
 
 export const RefComponentSuffix: Record<RefComponent, string> = {
   schemas: '',
@@ -17,7 +24,21 @@ export const RefComponentSuffix: Record<RefComponent, string> = {
   requestBodies: 'Body',
 };
 
-const regex = new RegExp('~1', 'g');
+const COMPONENT_REF_PATTERN = new RegExp(
+  String.raw`^#\/components\/(${NAMED_COMPONENT_SECTIONS.join('|')})\/[^/]+$`,
+);
+
+/**
+ * True iff `ref` targets a named slot eligible for emission as a TypeScript
+ * import. Used by `resolveValue` to decide between named import vs inlining
+ * the resolved schema.
+ */
+export function isComponentRef(ref: string): boolean {
+  return COMPONENT_REF_PATTERN.test(ref);
+}
+
+const TILDE_1 = /~1/g;
+const TILDE_0 = /~0/g;
 
 export interface RefInfo {
   name: string;
@@ -35,7 +56,11 @@ export function getRefInfo($ref: string, context: ContextSpec): RefInfo {
   const refPaths = ref
     .slice(1)
     .split('/')
-    .map((part) => decodeURIComponent(part.replaceAll(regex, '/')));
+    .map((part) =>
+      decodeURIComponent(part)
+        .replaceAll(TILDE_1, '/')
+        .replaceAll(TILDE_0, '~'),
+    );
 
   const getOverrideSuffix = (
     override: NormalizedOverrideOutput,

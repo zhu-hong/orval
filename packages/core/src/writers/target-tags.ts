@@ -1,4 +1,7 @@
 import {
+  DefaultTag,
+  type GeneratorMockOutput,
+  type GeneratorMockOutputFull,
   type GeneratorOperation,
   type GeneratorTarget,
   type GeneratorTargetFull,
@@ -8,11 +11,79 @@ import {
 } from '../types';
 import { compareVersions, kebab, pascal } from '../utils';
 
+/**
+ * Ensures every operation has at least one tag by falling back to the
+ * {@link DefaultTag} constant for untagged operations, so the tag-routing
+ * logic in {@link generateTargetTags} always has a bucket to assign the
+ * operation to.
+ */
 function addDefaultTagIfEmpty(operation: GeneratorOperation) {
   return {
     ...operation,
-    tags: operation.tags.length > 0 ? operation.tags : ['default'],
+    tags: operation.tags.length > 0 ? operation.tags : [DefaultTag],
   };
+}
+
+function emptyMockOutputFull(
+  type: GeneratorMockOutputFull['type'],
+): GeneratorMockOutputFull {
+  return {
+    type,
+    implementation: { function: '', handler: '', handlerName: '' },
+    imports: [],
+  };
+}
+
+function flattenMockOutput(full: GeneratorMockOutputFull): GeneratorMockOutput {
+  return {
+    type: full.type,
+    implementation: full.implementation.function + full.implementation.handler,
+    imports: full.imports,
+  };
+}
+
+function mergeOperationMockOutputs(
+  accMockOutputs: GeneratorMockOutputFull[],
+  opMockOutputs: GeneratorMockOutputFull[],
+): GeneratorMockOutputFull[] {
+  const result: GeneratorMockOutputFull[] = accMockOutputs.map((m) => ({
+    type: m.type,
+    implementation: { ...m.implementation },
+    imports: [...m.imports],
+  }));
+  for (const op of opMockOutputs) {
+    let acc = result.find((m) => m.type === op.type);
+    if (!acc) {
+      acc = emptyMockOutputFull(op.type);
+      result.push(acc);
+    }
+    acc.imports.push(...op.imports);
+    acc.implementation.function += op.implementation.function;
+    acc.implementation.handler += op.implementation.handler;
+    if (op.implementation.handlerName) {
+      const separator =
+        acc.implementation.handlerName.length > 0 ? ',\n  ' : '  ';
+      acc.implementation.handlerName +=
+        separator + op.implementation.handlerName + '()';
+    }
+  }
+  return result;
+}
+
+function initialMockOutputsForOperation(
+  op: GeneratorOperation,
+): GeneratorMockOutputFull[] {
+  return op.mockOutputs.map((m) => ({
+    type: m.type,
+    implementation: {
+      function: m.implementation.function,
+      handler: m.implementation.handler,
+      handlerName: m.implementation.handlerName
+        ? '  ' + m.implementation.handlerName + '()'
+        : '',
+    },
+    imports: [...m.imports],
+  }));
 }
 
 function generateTargetTags(
@@ -24,7 +95,7 @@ function generateTargetTags(
   if (!(tag in currentAcc)) {
     currentAcc[tag] = {
       imports: operation.imports,
-      importsMock: operation.importsMock,
+      mockOutputs: initialMockOutputsForOperation(operation),
       mutators: operation.mutator ? [operation.mutator] : [],
       clientMutators: operation.clientMutators ?? [],
       formData: operation.formData ? [operation.formData] : [],
@@ -34,13 +105,9 @@ function generateTargetTags(
       paramsSerializer: operation.paramsSerializer
         ? [operation.paramsSerializer]
         : [],
+      paramsFilter: operation.paramsFilter ? [operation.paramsFilter] : [],
       fetchReviver: operation.fetchReviver ? [operation.fetchReviver] : [],
       implementation: operation.implementation,
-      implementationMock: {
-        function: operation.implementationMock.function,
-        handler: operation.implementationMock.handler,
-        handlerName: '  ' + operation.implementationMock.handlerName + '()',
-      },
     };
 
     return currentAcc;
@@ -50,20 +117,10 @@ function generateTargetTags(
   currentAcc[tag] = {
     implementation: currentOperation.implementation + operation.implementation,
     imports: [...currentOperation.imports, ...operation.imports],
-    importsMock: [...currentOperation.importsMock, ...operation.importsMock],
-    implementationMock: {
-      function:
-        currentOperation.implementationMock.function +
-        operation.implementationMock.function,
-      handler:
-        currentOperation.implementationMock.handler +
-        operation.implementationMock.handler,
-      handlerName:
-        currentOperation.implementationMock.handlerName +
-        ',\n  ' +
-        operation.implementationMock.handlerName +
-        '()',
-    },
+    mockOutputs: mergeOperationMockOutputs(
+      currentOperation.mockOutputs,
+      operation.mockOutputs,
+    ),
     mutators: operation.mutator
       ? [...(currentOperation.mutators ?? []), operation.mutator]
       : currentOperation.mutators,
@@ -85,6 +142,9 @@ function generateTargetTags(
           operation.paramsSerializer,
         ]
       : currentOperation.paramsSerializer,
+    paramsFilter: operation.paramsFilter
+      ? [...(currentOperation.paramsFilter ?? []), operation.paramsFilter]
+      : currentOperation.paramsFilter,
     fetchReviver: operation.fetchReviver
       ? [...(currentOperation.fetchReviver ?? []), operation.fetchReviver]
       : currentOperation.fetchReviver,
@@ -155,30 +215,46 @@ export function generateTargetForTags(
           output: options,
           verbOptions: builder.verbOptions,
           tag,
+          isDefaultTagBucket:
+            tag === 'default' &&
+            Object.values(builder.operations).some(
+              (operation) => operation.tags.length === 0,
+            ),
           clientImplementation: target.implementation,
         });
+
+        // Apply the per-tag header/footer wrap to each mock output that has
+        // accumulated handler entries. Mock outputs without a handler (faker
+        // only) skip the wrap.
+        const wrappedMockOutputs: GeneratorMockOutputFull[] =
+          target.mockOutputs.map((m) => ({
+            type: m.type,
+            implementation: {
+              function: m.implementation.function,
+              handler: m.implementation.handlerName
+                ? m.implementation.handler +
+                  header.implementationMock +
+                  m.implementation.handlerName +
+                  footer.implementationMock
+                : m.implementation.handler,
+              handlerName: m.implementation.handlerName,
+            },
+            imports: m.imports,
+          }));
 
         transformed[tag] = {
           implementation:
             header.implementation +
             target.implementation +
             footer.implementation,
-          implementationMock: {
-            function: target.implementationMock.function,
-            handler:
-              target.implementationMock.handler +
-              header.implementationMock +
-              target.implementationMock.handlerName +
-              footer.implementationMock,
-            handlerName: target.implementationMock.handlerName,
-          },
+          mockOutputs: wrappedMockOutputs,
           imports: target.imports,
-          importsMock: target.importsMock,
           mutators: target.mutators,
           clientMutators: target.clientMutators,
           formData: target.formData,
           formUrlEncoded: target.formUrlEncoded,
           paramsSerializer: target.paramsSerializer,
+          paramsFilter: target.paramsFilter,
           fetchReviver: target.fetchReviver,
         };
       }
@@ -190,8 +266,7 @@ export function generateTargetForTags(
   for (const [tag, target] of Object.entries(allTargetTags)) {
     result[tag] = {
       ...target,
-      implementationMock:
-        target.implementationMock.function + target.implementationMock.handler,
+      mockOutputs: target.mockOutputs.map((m) => flattenMockOutput(m)),
     };
   }
   return result;

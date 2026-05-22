@@ -24,6 +24,7 @@ function createMockContext(): ContextSpec {
       namingConvention: NamingConvention.CAMEL_CASE,
       fileExtension: '.ts',
       mode: OutputMode.SINGLE,
+      mock: { indexMockFiles: false, generators: [] },
       client: OutputClient.FETCH,
       httpClient: OutputHttpClient.FETCH,
       clean: false,
@@ -282,7 +283,7 @@ describe('combineSchemasMock', () => {
     expect(result.includedProperties).toBeDefined();
   });
 
-  it('should return empty arrayElement when oneOf contains only circular references', () => {
+  it('should return undefined when the only oneOf variant is a circular reference', () => {
     const item: MockSchemaObject = {
       name: 'Test',
       oneOf: [{ $ref: '#/components/schemas/ExistingRef' }],
@@ -300,7 +301,7 @@ describe('combineSchemasMock', () => {
     });
 
     expect(result).toBeDefined();
-    expect(result.value).toBe('faker.helpers.arrayElement([])');
+    expect(result.value).toBe('undefined');
   });
 
   it('should collect imports from combined schemas', () => {
@@ -414,7 +415,7 @@ describe('combineSchemasMock', () => {
     expect(result.value).toContain('meow:');
   });
 
-  it('should return empty arrayElement for oneOf with circular references', () => {
+  it('should return undefined when the only oneOf variant points to a visited schema', () => {
     const item: MockSchemaObject = {
       name: 'Pet',
       oneOf: [{ $ref: '#/components/schemas/Cat' }],
@@ -432,6 +433,35 @@ describe('combineSchemasMock', () => {
     });
 
     expect(result).toBeDefined();
-    expect(result.value).toBe('faker.helpers.arrayElement([])');
+    expect(result.value).toBe('undefined');
+  });
+
+  // Regression test for #2081: a oneOf variant that points back to an
+  // already-visited schema must be skipped, otherwise polymorphic recursion
+  // (Base → Parent.oneOf → Derived → allOf [Base]) overflows the stack.
+  it('should skip oneOf variants that reference already-visited schemas (#2081)', () => {
+    const item: MockSchemaObject = {
+      name: 'Parent',
+      oneOf: [
+        { $ref: '#/components/schemas/Derived1' },
+        { $ref: '#/components/schemas/Derived2' },
+      ],
+    };
+
+    const result = combineSchemasMock({
+      item,
+      separator: 'oneOf',
+      operationId: 'testOp',
+      tags: ['test'],
+      context: createMockContext(),
+      imports: [],
+      // Derived1 already on the resolution stack — skip it, keep Derived2.
+      existingReferencedProperties: ['Derived1'],
+      splitMockImplementations: [],
+    });
+
+    expect(result).toBeDefined();
+    // Derived1 should not appear because it's a circular reference here.
+    expect(result.value).not.toContain('Derived1');
   });
 });
