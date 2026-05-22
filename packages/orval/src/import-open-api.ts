@@ -15,7 +15,7 @@ import { pick } from 'remeda';
 
 import { getApiBuilder } from './api';
 
-function filterSpecComponents(
+export function filterSpecComponents(
   spec: OpenApiDocument,
   input: InputOptions,
 ): OpenApiDocument {

@@ -32,7 +32,7 @@ interface ResolveSpecOptions {
   unsafeDisableValidation?: boolean;
 }
 
-async function resolveSpec(
+export async function resolveSpec(
   input: string | Record<string, unknown>,
   {
     parserOptions,

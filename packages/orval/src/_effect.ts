@@ -1,22 +1,20 @@
 import {
   asyncReduce,
+  type ContextSpec,
   generateVerbsOptions,
+  type GeneratorApiOperations,
+  type GeneratorSchema,
   getFullRoute,
   getRoute,
   GetterPropType,
   isReference,
-  resolveRef,
-  type ContextSpec,
-  type GeneratorApiOperations,
-  type GeneratorSchema,
   type NormalizedInputOptions,
   type NormalizedOutputOptions,
   type OpenApiPathItemObject,
+  resolveRef,
 } from '@orval/core';
-import { applyTransformer, getApiSchemas } from './import-open-api';
-import { normalizeOptions } from './utils';
+
 import { generateOperations } from './client';
-import { resolveSpec } from './import-specs';
 
 // copy from ./api(getApiBuilder)
 const _effect_getApiBuilder = async function ({
@@ -103,7 +101,6 @@ const _effect_getApiBuilder = async function ({
           pathRoute,
           override: output.override,
           context,
-          mock: output.mock,
           output: output.target,
         },
         output,
@@ -127,10 +124,8 @@ const _effect_getApiBuilder = async function ({
   return api;
 };
 
-export {
-  resolveSpec,
-  applyTransformer,
-  getApiSchemas,
-  normalizeOptions,
-  _effect_getApiBuilder,
-};
+export { _effect_getApiBuilder };
+
+export { filterSpecComponents, getApiSchemas } from './import-open-api';
+export { resolveSpec } from './import-specs';
+export { normalizeOptions } from './utils';
