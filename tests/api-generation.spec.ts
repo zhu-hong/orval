@@ -13,6 +13,7 @@ await describeApiGenerationSnapshots({
     generated('angular'),
     generated('angular-query'),
     generated('axios'),
+    generated('factory-methods'),
     generated('cli'),
     generated('default'),
     generated('fetch'),
@@ -353,6 +354,34 @@ test('default issue-1935 resolves a $ref chain across three external files', asy
   expect(userProjectDTO).toContain('export type UserProjectDTO = UserProject;');
 });
 
+test('default issue-2206 types the MSW handler info parameter', async () => {
+  // Regression for #2206: generated MSW handlers used to emit
+  // `async (info) => { ... }` with no annotation on `info`, which trips
+  // `TS7006: Parameter 'info' implicitly has an 'any' type` under
+  // `noImplicitAny`. PR #2939 (v8.4.0) fixed this by annotating the inner
+  // handler callback, but #2939 only cited #2934 so #2206 stayed open. Keep
+  // this focused assertion alongside the snapshot so #2206 fails with a
+  // targeted message instead of a full-file snapshot diff.
+  const msw = await readFile(
+    generated('default', 'issue-2206-msw-info-typing', 'endpoints.msw.ts'),
+    'utf8',
+  );
+
+  // The inner handler callback must annotate `info` with some type so
+  // projects with `noImplicitAny` compile cleanly. Match the annotation
+  // shape rather than the exact type expression so refactors that extract
+  // a type alias or tweak whitespace don't trip this test unless the
+  // annotation itself is dropped. Current generator emits
+  //   async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => { ... }
+  expect(msw).toMatch(/async\s*\(\s*info\s*:\s*\S/);
+
+  // Explicit `any` would still satisfy `noImplicitAny` but defeats the fix.
+  expect(msw).not.toMatch(/async\s*\(\s*info\s*:\s*any\b/);
+
+  // No callback that takes `info` without a type (the original #2206 shape).
+  expect(msw).not.toMatch(/async\s*\(\s*info\s*[,)]/);
+});
+
 test('react-query issue-1522 passes the enabled option into the queryOptions mutator', async () => {
   // Regression for #1522: when `allParamsOptional` and a custom `queryOptions`
   // mutator are combined, the auto-generated `enabled` guard (which disables
@@ -386,6 +415,67 @@ test('react-query issue-1522 passes the enabled option into the queryOptions mut
   expect(occurrences).toBe(2);
 });
 
+test('react-query issue-3153 passes operationId and operationName to the queryOptions mutator', async () => {
+  // Regression for #3153: `mutationOptions` mutators have received
+  // `{ operationId, operationName }` as their third argument since #1974, but
+  // the symmetrically-positioned `queryOptions` mutator only got `{ url }`.
+  // Generators that branch on operation identity (e.g. to attach per-operation
+  // metadata) were therefore impossible to write against `queryOptions`. The
+  // fix adds `operationId` and `operationName` to the existing third arg —
+  // purely additive so mutators that already read `arg3.url` keep working.
+  // Keep this focused assertion alongside the snapshot so #3153 fails with a
+  // targeted message instead of a full-file snapshot diff.
+  const content = await readFile(
+    generated(
+      'react-query',
+      'custom-query-options-with-operation',
+      'endpoints.ts',
+    ),
+    'utf8',
+  );
+
+  // For each operation the third arg must carry url + operation identity at
+  // BOTH call sites: the main query options builder and the
+  // `applyQueryOptionsMutator` helper that backs `invalidate`/`set`/`get`.
+  // Counting occurrences catches the "fixed one site, forgot the other"
+  // regression without needing whitespace-flexible regex.
+  // `operationId` and `operationName` happen to match for every petstore op
+  // because the spec uses already-valid camelCase identifiers, but assert
+  // them as independent values so a future divergence (e.g. an op whose name
+  // gets normalised differently from its id) doesn't silently slip through.
+  const operations: Array<{
+    operationId: string;
+    operationName: string;
+    url: string;
+  }> = [
+    { operationId: 'listPets', operationName: 'listPets', url: '/pets' },
+    {
+      operationId: 'showPetById',
+      operationName: 'showPetById',
+      url: '/pets/${petId}',
+    },
+    {
+      operationId: 'showPetWithOwner',
+      operationName: 'showPetWithOwner',
+      url: '/pets/${petId}/owner',
+    },
+    {
+      operationId: 'healthCheck',
+      operationName: 'healthCheck',
+      url: '/health',
+    },
+  ];
+
+  const occurrencesOf = (needle: string) => content.split(needle).length - 1;
+
+  for (const { operationId, operationName, url } of operations) {
+    expect(content).toContain(`url: \`${url}\``);
+    // Two occurrences each: one from the main builder, one from the helper.
+    expect(occurrencesOf(`operationId: '${operationId}'`)).toBe(2);
+    expect(occurrencesOf(`operationName: '${operationName}'`)).toBe(2);
+  }
+});
+
 test('fetch issue-1879 inlines header schema when $ref targets another path parameter', async () => {
   // Regression for #1879: a header parameter referenced via a JSON Pointer
   // `$ref` to another path's parameter
@@ -414,4 +504,207 @@ test('fetch issue-1879 inlines header schema when $ref targets another path para
     'utf8',
   );
   expect(indexContent).not.toMatch(/\bn0\b/);
+});
+
+test('default issue-1775 preserves boolean enum literals across allOf+oneOf', async () => {
+  // Regression for #1775: an `allOf: [{orderId}, oneOf: [{success: enum [true]},
+  // {success: enum [false], failReason}]]` schema returned as an array.
+  //
+  // The type-generation half (boolean-literal preservation) was already fixed
+  // by #3159's enum branch in `packages/core/src/getters/scalar.ts`. The mock
+  // half is what this regression locks down: the boolean branch in
+  // `packages/mock/src/faker/getters/scalar.ts` previously ignored `item.enum`
+  // and unconditionally emitted `faker.datatype.boolean()`, so each `oneOf`
+  // variant's `success` randomly flipped instead of matching its literal type.
+  // The fix routes boolean through the same `getEnum` helper as number/string,
+  // emitting `faker.helpers.arrayElement([true] as const)` /
+  // `arrayElement([false] as const)` so the mock's discriminator stays in sync
+  // with the union branch it picked.
+  const model = await readFile(
+    generated('default', 'issue-1775', 'model', 'putApiOrderLimit200Item.ts'),
+    'utf8',
+  );
+
+  // The two oneOf branches keep their literal types, and `orderId` is shared
+  // through the `& { orderId: string }` half of the allOf intersection.
+  expect(model).toContain('success: true;');
+  expect(model).toContain('success: false;');
+  expect(model).toContain('failReason: string;');
+  expect(model).toContain('orderId: string;');
+
+  const endpoints = await readFile(
+    generated('default', 'issue-1775', 'endpoints.ts'),
+    'utf8',
+  );
+
+  // Each oneOf branch's mock must pin `success` to the branch's literal so a
+  // random selection still produces a valid `PutApiOrderLimit200Item`. The
+  // pre-fix output emitted `faker.datatype.boolean()` for both branches.
+  expect(endpoints).toContain('arrayElement([true] as const)');
+  expect(endpoints).toContain('arrayElement([false] as const)');
+  expect(endpoints).not.toMatch(/success: faker\.datatype\.boolean\(\)/);
+});
+
+test('mock issue-2155 keeps allOf-inherited variant mocks free of sibling factories', async () => {
+  // Regression for the second half of #2155: when a variant is shaped as
+  // `Item N = allOf:[<discriminator parent>, ...]`, resolveMockValue used to
+  // re-expand the parent's `oneOf` inside the allOf chain, inlining sibling
+  // factory calls into the derived variant's body. The fix in
+  // `packages/mock/src/faker/resolvers/value.ts` strips `oneOf` from the
+  // referenced parent when it is being expanded under an allOf separator,
+  // because the current schema is by construction a specific variant — the
+  // union side of the parent is descriptive, not additive.
+  const endpoints = await readFile(
+    generated('mock', 'discriminator-oneof-allof', 'endpoints.ts'),
+    'utf8',
+  );
+
+  // Each variant's factory body must only describe its own properties and the
+  // mapping-constrained discriminator value — no cross-variant factory calls.
+  const variantBlocks = [
+    ['getGetTestResponseItem1Mock', /getGetTestResponseItem[23]Mock/],
+    ['getGetTestResponseItem2Mock', /getGetTestResponseItem[13]Mock/],
+    ['getGetTestResponseItem3Mock', /getGetTestResponseItem[12]Mock/],
+  ] as const;
+  for (const [funcName, siblingPattern] of variantBlocks) {
+    const start = endpoints.indexOf(`export const ${funcName}`);
+    expect(start, `${funcName} should be generated`).toBeGreaterThan(-1);
+
+    const nextExport = endpoints.indexOf('export const ', start + 1);
+    const end = nextExport === -1 ? endpoints.length : nextExport;
+
+    const block = endpoints.slice(start, end);
+    expect(
+      block,
+      `${funcName} must not reference sibling factories`,
+    ).not.toMatch(siblingPattern);
+  }
+});
+
+test('mock issue-2327 base handler uses 200 content-type when sibling status has text/plain', async () => {
+  // Regression for #2327: when an operation defines a 200 application/json
+  // response alongside a non-2XX text/plain (or any text-like) response, the
+  // un-suffixed base MSW handler must serve the success body via
+  // HttpResponse.json and must NOT pick up the error response's text/plain
+  // Content-Type. PR #2938's `shouldPreferJsonResponse` guard fixes the
+  // generated output for this shape; this test pins the contract so a future
+  // refactor cannot regress the base handler back to HttpResponse.text /
+  // raw `text/plain` headers.
+  const endpoints = await readFile(
+    generated('mock', 'issue-2327', 'endpoints.ts'),
+    'utf8',
+  );
+
+  const start = endpoints.indexOf('export const getListPetsMockHandler');
+  expect(start, 'getListPetsMockHandler should be generated').toBeGreaterThan(
+    -1,
+  );
+  const nextExport = endpoints.indexOf('export const ', start + 1);
+  const handler = endpoints.slice(
+    start,
+    nextExport === -1 ? endpoints.length : nextExport,
+  );
+
+  expect(handler).toContain('HttpResponse.json(');
+  expect(handler).not.toMatch(/HttpResponse\.text\(/);
+  // Match the header key case-insensitively and treat `text/plain` as a
+  // prefix so a charset suffix (e.g. `text/plain; charset=utf-8`) still trips
+  // the assertion.
+  expect(handler).not.toMatch(/['"]content-type['"]\s*:\s*['"]text\/plain\b/i);
+});
+
+test('react-query issue-2999 emits exactly one v5 overload block per NestJS-style hook', async () => {
+  // Regression for #2999: the report described `useXxxFindAll` / `useXxxFindOne`
+  // hooks "duplicated" in the generated output. Reproducing with the OP's
+  // NestJS-style operationIds (`MusclesController_findAll` etc.) and React
+  // Query v5 shows the four declarations are the standard v5 overload block —
+  // three signatures (DefinedInitialDataOptions, UndefinedInitialDataOptions,
+  // bare options) plus one implementation — not a duplicate. This test pins
+  // the count at exactly 4 per hook so any future regression that actually
+  // re-emits the whole block (8 declarations for the same name) trips a
+  // targeted assertion instead of a full-file snapshot diff.
+  const content = await readFile(
+    generated('react-query', 'issue-2999', 'endpoints.ts'),
+    'utf8',
+  );
+
+  // Underscore-style operationIds from NestJS swagger (`Controller_method`)
+  // round-trip through orval's camelCase pass to `useControllerMethod<`.
+  // Each must appear exactly four times: three overloads + one implementation.
+  for (const hook of [
+    'useMusclesControllerFindAll<',
+    'useMusclesControllerFindOne<',
+    'useMusclesControllerCreate<',
+  ]) {
+    const occurrences = content.split(`export function ${hook}`).length - 1;
+    expect(occurrences, `${hook} must be declared exactly 4 times`).toBe(4);
+  }
+
+  // Sanity: the two v5-specific overload markers must each be used exactly
+  // once per hook, proving the count above reflects the real v5 overload
+  // shape and not e.g. four copies of the bare overload. Match the
+  // `Marker<` usage form so the type-import line at the top of the file is
+  // excluded from the count.
+  for (const marker of [
+    'DefinedInitialDataOptions<',
+    'UndefinedInitialDataOptions<',
+  ]) {
+    const occurrences = content.split(marker).length - 1;
+    expect(
+      occurrences,
+      `${marker} should be used once per hook (3 hooks)`,
+    ).toBe(3);
+  }
+});
+
+test('react-query issue-2999 keeps a single v5 overload block per hook with useInfinite + runtimeValidation', async () => {
+  // Follow-up regression for #2999 (reopened): a second reporter saw the same
+  // "duplicated hook" with `useInfinite: true` + `runtimeValidation: true` and
+  // suspected that combination was what re-emitted the overload signatures. It
+  // is not — those flags do not change the overload count. Each query hook and
+  // each generated infinite hook is still the standard v5 block of exactly four
+  // declarations (DefinedInitialDataOptions / UndefinedInitialDataOptions / bare
+  // options + one implementation signature, the last of which is invisible to
+  // callers per the TS handbook and so is not a duplicate of the bare overload).
+  // This pins the count under that exact flag set, which the original
+  // issue-2999 entry above did not cover.
+  const content = await readFile(
+    generated('react-query', 'issue-2999-infinite', 'endpoints.ts'),
+    'utf8',
+  );
+
+  // Both the query hook and its infinite counterpart must be a single 4-decl
+  // overload block. The two GET operations each yield a query + an infinite
+  // hook; the POST (`create`) yields a query hook only.
+  for (const hook of [
+    'useMusclesControllerFindAll<',
+    'useMusclesControllerFindAllInfinite<',
+    'useMusclesControllerFindOne<',
+    'useMusclesControllerFindOneInfinite<',
+    'useMusclesControllerCreate<',
+  ]) {
+    const occurrences = content.split(`export function ${hook}`).length - 1;
+    expect(occurrences, `${hook} must be declared exactly 4 times`).toBe(4);
+  }
+
+  // Infinite hooks are GET-only: the POST must not gain an infinite variant.
+  expect(
+    content.split('export function useMusclesControllerCreateInfinite<')
+      .length - 1,
+    'POST operations must not generate an infinite hook',
+  ).toBe(0);
+
+  // Each of the five overload blocks (2 GET query + 2 GET infinite + 1 POST
+  // query) uses each v5 marker exactly once, proving the counts above are the
+  // real overload shape rather than duplicated bare overloads.
+  for (const marker of [
+    'DefinedInitialDataOptions<',
+    'UndefinedInitialDataOptions<',
+  ]) {
+    const occurrences = content.split(marker).length - 1;
+    expect(
+      occurrences,
+      `${marker} should be used once per overload block (5 blocks)`,
+    ).toBe(5);
+  }
 });

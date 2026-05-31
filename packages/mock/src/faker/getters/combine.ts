@@ -1,19 +1,22 @@
 import {
   type ContextSpec,
   type GeneratorImport,
+  getRefInfo,
   isReference,
   isSchema,
   type MockOptions,
-  pascal,
 } from '@orval/core';
 
 import type { MockDefinition, MockSchema, MockSchemaObject } from '../../types';
 import { resolveMockValue } from '../resolvers';
 
-function getReferenceName(ref?: string): string {
+function getReferenceName(
+  ref: string | undefined,
+  context: ContextSpec,
+): string {
   if (!ref) return '';
 
-  return pascal(ref.split('/').pop() ?? '');
+  return getRefInfo(ref, context).name;
 }
 
 interface CombineSchemasMockOptions {
@@ -54,12 +57,73 @@ export function combineSchemasMock({
   const isRefAndNotExisting =
     isReference(item) && !existingReferencedProperties.includes(item.name);
 
+  // When a oneOf schema declares a discriminator with a mapping AND the
+  // discriminator property is also declared on the parent's `properties`,
+  // skip that property here. Each variant already encodes a constrained value
+  // for it via `resolveDiscriminators`; emitting the parent's free-choice enum
+  // alongside the picked variant would override the constrained value and
+  // guarantee a discriminator mismatch (#2155).
+  const discriminator = item.discriminator as
+    | { propertyName?: string; mapping?: Record<string, string> }
+    | undefined;
+  const itemProperties = item.properties as Record<string, unknown> | undefined;
+  const discriminatorPropertyName =
+    separator === 'oneOf' &&
+    discriminator?.mapping &&
+    discriminator.propertyName &&
+    itemProperties &&
+    discriminator.propertyName in itemProperties
+      ? discriminator.propertyName
+      : undefined;
+
+  const itemEntriesForResolve = Object.entries(item).filter(
+    ([key]) => key !== separator,
+  );
+  if (discriminatorPropertyName && itemProperties) {
+    const propertiesIdx = itemEntriesForResolve.findIndex(
+      ([key]) => key === 'properties',
+    );
+    if (propertiesIdx !== -1) {
+      const filteredProperties = Object.fromEntries(
+        Object.entries(itemProperties).filter(
+          ([key]) => key !== discriminatorPropertyName,
+        ),
+      );
+      if (Object.keys(filteredProperties).length === 0) {
+        itemEntriesForResolve.splice(propertiesIdx, 1);
+      } else {
+        itemEntriesForResolve[propertiesIdx] = [
+          'properties',
+          filteredProperties,
+        ];
+      }
+    }
+    // Keep `required` in sync with the filtered properties — leaving the
+    // discriminator key in `required` would describe a schema whose required
+    // field is missing from `properties`.
+    const requiredIdx = itemEntriesForResolve.findIndex(
+      ([key]) => key === 'required',
+    );
+    if (requiredIdx !== -1 && Array.isArray(itemRequired)) {
+      const filteredRequired = itemRequired.filter(
+        (key) => key !== discriminatorPropertyName,
+      );
+      if (filteredRequired.length === 0) {
+        itemEntriesForResolve.splice(requiredIdx, 1);
+      } else {
+        itemEntriesForResolve[requiredIdx] = ['required', filteredRequired];
+      }
+    }
+  }
+
+  const hasResolvableProperties = itemEntriesForResolve.some(
+    ([key]) => key === 'properties',
+  );
+
   const itemResolvedValue =
-    isRefAndNotExisting || item.properties
+    isRefAndNotExisting || hasResolvableProperties
       ? resolveMockValue({
-          schema: Object.fromEntries(
-            Object.entries(item).filter(([key]) => key !== separator),
-          ) as MockSchemaObject,
+          schema: Object.fromEntries(itemEntriesForResolve) as MockSchemaObject,
           combine: {
             separator: 'allOf',
             includedProperties: [],
@@ -93,7 +157,7 @@ export function combineSchemasMock({
   let value = separator === 'allOf' ? '' : 'faker.helpers.arrayElement([';
 
   for (const val of separatorItems) {
-    const refName = isReference(val) ? getReferenceName(val.$ref) : '';
+    const refName = isReference(val) ? getReferenceName(val.$ref, context) : '';
     // For allOf: skip if refName is in existingRefs AND this is an inline schema (not a top-level ref)
     // This allows top-level schemas (item.isRef=true) to get base properties from allOf
     // while preventing circular allOf chains in inline property schemas.

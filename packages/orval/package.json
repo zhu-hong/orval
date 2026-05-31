@@ -1,7 +1,7 @@
 {
   "name": "orval",
   "description": "A swagger client generator for typescript",
-  "version": "8.12.3",
+  "version": "8.14.0",
   "license": "MIT",
   "type": "module",
   "files": [
@@ -47,6 +47,7 @@
     "vue",
     "swr",
     "zod",
+    "effect",
     "hono"
   ],
   "author": {
@@ -75,6 +76,7 @@
     "@orval/angular": "workspace:*",
     "@orval/axios": "workspace:*",
     "@orval/core": "workspace:*",
+    "@orval/effect": "workspace:*",
     "@orval/fetch": "workspace:*",
     "@orval/hono": "workspace:*",
     "@orval/mcp": "workspace:*",
@@ -84,7 +86,7 @@
     "@orval/swr": "workspace:*",
     "@orval/zod": "workspace:*",
     "@scalar/json-magic": "^0.12.8",
-    "@scalar/openapi-parser": "^0.25.12",
+    "@scalar/openapi-parser": "^0.28.5",
     "@scalar/openapi-types": "catalog:",
     "chokidar": "^5.0.0",
     "commander": "^14.0.2",

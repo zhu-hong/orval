@@ -238,6 +238,43 @@ export default defineConfig({
       target: '../specifications/recursive-discriminator-allof.yaml',
     },
   },
+  discriminatorOneofUnion: {
+    output: {
+      target: '../generated/mock/discriminator-oneof-union/endpoints.ts',
+      schemas: '../generated/mock/discriminator-oneof-union/model',
+      mock: true,
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/discriminator-oneof-union.yaml',
+    },
+  },
+  discriminatorOneofAllof: {
+    output: {
+      target: '../generated/mock/discriminator-oneof-allof/endpoints.ts',
+      schemas: '../generated/mock/discriminator-oneof-allof/model',
+      mock: true,
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/discriminator-oneof-allof.yaml',
+    },
+  },
+  discriminatorOneofAllofInherited: {
+    output: {
+      target:
+        '../generated/mock/discriminator-oneof-allof-inherited/endpoints.ts',
+      schemas: '../generated/mock/discriminator-oneof-allof-inherited/model',
+      mock: true,
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/discriminator-oneof-allof-inherited.yaml',
+    },
+  },
   mswMixedContentUnion: {
     output: {
       target: '../generated/mock/msw-mixed-content-union/endpoints.ts',
@@ -285,6 +322,20 @@ export default defineConfig({
       target: '../specifications/msw-mixed-content-each-status.yaml',
     },
   },
+  mockConstraints: {
+    output: {
+      target: '../generated/mock/mock-constraints/endpoints.ts',
+      schemas: '../generated/mock/mock-constraints/model',
+      mock: {
+        generators: [{ type: 'msw' }],
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/mock-constraints.yaml',
+    },
+  },
   mswMixedContentUnionVendor: {
     output: {
       target: '../generated/mock/msw-mixed-content-union-vendor/endpoints.ts',
@@ -298,6 +349,21 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/msw-mixed-content-union-vendor.yaml',
+    },
+  },
+  issue2327: {
+    output: {
+      target: '../generated/mock/issue-2327/endpoints.ts',
+      schemas: '../generated/mock/issue-2327/model',
+      client: 'axios',
+      mock: {
+        generators: [{ type: 'msw' }],
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-2327.yaml',
     },
   },
   mixedSuccessStatus: {
@@ -344,6 +410,80 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/msw-binary-multi-content.yaml',
+    },
+  },
+  petstoreFakerSchemas: {
+    output: {
+      target: '../generated/mock/petstore-faker-schemas/endpoints.ts',
+      schemas: '../generated/mock/petstore-faker-schemas/model',
+      client: 'axios',
+      mock: {
+        generators: [
+          { type: 'faker', schemas: true, operationResponses: false },
+        ],
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  petstoreFakerSchemasAndOps: {
+    output: {
+      target: '../generated/mock/petstore-faker-schemas-and-ops/endpoints.ts',
+      schemas: '../generated/mock/petstore-faker-schemas-and-ops/model',
+      client: 'axios',
+      mock: {
+        generators: [
+          { type: 'faker', schemas: true, operationResponses: true },
+        ],
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  stringEnumRefFakerSchemasTagsSplit: {
+    output: {
+      workspace: '../generated/mock/string-enum-ref-faker-schemas-tags-split/',
+      target: './index.ts',
+      mode: 'tags-split',
+      client: 'react-query',
+      mock: {
+        generators: [
+          { type: 'faker', schemas: true, operationResponses: true },
+        ],
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/faker-schemas-string-enum-ref.yaml',
+    },
+  },
+  issue2465: {
+    output: {
+      target: '../generated/mock/issue-2465/endpoints.ts',
+      schemas: '../generated/mock/issue-2465/model',
+      client: 'fetch',
+      mock: true,
+      override: {
+        mock: {
+          properties: {
+            firstName: () => faker.person.firstName(),
+            lastName: () => faker.person.lastName(),
+            email: () => faker.internet.email(),
+          },
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-2465.yaml',
     },
   },
 });

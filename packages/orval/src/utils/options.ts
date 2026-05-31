@@ -4,6 +4,7 @@ import { styleText } from 'node:util';
 
 import {
   type ConfigExternal,
+  type EffectOptions,
   FormDataArrayHandling,
   type GlobalMockOptions,
   type GlobalOptions,
@@ -26,6 +27,8 @@ import {
   type McpServerOptions,
   type Mutator,
   NamingConvention,
+  type NormalizedEffectOptions,
+  type NormalizedFactoryMethodsOptions,
   type NormalizedHonoOptions,
   type NormalizedHookOptions,
   type NormalizedJsDocOptions,
@@ -118,6 +121,29 @@ function normalizeSchemasOption(
   return {
     path: normalizePath(schemas.path, workspace),
     type: schemas.type,
+  };
+}
+
+function normalizeEffectOptions(
+  effect?: EffectOptions,
+): NormalizedEffectOptions {
+  return {
+    strict: {
+      param: effect?.strict?.param ?? false,
+      query: effect?.strict?.query ?? false,
+      header: effect?.strict?.header ?? false,
+      body: effect?.strict?.body ?? false,
+      response: effect?.strict?.response ?? false,
+    },
+    generate: {
+      param: effect?.generate?.param ?? true,
+      query: effect?.generate?.query ?? true,
+      header: effect?.generate?.header ?? true,
+      body: effect?.generate?.body ?? true,
+      response: effect?.generate?.response ?? true,
+    },
+    generateEachHttpStatus: effect?.generateEachHttpStatus ?? false,
+    useBrandedTypes: effect?.useBrandedTypes ?? false,
   };
 }
 
@@ -219,6 +245,46 @@ export async function normalizeOptions(
 
   const defaultFileExtension = '.ts';
 
+  // Reusable Zod schemas land in `*.zod.ts` files by default so they sit
+  // alongside any existing TypeScript types without a name collision. We
+  // expose this as a separate `schemaFileExtension` field (not by flipping
+  // the global `fileExtension`) so that non-schema writers (mode writers,
+  // mock writers, the workspace barrel) keep their own extensions and don't
+  // start emitting `*.zod.ts` for unrelated artifacts. A user-set
+  // `output.fileExtension` overrides this default at the call site.
+  const isZodSchemasOutput =
+    !!outputOptions.schemas &&
+    ((!isString(outputOptions.schemas) &&
+      outputOptions.schemas.type === 'zod') ||
+      (isString(outputOptions.schemas) &&
+        (outputOptions.client ?? client) === 'zod' &&
+        outputOptions.override?.zod?.generateReusableSchemas === true));
+  const defaultSchemaFileExtension = isZodSchemasOutput
+    ? '.zod.ts'
+    : defaultFileExtension;
+
+  const factoryMethodsConfig = outputOptions.factoryMethods;
+  let factoryMethods: NormalizedFactoryMethodsOptions | undefined = undefined;
+
+  if (factoryMethodsConfig) {
+    factoryMethods = {
+      functionNamePrefix: factoryMethodsConfig.functionNamePrefix ?? 'create',
+      mode: factoryMethodsConfig.mode ?? 'split',
+      outputDirectory: factoryMethodsConfig.outputDirectory
+        ? normalizePath(factoryMethodsConfig.outputDirectory, outputWorkspace)
+        : outputOptions.schemas
+          ? normalizePath(
+              isString(outputOptions.schemas)
+                ? outputOptions.schemas
+                : outputOptions.schemas.path,
+              outputWorkspace,
+            )
+          : normalizePath(outputWorkspace, outputWorkspace),
+      includeOptionalProperty:
+        factoryMethodsConfig.includeOptionalProperty ?? true,
+    };
+  }
+
   // `useQuery` / `useMutation` defaults are applied per-verb in
   // `query-generator.ts` so we can tell "unset" from "explicit true" (#2376).
   const globalQueryOptions: NormalizedQueryOptions = {
@@ -226,6 +292,7 @@ export async function normalizeOptions(
     shouldExportMutatorHooks: true,
     shouldExportHttpClient: true,
     shouldExportQueryKey: true,
+    shouldFilterQueryKey: false,
     shouldSplitQueryKey: false,
     ...normalizeQueryOptions(outputOptions.override?.query, workspace),
   };
@@ -268,6 +335,10 @@ export async function normalizeOptions(
       namingConvention:
         outputOptions.namingConvention ?? NamingConvention.CAMEL_CASE,
       fileExtension: outputOptions.fileExtension ?? defaultFileExtension,
+      schemaFileExtension:
+        outputOptions.schemaFileExtension ??
+        outputOptions.fileExtension ??
+        defaultSchemaFileExtension,
       workspace: outputOptions.workspace ? outputWorkspace : undefined,
       client: outputOptions.client ?? client ?? OutputClient.AXIOS_FUNCTIONS,
       httpClient:
@@ -289,6 +360,7 @@ export async function normalizeOptions(
       baseUrl: outputOptions.baseUrl,
       unionAddMissingProperties:
         outputOptions.unionAddMissingProperties ?? false,
+      factoryMethods,
       override: {
         ...outputOptions.override,
         mock: {
@@ -432,15 +504,27 @@ export async function normalizeOptions(
                 }
               : {}),
           },
+          ...(outputOptions.override?.zod?.params
+            ? {
+                params: normalizeMutator(
+                  workspace,
+                  outputOptions.override.zod.params,
+                ),
+              }
+            : {}),
           generateEachHttpStatus:
             outputOptions.override?.zod?.generateEachHttpStatus ?? false,
           useBrandedTypes:
             outputOptions.override?.zod?.useBrandedTypes ?? false,
+          generateReusableSchemas:
+            outputOptions.override?.zod?.generateReusableSchemas ?? false,
+          generateMeta: outputOptions.override?.zod?.generateMeta ?? false,
           dateTimeOptions: outputOptions.override?.zod?.dateTimeOptions ?? {
             offset: true,
           },
           timeOptions: outputOptions.override?.zod?.timeOptions ?? {},
         },
+        effect: normalizeEffectOptions(outputOptions.override?.effect),
         swr: {
           generateErrorTypes: false,
           ...outputOptions.override?.swr,
@@ -723,6 +807,7 @@ function normalizeOperationsAndTags(
           query,
           angular,
           zod,
+          effect,
           ...rest
         },
       ]) => {
@@ -814,13 +899,22 @@ function normalizeOperationsAndTags(
                           }
                         : {}),
                     },
+                    ...(zod.params
+                      ? {
+                          params: normalizeMutator(workspace, zod.params),
+                        }
+                      : {}),
                     generateEachHttpStatus: zod.generateEachHttpStatus ?? false,
                     useBrandedTypes: zod.useBrandedTypes ?? false,
+                    generateReusableSchemas:
+                      zod.generateReusableSchemas ?? false,
+                    generateMeta: zod.generateMeta ?? false,
                     dateTimeOptions: zod.dateTimeOptions ?? { offset: true },
                     timeOptions: zod.timeOptions ?? {},
                   },
                 }
               : {}),
+            ...(effect ? { effect: normalizeEffectOptions(effect) } : {}),
             ...(transformer
               ? { transformer: normalizePath(transformer, workspace) }
               : {}),
@@ -1023,6 +1117,14 @@ function normalizeQueryOptions(
     ...(isNullish(queryOptions.shouldExportQueryKey)
       ? {}
       : { shouldExportQueryKey: queryOptions.shouldExportQueryKey }),
+    ...(isNullish(globalOptions.shouldFilterQueryKey)
+      ? {}
+      : {
+          shouldFilterQueryKey: globalOptions.shouldFilterQueryKey,
+        }),
+    ...(isNullish(queryOptions.shouldFilterQueryKey)
+      ? {}
+      : { shouldFilterQueryKey: queryOptions.shouldFilterQueryKey }),
     ...(isNullish(globalOptions.shouldExportHttpClient)
       ? {}
       : {

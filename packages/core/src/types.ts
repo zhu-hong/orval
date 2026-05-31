@@ -40,6 +40,13 @@ export interface NormalizedOutputOptions {
   operationSchemas?: string;
   namingConvention: NamingConvention;
   fileExtension: string;
+  /**
+   * File extension for schema artifacts (TS types or Zod schemas) under
+   * `schemas:`. Defaults to `.zod.ts` when the output is Zod schemas
+   * (`schemas: { type: 'zod' }` or `client: 'zod'` + `generateReusableSchemas`),
+   * otherwise `.ts`. A user-set `output.fileExtension` always wins.
+   */
+  schemaFileExtension: string;
   mode: OutputMode;
   // Always normalized to an object form; an empty `generators` array means
   // no mocks are emitted.
@@ -60,6 +67,7 @@ export interface NormalizedOutputOptions {
   unionAddMissingProperties: boolean;
   optionsParamRequired: boolean;
   propertySortOrder: PropertySortOrder;
+  factoryMethods?: NormalizedFactoryMethodsOptions;
 }
 
 export interface NormalizedParamsSerializerOptions {
@@ -124,6 +132,7 @@ export interface NormalizedOverrideOutput {
   angular: NormalizedAngularOptions;
   swr: SwrOptions;
   zod: NormalizedZodOptions;
+  effect: NormalizedEffectOptions;
   fetch: NormalizedFetchOptions;
   operationName?: (
     operation: OpenApiOperationObject,
@@ -194,6 +203,7 @@ export interface NormalizedOperationOptions {
   angular?: NormalizedAngularOptions;
   swr?: SwrOptions;
   zod?: NormalizedZodOptions;
+  effect?: NormalizedEffectOptions;
   operationName?: (
     operation: OpenApiOperationObject,
     route: string,
@@ -279,6 +289,22 @@ export type EnumGeneration =
 
 export type SchemaGenerationType = 'typescript' | 'zod';
 
+export type FactoryMethodsMode = 'single' | 'split' | 'single-split';
+
+export interface FactoryMethodsOptions {
+  functionNamePrefix?: string;
+  mode?: FactoryMethodsMode;
+  outputDirectory?: string;
+  includeOptionalProperty?: boolean;
+}
+
+export interface NormalizedFactoryMethodsOptions {
+  functionNamePrefix: string;
+  mode: FactoryMethodsMode;
+  outputDirectory: string;
+  includeOptionalProperty: boolean;
+}
+
 export interface SchemaOptions {
   path: string;
   type: SchemaGenerationType;
@@ -301,6 +327,14 @@ export interface OutputOptions {
   operationSchemas?: string;
   namingConvention?: NamingConvention;
   fileExtension?: string;
+  /**
+   * Optional file extension applied only to schema artifacts (TS types or
+   * Zod schemas) under `schemas:`. Takes precedence over `fileExtension`
+   * for schema files. Defaults to `.zod.ts` when the output is Zod schemas
+   * (`schemas: { type: 'zod' }` or `client: 'zod'` + `generateReusableSchemas`),
+   * otherwise mirrors `fileExtension`.
+   */
+  schemaFileExtension?: string;
   mode?: OutputMode;
   // Mocks config. Accepts:
   // - `true` shorthand: emits both msw + faker with defaults
@@ -323,6 +357,7 @@ export interface OutputOptions {
   unionAddMissingProperties?: boolean;
   optionsParamRequired?: boolean;
   propertySortOrder?: PropertySortOrder;
+  factoryMethods?: FactoryMethodsOptions;
 }
 
 export interface InputFiltersOptions {
@@ -365,6 +400,7 @@ export const OutputClient = {
   VUE_QUERY: 'vue-query',
   SWR: 'swr',
   ZOD: 'zod',
+  EFFECT: 'effect',
   HONO: 'hono',
   FETCH: 'fetch',
   MCP: 'mcp',
@@ -435,6 +471,14 @@ export interface MswMockOptions extends CommonMockOptions {
 
 export interface FakerMockOptions extends CommonMockOptions {
   type: typeof OutputMockType.FAKER;
+  // Emit a consolidated mock factory file for every entry under
+  // `components/schemas` (one `get<SchemaName>Mock` per schema). Defaults to
+  // `false` — schema factories are opt-in to preserve existing output.
+  schemas?: boolean;
+  // Emit per-operation response mock factories (the historical behavior).
+  // Defaults to `true`. Set to `false` together with `schemas: true` to get
+  // only the consolidated schema factories.
+  operationResponses?: boolean;
 }
 
 export type GlobalMockOptions = MswMockOptions | FakerMockOptions;
@@ -474,7 +518,8 @@ export type OverrideMockOptions = Partial<GlobalMockOptions> & {
   stringMax?: number;
   numberMin?: number;
   numberMax?: number;
-  required?: boolean;
+  required?: boolean; // When true, all properties are required (and thus not optional) in mocks.
+  nonNullable?: boolean; // When true, nullable mock values are never wrapped in `arrayElement([value, null])`.
   properties?: MockProperties;
   format?: Record<string, unknown>;
   fractionDigits?: number;
@@ -594,6 +639,7 @@ export interface OverrideOutput {
   swr?: SwrOptions;
   angular?: AngularOptions;
   zod?: ZodOptions;
+  effect?: EffectOptions;
   operationName?: (
     operation: OpenApiOperationObject,
     route: string,
@@ -698,8 +744,41 @@ export interface ZodOptions {
     body?: Mutator;
     response?: Mutator;
   };
+  /**
+   * Mutator referencing a function called once per emitted validator at schema
+   * construction time. It receives codegen-time context (operation, location,
+   * schema name, field path, validator name) and returns a Zod `params` object
+   * (e.g. `{ error: ... }`) that is appended as the trailing argument.
+   *
+   * The plural name follows Zod's own term for the validator's second argument
+   * (`z.string(params)`) and is unrelated to the singular `param` key used by
+   * `generate` / `coerce` / `preprocess` above, which refers to the path-parameter
+   * location.
+   */
+  params?: Mutator;
   dateTimeOptions?: ZodDateTimeOptions;
   timeOptions?: ZodTimeOptions;
+  generateEachHttpStatus?: boolean;
+  useBrandedTypes?: boolean;
+  /**
+   * When true, emits one reusable Zod schema per `#/components/schemas/*` `$ref`
+   * (with `namingConvention` applied to the name) and references it everywhere
+   * instead of inlining. Default `false`. See `docs/superpowers/specs/2026-05-26-reusable-zod-schemas-design.md`.
+   */
+  generateReusableSchemas?: boolean;
+  /**
+   * When true (zod v4 only), attaches registry metadata to generated
+   * **component** schemas via `.meta({ id, description?, deprecated? })`: `id` is
+   * the schema name, plus `description`/`deprecated` when the OpenAPI schema
+   * provides them. On zod v3 (which has no `.meta()`) descriptions still emit
+   * via `.describe()`. Default `false`.
+   */
+  generateMeta?: boolean;
+}
+
+export interface EffectOptions {
+  strict?: ZodOptions['strict'];
+  generate?: ZodOptions['generate'];
   generateEachHttpStatus?: boolean;
   useBrandedTypes?: boolean;
 }
@@ -735,10 +814,20 @@ export interface NormalizedZodOptions {
     body?: NormalizedMutator;
     response?: NormalizedMutator;
   };
+  params?: NormalizedMutator;
   generateEachHttpStatus: boolean;
   useBrandedTypes: boolean;
+  generateReusableSchemas: boolean;
+  generateMeta: boolean;
   dateTimeOptions: ZodDateTimeOptions;
   timeOptions: ZodTimeOptions;
+}
+
+export interface NormalizedEffectOptions {
+  strict: NormalizedZodOptions['strict'];
+  generate: NormalizedZodOptions['generate'];
+  generateEachHttpStatus: boolean;
+  useBrandedTypes: boolean;
 }
 
 /**
@@ -811,6 +900,7 @@ export interface NormalizedQueryOptions {
   shouldExportMutatorHooks?: boolean;
   shouldExportHttpClient?: boolean;
   shouldExportQueryKey?: boolean;
+  shouldFilterQueryKey?: boolean;
   shouldSplitQueryKey?: boolean;
   useOperationIdAsQueryKey?: boolean;
   signal?: boolean;
@@ -838,6 +928,7 @@ export interface QueryOptions {
   shouldExportMutatorHooks?: boolean;
   shouldExportHttpClient?: boolean;
   shouldExportQueryKey?: boolean;
+  shouldFilterQueryKey?: boolean;
   shouldSplitQueryKey?: boolean;
   useOperationIdAsQueryKey?: boolean;
   signal?: boolean;
@@ -946,6 +1037,7 @@ export interface OperationOptions {
   angular?: AngularOptions;
   swr?: SwrOptions;
   zod?: ZodOptions;
+  effect?: EffectOptions;
   operationName?: (
     operation: OpenApiOperationObject,
     route: string,
@@ -1016,6 +1108,29 @@ export interface ContextSpec {
   spec: OpenApiDocument;
   parents?: string[];
   output: NormalizedOutputOptions;
+  /**
+   * Per-schema dynamic scope mapping `$dynamicAnchor` names to concrete schema
+   * entries or generic parameter placeholders. Populated by `buildDynamicScope`.
+   */
+  dynamicScope?: Partial<Record<string, DynamicScopeEntry>>;
+}
+
+/**
+ * Maps a `$dynamicAnchor` name to its resolution target.
+ *
+ * Concrete entry (bound via `$ref`):
+ *   - `name` — the generated TypeScript type name (e.g. `User`)
+ *   - `schemaName` — the original key in `components.schemas` (e.g. `User`)
+ *
+ * Parameter entry (unbound `$defs` placeholder):
+ *   - `isParameter` — `true`, signals this is a generic type parameter
+ *   - `name` — the `$dynamicAnchor` name used as the type parameter (e.g. `itemType`)
+ *   - `schemaName` — same as `name` for parameters
+ */
+export interface DynamicScopeEntry {
+  name: string;
+  schemaName: string;
+  isParameter?: boolean;
 }
 
 export interface GlobalOptions {
@@ -1121,6 +1236,9 @@ export interface GeneratorSchema {
   imports: GeneratorImport[];
   dependencies?: string[];
   schema?: OpenApiSchemaObject;
+  factory?: string;
+  factoryImports?: GeneratorImport[];
+  factoryMode?: FactoryMethodsMode;
 }
 
 export interface GeneratorImport {
@@ -1134,6 +1252,10 @@ export interface GeneratorImport {
   readonly syntheticDefaultImport?: boolean;
   readonly namespaceImport?: boolean;
   readonly importPath?: string;
+  // True when this import points at a generated schema-level faker factory
+  // (e.g. `getPetMock`). The mock-file writer routes it to
+  // `<schemas-dir>/index.faker` instead of `<schemas-dir>/<schemaName>`.
+  readonly schemaFactory?: boolean;
 }
 
 export interface GeneratorDependency {
@@ -1399,6 +1521,7 @@ export interface GetterQueryParam {
   schema: GeneratorSchema;
   deps: GeneratorSchema[];
   isOptional: boolean;
+  paramNames?: string[];
   originalSchema?: OpenApiSchemaObject;
   requiredNullableKeys?: string[];
   /**

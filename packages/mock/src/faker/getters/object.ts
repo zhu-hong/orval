@@ -2,11 +2,11 @@ import {
   type ContextSpec,
   type GeneratorImport,
   getKey,
+  getRefInfo,
   isReference,
   type MockOptions,
   type OpenApiReferenceObject,
   type OpenApiSchemaObject,
-  pascal,
   PropertySortOrder,
 } from '@orval/core';
 
@@ -17,10 +17,13 @@ import { combineSchemasMock } from './combine';
 
 export const overrideVarName = 'overrideResponse';
 
-function getReferenceName(ref?: string): string {
+function getReferenceName(
+  ref: string | undefined,
+  context: ContextSpec,
+): string {
   if (!ref) return '';
 
-  return pascal(ref.split('/').pop() ?? '');
+  return getRefInfo(ref, context).name;
 }
 
 interface GetMockObjectOptions {
@@ -163,7 +166,9 @@ export function getMockObject({
           // Fixes issue #910
           if (
             isReference(prop) &&
-            existingReferencedProperties.includes(getReferenceName(prop.$ref))
+            existingReferencedProperties.includes(
+              getReferenceName(prop.$ref, context),
+            )
           ) {
             if (isRequired) {
               const keyDefinition = getKey(key);
@@ -195,13 +200,18 @@ export function getMockObject({
           const hasDefault = 'default' in prop && prop.default !== undefined;
 
           if (!isRequired && !resolvedValue.overrided && !hasDefault) {
-            const nullValue = hasNullable ? 'null' : 'undefined';
-            return `${keyDefinition}: faker.helpers.arrayElement([${resolvedValue.value}, ${nullValue}])`;
+            const omitValue =
+              mockOptions?.nonNullable || !hasNullable ? 'undefined' : 'null';
+            return `${keyDefinition}: faker.helpers.arrayElement([${resolvedValue.value}, ${omitValue}])`;
           }
 
           const isNullable =
             Array.isArray(prop.type) && prop.type.includes('null');
-          if (isNullable && !resolvedValue.overrided) {
+          if (
+            isNullable &&
+            !resolvedValue.overrided &&
+            !mockOptions?.nonNullable
+          ) {
             return `${keyDefinition}: faker.helpers.arrayElement([${resolvedValue.value}, null])`;
           }
 
@@ -236,7 +246,7 @@ export function getMockObject({
     if (
       isReference(additionalProperties) &&
       existingReferencedProperties.includes(
-        getReferenceName(additionalProperties.$ref),
+        getReferenceName(additionalProperties.$ref, context),
       )
     ) {
       return { value: `{}`, imports: [], name: schemaItem.name };

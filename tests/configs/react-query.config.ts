@@ -1,6 +1,71 @@
 import { defineConfig } from 'orval';
 
 export default defineConfig({
+  issue2999: {
+    output: {
+      target: '../generated/react-query/issue-2999/endpoints.ts',
+      schemas: '../generated/react-query/issue-2999/model',
+      client: 'react-query',
+      httpClient: 'fetch',
+      override: {
+        mutator: {
+          path: '../mutators/custom-fetch.ts',
+          name: 'customFetch',
+        },
+        fetch: {
+          includeHttpResponseReturnType: false,
+        },
+        query: {
+          version: 5,
+          useQuery: true,
+          useInvalidate: true,
+          usePrefetch: true,
+          signal: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-2999.yaml',
+    },
+  },
+  // Follow-up to #2999: a second reporter saw the same "duplicated hook" with
+  // `useInfinite` + `runtimeValidation` enabled and suspected that combination
+  // triggered the duplicate. It does not — the overload block is still exactly
+  // four declarations per hook. This entry reuses the issue-2999 spec with that
+  // exact flag set so the regression test can pin the count under it too.
+  issue2999Infinite: {
+    output: {
+      target: '../generated/react-query/issue-2999-infinite/endpoints.ts',
+      schemas: '../generated/react-query/issue-2999-infinite/model',
+      client: 'react-query',
+      httpClient: 'fetch',
+      override: {
+        mutator: {
+          path: '../mutators/custom-fetch.ts',
+          name: 'customFetch',
+        },
+        fetch: {
+          includeHttpResponseReturnType: false,
+        },
+        query: {
+          version: 5,
+          useQuery: true,
+          useInvalidate: true,
+          usePrefetch: true,
+          useInfinite: true,
+          signal: true,
+          runtimeValidation: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-2999.yaml',
+    },
+  },
   basic: {
     output: {
       target: '../generated/react-query/basic/endpoints.ts',
@@ -103,6 +168,30 @@ export default defineConfig({
               // shouldSplitQueryKey test: showPetById has required path
               // param but no params mapping → should generate partial
               // key matching with static route segments.
+              onMutations: ['createPets'],
+              invalidates: ['showPetById'],
+            },
+          ],
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  shouldFilterQueryKey: {
+    output: {
+      target: '../generated/react-query/filter-query-key/endpoints.ts',
+      schemas: '../generated/react-query/filter-query-key/model',
+      client: 'react-query',
+      override: {
+        query: {
+          shouldSplitQueryKey: true,
+          shouldFilterQueryKey: true,
+          mutationInvalidates: [
+            {
               onMutations: ['createPets'],
               invalidates: ['showPetById'],
             },
@@ -1057,6 +1146,29 @@ export default defineConfig({
           queryOptions: {
             path: '../mutators/custom-query-options.ts',
             name: 'customQueryOptions',
+          },
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  petstoreCustomQueryOptionsWithOperation: {
+    output: {
+      target:
+        '../generated/react-query/custom-query-options-with-operation/endpoints.ts',
+      schemas:
+        '../generated/react-query/custom-query-options-with-operation/model',
+      client: 'react-query',
+      override: {
+        query: {
+          useInvalidate: true,
+          queryOptions: {
+            path: '../mutators/custom-query-options-with-operation.ts',
+            name: 'customQueryOptionsWithOperation',
           },
         },
       },

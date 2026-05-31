@@ -9,12 +9,12 @@ import {
   EnumGeneration,
   escape,
   type GeneratorImport,
+  getRefInfo,
   isReference,
   isString,
   mergeDeep,
   type MockOptions,
   type OpenApiSchemaObject,
-  pascal,
 } from '@orval/core';
 
 import type { MockDefinition, MockSchema, MockSchemaObject } from '../../types';
@@ -60,6 +60,7 @@ export function getMockScalar({
   allowOverride = false,
 }: GetMockScalarOptions): MockDefinition {
   const safeMockOptions: MockOptions = mockOptions ?? {};
+  const nonNullableOption = safeMockOptions.nonNullable;
   // Add the property to the existing properties to validate on object recursion
   if (item.isRef) {
     existingReferencedProperties = [...existingReferencedProperties, item.name];
@@ -68,6 +69,7 @@ export function getMockScalar({
   const operationProperty = resolveMockOverride(
     safeMockOptions.operations?.[operationId]?.properties,
     item,
+    nonNullableOption,
   );
 
   if (operationProperty) {
@@ -87,13 +89,21 @@ export function getMockScalar({
     overrideTag = mergeDeep(overrideTag, options);
   }
 
-  const tagProperty = resolveMockOverride(overrideTag.properties, item);
+  const tagProperty = resolveMockOverride(
+    overrideTag.properties,
+    item,
+    nonNullableOption,
+  );
 
   if (tagProperty) {
     return tagProperty;
   }
 
-  const property = resolveMockOverride(safeMockOptions.properties, item);
+  const property = resolveMockOverride(
+    safeMockOptions.properties,
+    item,
+    nonNullableOption,
+  );
 
   if (property) {
     return property;
@@ -133,6 +143,8 @@ export function getMockScalar({
     ),
   };
 
+  // OpenAPI 3.1 null unions only — 3.0 `nullable: true` is handled in object.ts
+  // to avoid double-wrapping scalar values that object.ts already null-randomizes.
   const isNullable = Array.isArray(item.type) && item.type.includes('null');
   // The @scalar/openapi-parser upgrader rewrites `format: binary` to
   // `contentMediaType: application/octet-stream` when upgrading OAS 3.0 → 3.1;
@@ -145,7 +157,7 @@ export function getMockScalar({
     ALL_FORMAT.binary
   ) {
     return {
-      value: getNullable(ALL_FORMAT.binary, isNullable),
+      value: getNullable(ALL_FORMAT.binary, isNullable, nonNullableOption),
       imports: [],
       name: item.name,
       overrided: false,
@@ -160,7 +172,7 @@ export function getMockScalar({
     }
 
     return {
-      value: getNullable(value, isNullable),
+      value: getNullable(value, isNullable, nonNullableOption),
       imports: [],
       name: item.name,
       overrided: false,
@@ -201,6 +213,7 @@ export function getMockScalar({
       let value = getNullable(
         `faker.number.${intFunction}(${intParts.length > 0 ? `{${intParts.join(', ')}}` : ''})`,
         isNullable,
+        nonNullableOption,
       );
       if (type === 'number') {
         const floatParts: string[] = [];
@@ -214,6 +227,7 @@ export function getMockScalar({
         value = getNullable(
           `faker.number.float(${floatParts.length > 0 ? `{${floatParts.join(', ')}}` : ''})`,
           isNullable,
+          nonNullableOption,
         );
       }
       const numberImports: GeneratorImport[] = [];
@@ -240,12 +254,22 @@ export function getMockScalar({
 
     case 'boolean': {
       let value = 'faker.datatype.boolean()';
-      if ('const' in item) {
+      const booleanImports: GeneratorImport[] = [];
+      if (item.enum) {
+        value = getEnum(
+          item,
+          booleanImports,
+          context,
+          existingReferencedProperties,
+          'boolean',
+        );
+      } else if ('const' in item) {
         value = JSON.stringify(item.const);
       }
       return {
         value,
-        imports: [],
+        enums: item.enum,
+        imports: booleanImports,
         name: item.name,
       };
     }
@@ -259,7 +283,7 @@ export function getMockScalar({
       if (
         itemsRef &&
         existingReferencedProperties.includes(
-          pascal(itemsRef.split('/').pop() ?? ''),
+          getRefInfo(itemsRef, context).name,
         )
       ) {
         return { value: '[]', imports: [], name: item.name };
@@ -312,12 +336,39 @@ export function getMockScalar({
         mapValue = `{${value}}`;
       }
 
-      const arrMin = (item.minItems ?? safeMockOptions.arrayMin) as
-        | number
-        | undefined;
-      const arrMax = (item.maxItems ?? safeMockOptions.arrayMax) as
-        | number
-        | undefined;
+      // Use global defaults for the missing bound only when they do not
+      // invert the range; otherwise reuse the explicit schema bound so we
+      // never invent values the user did not supply (and never produce
+      // min > max). This also avoids relying on faker's internal default
+      // upper bound when only `minItems` is specified, which can otherwise
+      // produce very large arrays.
+      const arrSchemaMin = item.minItems;
+      const arrSchemaMax = item.maxItems;
+      const arrGlobalMin = safeMockOptions.arrayMin;
+      const arrGlobalMax = safeMockOptions.arrayMax;
+
+      let arrMin: number | undefined;
+      if (arrSchemaMin !== undefined) {
+        arrMin = arrSchemaMin;
+      } else if (arrSchemaMax === undefined) {
+        arrMin = arrGlobalMin;
+      } else if (arrGlobalMin === undefined || arrGlobalMin > arrSchemaMax) {
+        arrMin = arrSchemaMax;
+      } else {
+        arrMin = arrGlobalMin;
+      }
+
+      let arrMax: number | undefined;
+      if (arrSchemaMax !== undefined) {
+        arrMax = arrSchemaMax;
+      } else if (arrSchemaMin === undefined) {
+        arrMax = arrGlobalMax;
+      } else if (arrGlobalMax === undefined || arrGlobalMax < arrSchemaMin) {
+        arrMax = arrSchemaMin;
+      } else {
+        arrMax = arrGlobalMax;
+      }
+
       const arrParts: string[] = [];
       if (arrMin !== undefined) arrParts.push(`min: ${arrMin}`);
       if (arrMax !== undefined) arrParts.push(`max: ${arrMax}`);
@@ -335,15 +386,46 @@ export function getMockScalar({
     }
 
     case 'string': {
-      const strMin = (item.minLength ?? safeMockOptions.stringMin) as
-        | number
-        | undefined;
-      const strMax = (item.maxLength ?? safeMockOptions.stringMax) as
-        | number
-        | undefined;
+      // faker.string.alpha's `length: { min, max }` form requires BOTH bounds.
+      // When only one side is schema-specified, fall back to the global default
+      // for the missing side only if it does not invert the range; otherwise
+      // reuse the explicit bound so we never invent values the user did not
+      // supply (and never produce min > max).
+      const schemaMin = item.minLength;
+      const schemaMax = item.maxLength;
+      const globalMin = safeMockOptions.stringMin;
+      const globalMax = safeMockOptions.stringMax;
+
+      let strMin: number | undefined;
+      if (schemaMin !== undefined) {
+        strMin = schemaMin;
+      } else if (schemaMax === undefined) {
+        strMin = globalMin;
+      } else if (globalMin === undefined || globalMin > schemaMax) {
+        strMin = schemaMax;
+      } else {
+        strMin = globalMin;
+      }
+
+      let strMax: number | undefined;
+      if (schemaMax !== undefined) {
+        strMax = schemaMax;
+      } else if (schemaMin === undefined) {
+        strMax = globalMax;
+      } else if (globalMax === undefined || globalMax < schemaMin) {
+        strMax = schemaMin;
+      } else {
+        strMax = globalMax;
+      }
+
+      // faker.string.alpha's `length: { min, max }` requires both bounds, so
+      // only emit a length argument when we have a complete pair. If only one
+      // side could be resolved (e.g., no schema bound and only one global is
+      // configured) we fall back to faker's own default length.
       const strLenParts: string[] = [];
-      if (strMin !== undefined) strLenParts.push(`min: ${strMin}`);
-      if (strMax !== undefined) strLenParts.push(`max: ${strMax}`);
+      if (strMin !== undefined && strMax !== undefined) {
+        strLenParts.push(`min: ${strMin}`, `max: ${strMax}`);
+      }
       const length =
         strLenParts.length > 0 ? `{length: {${strLenParts.join(', ')}}}` : '';
       let value = `faker.string.alpha(${length})`;
@@ -364,7 +446,7 @@ export function getMockScalar({
       }
 
       return {
-        value: getNullable(value, isNullable),
+        value: getNullable(value, isNullable, nonNullableOption),
         enums: item.enum,
         name: item.name,
         imports: stringImports,
@@ -463,7 +545,7 @@ function getEnum(
   imports: GeneratorImport[],
   context: ContextSpec,
   existingReferencedProperties: string[],
-  type?: 'string' | 'number',
+  type?: 'string' | 'number' | 'boolean',
 ) {
   if (!item.enum) return '';
   const joinedEnumValues = item.enum
