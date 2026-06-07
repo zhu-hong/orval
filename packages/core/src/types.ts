@@ -308,11 +308,13 @@ export interface NormalizedFactoryMethodsOptions {
 export interface SchemaOptions {
   path: string;
   type: SchemaGenerationType;
+  importPath?: string;
 }
 
 export interface NormalizedSchemaOptions {
   path: string;
   type: SchemaGenerationType;
+  importPath?: string;
 }
 
 export interface OutputOptions {
@@ -364,6 +366,17 @@ export interface InputFiltersOptions {
   mode?: 'include' | 'exclude';
   tags?: (string | RegExp)[];
   schemas?: (string | RegExp)[];
+  /**
+   * When `tags` is set, orval limits the output to only the schemas referenced
+   * by the matching operations. Set this to `true` to keep every
+   * `#/components/schemas` entry (including unreferenced ones) while still
+   * filtering endpoints by `tags`. The other component sections (`responses`,
+   * `parameters`, `requestBodies`) remain pruned to what the matching
+   * operations use. Ignored when `schemas` is set.
+   *
+   * @default false
+   */
+  includeUnreferencedSchemas?: boolean;
 }
 
 export interface InputOptions {
@@ -479,6 +492,10 @@ export interface FakerMockOptions extends CommonMockOptions {
   // Defaults to `true`. Set to `false` together with `schemas: true` to get
   // only the consolidated schema factories.
   operationResponses?: boolean;
+  // Emit reusable mock factories for object-like array item schemas found in
+  // operation responses (e.g. `getTenantResponseModelDtoMock` for
+  // `value: TenantResponseModelDto[]`). Defaults to `false`.
+  arrayItems?: boolean;
 }
 
 export type GlobalMockOptions = MswMockOptions | FakerMockOptions;
@@ -493,7 +510,10 @@ export type GlobalMockOptions = MswMockOptions | FakerMockOptions;
 //   }
 export interface OutputMocksConfig {
   // When true, emits one root-level `index.<ext>.ts` per generator entry
-  // (e.g. `index.msw.ts` and/or `index.faker.ts`) in tags-split mode
+  // (e.g. `index.msw.ts` and/or `index.faker.ts`) in `split` and `tags-split`
+  // modes. In `tags-split` it re-exports each per-tag mock; in `split` it
+  // re-exports the single mock file. Keeps mocks in a dedicated barrel so the
+  // models/production barrels never pull them in.
   indexMockFiles?: boolean;
   generators: (GlobalMockOptions | ClientMockBuilder)[];
 }
@@ -698,8 +718,22 @@ export interface OverrideOutputContentType {
   exclude?: string[];
 }
 
+/**
+ * Strategy controlling how an existing hono handler file is treated on
+ * regeneration.
+ *
+ * - `smart` (default): non-destructively reconcile orval-owned imports and
+ *   `zValidator` arguments and append handlers for new operations, preserving
+ *   all user-authored imports, middleware, bodies, and top-level code.
+ * - `skip`: leave an existing handler file byte-for-byte unchanged.
+ * - `full`: rebuild the preamble and validator chain from the spec, splicing
+ *   back only the handler body. Drops custom imports/middleware/helpers.
+ */
+export type HonoHandlerStrategy = 'smart' | 'skip' | 'full';
+
 export interface NormalizedHonoOptions {
   handlers?: string;
+  handlerGenerationStrategy: HonoHandlerStrategy;
   compositeRoute: string;
   validator: boolean | 'hono';
   validatorOutputPath: string;
@@ -856,6 +890,7 @@ export type MutationInvalidatesConfig = MutationInvalidatesRule[];
 
 export interface HonoOptions {
   handlers?: string;
+  handlerGenerationStrategy?: HonoHandlerStrategy;
   compositeRoute?: string;
   validator?: boolean | 'hono';
   validatorOutputPath?: string;
@@ -901,6 +936,7 @@ export interface NormalizedQueryOptions {
   shouldExportHttpClient?: boolean;
   shouldExportQueryKey?: boolean;
   shouldFilterQueryKey?: boolean;
+  queryKeyFilter?: string;
   shouldSplitQueryKey?: boolean;
   useOperationIdAsQueryKey?: boolean;
   signal?: boolean;
@@ -929,6 +965,7 @@ export interface QueryOptions {
   shouldExportHttpClient?: boolean;
   shouldExportQueryKey?: boolean;
   shouldFilterQueryKey?: boolean;
+  queryKeyFilter?: string;
   shouldSplitQueryKey?: boolean;
   useOperationIdAsQueryKey?: boolean;
   signal?: boolean;
@@ -1113,6 +1150,13 @@ export interface ContextSpec {
    * entries or generic parameter placeholders. Populated by `buildDynamicScope`.
    */
   dynamicScope?: Partial<Record<string, DynamicScopeEntry>>;
+  /**
+   * Tracks array-item mock factory names already emitted per output file scope.
+   * Populated by `@orval/mock` when `arrayItems: true` so shared `$ref` item
+   * factories are not re-declared within the same file (single/split) or tag
+   * bucket (tags/tags-split).
+   */
+  arrayItemMockFactories?: Map<string, Set<string>>;
 }
 
 /**
@@ -1277,6 +1321,7 @@ export interface GeneratorMockOutput {
   type: OutputMockType;
   implementation: string;
   imports: GeneratorImport[];
+  strictMockSchemaTypeNames?: string[];
 }
 
 export interface GeneratorMockOutputFull {
@@ -1287,6 +1332,7 @@ export interface GeneratorMockOutputFull {
     handlerName: string;
   };
   imports: GeneratorImport[];
+  strictMockSchemaTypeNames?: string[];
 }
 
 export interface GeneratorTarget {
@@ -1454,6 +1500,7 @@ export interface ClientMockGeneratorImplementation {
 export interface ClientMockGeneratorBuilder {
   imports: GeneratorImport[];
   implementation: ClientMockGeneratorImplementation;
+  strictMockSchemaTypeNames?: string[];
 }
 
 export type ClientMockBuilder = (
@@ -1616,6 +1663,11 @@ export type ResReqTypesValue = ScalarValue & {
   originalSchema?: OpenApiSchemaObject;
 };
 
+export interface FinalizeMockImplementationOptions {
+  mockOptions?: Pick<MockOptions, 'required' | 'nonNullable'>;
+  strictSchemaTypeNames?: readonly string[];
+}
+
 export interface WriteSpecBuilder {
   operations: GeneratorOperations;
   verbOptions: Record<string, GeneratorVerbOptions>;
@@ -1625,6 +1677,11 @@ export interface WriteSpecBuilder {
   footer: GeneratorClientFooter;
   imports: GeneratorClientImports;
   importsMock: GenerateMockImports;
+  /** Hoists shared strict-mock type aliases once per aggregated mock file. */
+  finalizeMockImplementation?: (
+    implementation: string,
+    options: FinalizeMockImplementationOptions,
+  ) => string;
   extraFiles: ClientFileBuilder[];
   info: OpenApiInfoObject;
   target: string;
@@ -1712,6 +1769,11 @@ export type GeneratorApiBuilder = GeneratorApiOperations & {
   footer: GeneratorClientFooter;
   imports: GeneratorClientImports;
   importsMock: GenerateMockImports;
+  /** Hoists shared strict-mock type aliases once per aggregated mock file. */
+  finalizeMockImplementation?: (
+    implementation: string,
+    options: FinalizeMockImplementationOptions,
+  ) => string;
   extraFiles: ClientFileBuilder[];
 };
 

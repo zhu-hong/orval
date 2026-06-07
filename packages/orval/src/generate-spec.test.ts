@@ -667,7 +667,6 @@ describe('generateSpec - generateReusableSchemas inline (pure-$ref operations)',
 });
 
 describe('generateSpec - generateReusableSchemas wrapper/import name collision (#3478)', () => {
-  // Regression: when pascal(operationId) + 'Response' equals an imported
   // component schema name, the operation wrapper used to be emitted with the
   // same identifier as the import:
   //
@@ -849,6 +848,247 @@ describe('generateSpec - generateReusableSchemas wrapper/import name collision (
         content.match(/export const ListPetsResponseSchema = /g) ?? [],
       ).toHaveLength(1);
       expect(content).not.toContain('__REF_');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('generateSpec - useNamedParameters + zod schema output', () => {
+  // The fetch client references a named `${Op}PathParameters` type in its
+  // signatures. In zod schema mode that type must be emitted as a zod schema
+  // (with a companion `zod.input` type) instead of being dropped — otherwise
+  // the import resolves to nothing and the output fails to compile.
+  const PATH_PARAM_SPEC: OpenApiDocument = {
+    openapi: '3.1.0',
+    info: { title: 'Petstore', version: '1.0.0' },
+    paths: {
+      '/pets/{petId}': {
+        get: {
+          operationId: 'showPetById',
+          parameters: [
+            {
+              name: 'petId',
+              in: 'path',
+              required: true,
+              schema: { type: 'string' },
+            },
+          ],
+          responses: { '200': { description: 'A pet' } },
+        },
+      },
+    },
+  };
+
+  it('emits a `${Op}PathParameters` zod schema with companion input type', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: PATH_PARAM_SPEC },
+          output: {
+            target: './endpoints.ts',
+            client: 'fetch',
+            schemas: { path: './model', type: 'zod' },
+            override: { useNamedParameters: true },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const schema = await fs.readFile(
+        path.join(workspace, 'model', 'showPetByIdPathParameters.zod.ts'),
+        'utf8',
+      );
+      // Emitted as a zod object plus a companion `zod.input` type the client
+      // can reference as a type (rather than being dropped).
+      expect(schema).toContain(
+        'export const ShowPetByIdPathParameters = zod.object(',
+      );
+      expect(schema).toContain(
+        'export type ShowPetByIdPathParameters = zod.input<typeof ShowPetByIdPathParameters>;',
+      );
+
+      // The endpoints file consumes the named type in its signature.
+      const endpoints = await fs.readFile(
+        path.join(workspace, 'endpoints.ts'),
+        'utf8',
+      );
+      expect(endpoints).toMatch(/:\s*ShowPetByIdPathParameters/);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('generateSpec - schemas.importPath', () => {
+  it('uses package import specifier in generated endpoint imports (single mode)', async () => {
+    const workspace = await createTempWorkspace();
+    const targetFile = path.join(workspace, 'endpoints.ts');
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: PETSTORE_SPEC },
+          output: {
+            target: './endpoints.ts',
+            mode: 'single',
+            schemas: {
+              path: './model',
+              type: 'typescript',
+              importPath: '@acme/models',
+            },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const content = await fs.readFile(targetFile, 'utf8');
+      expect(content).toMatch(/from\s+'@acme\/models'/);
+      expect(content).not.toMatch(/from\s+'\.\./);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('uses package import specifier in generated endpoint imports (tags mode)', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: PETSTORE_SPEC },
+          output: {
+            target: './endpoints.ts',
+            mode: 'tags',
+            schemas: {
+              path: './model',
+              type: 'typescript',
+              importPath: '@acme/models',
+            },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const files = await fs.readdir(workspace);
+      const tagFileName = files.find(
+        (f) => f.endsWith('.ts') && f !== 'endpoints.ts',
+      );
+      expect(tagFileName).toBeTruthy();
+      const content = await fs.readFile(
+        path.join(workspace, tagFileName ?? ''),
+        'utf8',
+      );
+      expect(content).toMatch(/from\s+'@acme\/models'/);
+      expect(content).not.toMatch(/from\s+'\.\./);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('uses package import specifier in generated endpoint imports (tags-split mode)', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: PETSTORE_SPEC },
+          output: {
+            target: './endpoints.ts',
+            mode: 'tags-split',
+            schemas: {
+              path: './model',
+              type: 'typescript',
+              importPath: '@acme/models',
+            },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const entries = await fs.readdir(workspace, { recursive: true });
+      const tsFile = entries.find(
+        (e) => String(e).endsWith('.ts') && !String(e).includes('model'),
+      );
+      expect(tsFile).toBeTruthy();
+      const tagFile = path.join(workspace, String(tsFile));
+      const content = await fs.readFile(tagFile, 'utf8');
+      expect(content).toMatch(/from\s+'@acme\/models'/);
+      expect(content).not.toMatch(/from\s+'\.\./);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('uses package import specifier in generated endpoint imports (split mode)', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: PETSTORE_SPEC },
+          output: {
+            target: './endpoints.ts',
+            mode: 'split',
+            schemas: {
+              path: './model',
+              type: 'typescript',
+              importPath: '@acme/models',
+            },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const content = await fs.readFile(
+        path.join(workspace, 'endpoints.ts'),
+        'utf8',
+      );
+      expect(content).toMatch(/from\s+'@acme\/models'/);
+      expect(content).not.toMatch(/from\s+'\.\./);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('uses package import specifier with indexFiles (single mode)', async () => {
+    const workspace = await createTempWorkspace();
+    const targetFile = path.join(workspace, 'endpoints.ts');
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: PETSTORE_SPEC },
+          output: {
+            target: './endpoints.ts',
+            mode: 'single',
+            indexFiles: true,
+            schemas: {
+              path: './model',
+              type: 'typescript',
+              importPath: '@acme/models',
+            },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const content = await fs.readFile(targetFile, 'utf8');
+      expect(content).toMatch(/from\s+'@acme\/models'/);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

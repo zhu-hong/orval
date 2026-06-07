@@ -506,6 +506,71 @@ test('fetch issue-1879 inlines header schema when $ref targets another path para
   expect(indexContent).not.toMatch(/\bn0\b/);
 });
 
+test('fetch issue-3321 falls back to an unknown index signature for properties + typed additionalProperties', async () => {
+  // Regression for #3321 (type half of the #3255 follow-up): a schema with both
+  // named `properties` (`summary: string`) and a typed `additionalProperties`
+  // (`anyOf: [object, null]`) used to inline a typed index signature next to the
+  // named property. A string index signature also covers the named keys, so
+  // `summary: string` must satisfy the additionalProperties type too —
+  // impossible here, so TS rejected the declaration with TS2411. Expressing it
+  // as an intersection only moves the failure: the named key is still
+  // constrained, making the type *unconstructable* (TS2322 when assigning a
+  // value). orval now falls back to `[key: string]: unknown` (matching
+  // `additionalProperties: true`), which keeps the named property's own type and
+  // accepts any extra key, so the type is valid AND constructable. Asserting the
+  // index value is `unknown` is the constructability guarantee — every named
+  // property is assignable to it. The declaration is additionally typechecked by
+  // scripts/typecheck-generated.mjs.
+  const thingsResponse = await readFile(
+    generated('fetch', 'issue-3321', 'model', 'thingsResponse.ts'),
+    'utf8',
+  );
+  expect(thingsResponse).toContain('summary: string;');
+  expect(thingsResponse).toContain('[key: string]: unknown;');
+  // The dropped additionalProperties value type must not leak a dangling import.
+  expect(thingsResponse).not.toContain('ItemDetail');
+
+  // Minimal primitive case (no $ref/anyOf): a string named property next to a
+  // number additionalProperties is the textbook TS2411 shape. It collapses to
+  // the same `unknown` fallback, proving the fix is independent of the #3255
+  // $ref/import machinery.
+  const counters = await readFile(
+    generated('fetch', 'issue-3321', 'model', 'counters.ts'),
+    'utf8',
+  );
+  expect(counters).toContain('label: string;');
+  expect(counters).toContain('[key: string]: unknown;');
+});
+
+test('fetch issue-3327 resolves external $ref injected by input transformer', async () => {
+  // Regression for #3327: an `input.override.transformer` that injects a NEW
+  // external $ref (`refs.yaml#/components/schemas/Point`) used to fail because
+  // the transformer runs after the initial bundle, so the injected ref never
+  // got resolved. orval now re-bundles the transformer output. The external
+  // schemas must be merged and Field.geometry must union the resolved named
+  // types — never leak the raw `refs.yaml` file ref. Keep this focused
+  // assertion alongside the snapshot so #3327 fails with a targeted message.
+  const fieldContent = await readFile(
+    generated('fetch', 'issue-3327', 'model', 'field.ts'),
+    'utf8',
+  );
+  expect(fieldContent).toContain('geometry?: Point | LineString;');
+  expect(fieldContent).not.toContain('refs.yaml');
+
+  // The injected external schemas are emitted as their own models.
+  const pointContent = await readFile(
+    generated('fetch', 'issue-3327', 'model', 'point.ts'),
+    'utf8',
+  );
+  expect(pointContent).toContain('export interface Point {');
+
+  const lineStringContent = await readFile(
+    generated('fetch', 'issue-3327', 'model', 'lineString.ts'),
+    'utf8',
+  );
+  expect(lineStringContent).toContain('export interface LineString {');
+});
+
 test('default issue-1775 preserves boolean enum literals across allOf+oneOf', async () => {
   // Regression for #1775: an `allOf: [{orderId}, oneOf: [{success: enum [true]},
   // {success: enum [false], failReason}]]` schema returned as an array.
@@ -707,4 +772,199 @@ test('react-query issue-2999 keeps a single v5 overload block per hook with useI
       `${marker} should be used once per overload block (5 blocks)`,
     ).toBe(5);
   }
+});
+
+test('react-query issue-2540 imports external-file $ref schemas by schema name, not the YAML basename', async () => {
+  // Regression for #2540: an operation response that `$ref`s a schema in an
+  // external YAML file (`./common-schemas.yaml#/components/schemas/...`) used
+  // to emit an import whose PATH was derived from the external file basename
+  // (`../model/.../common-schemas`) instead of the schema file orval actually
+  // generates (`../model/internalServerError500`), so the output failed to
+  // compile with "Cannot find module '.../common-schemas'". The v8 external
+  // `$ref` overhaul fixed this; keep this focused assertion alongside the
+  // snapshot so #2540 fails with a targeted message instead of a full-file
+  // snapshot diff. `indexFiles: false` is required so the imports are direct
+  // file paths (a barrel re-export would mask the wrong basename).
+  const endpoints = await readFile(
+    generated(
+      'react-query',
+      'issue-2540-external-ref-import-path',
+      'user',
+      'user.ts',
+    ),
+    'utf8',
+  );
+
+  // Both external-file schemas — the 200 success body and the 500 error body —
+  // import from the schema-name file, never the `common-schemas` YAML basename.
+  expect(endpoints).toContain(
+    "import type { UserProfile } from '../model/userProfile';",
+  );
+  expect(endpoints).toContain(
+    "import type { InternalServerError500 } from '../model/internalServerError500';",
+  );
+  // The external YAML file basename must not leak into an import path — the
+  // #2540 regression always surfaces as `from '...common-schemas'`. Scope the
+  // check to import sources (rather than banning the substring anywhere) so a
+  // future generator that printed the source `$ref` in a comment wouldn't trip
+  // a false failure.
+  expect(endpoints).not.toMatch(/from\s+['"][^'"]*common[-_]?schemas/i);
+
+  // The referenced schema is emitted as a standalone file at the flat path,
+  // not nested under a directory named after the external YAML file.
+  const model = await readFile(
+    generated(
+      'react-query',
+      'issue-2540-external-ref-import-path',
+      'model',
+      'internalServerError500.ts',
+    ),
+    'utf8',
+  );
+  expect(model).toContain('export interface InternalServerError500 {');
+});
+
+test('react-query issue-3301 keeps unreferenced schemas when filtering endpoints by tags', async () => {
+  // Regression for #3301: #3254 (v8.9.0) made a `filters.tags` filter also prune
+  // every `components.schemas` entry not reachable from the matching operations.
+  // That dropped legitimately-unreferenced schemas, and the documented escape
+  // hatch (`schemas: [/.*/]`) doesn't work in `mode: 'exclude'` because `mode` is
+  // shared by the tag and schema filters. `includeUnreferencedSchemas: true` keeps
+  // every schema while endpoints stay tag-filtered.
+  const dir = (...segments: string[]) =>
+    generated(
+      'react-query',
+      'issue-3301-include-unreferenced-schemas',
+      ...segments,
+    );
+
+  // The orphan schemas — referenced by no path — are still emitted.
+  const unusedModel = await readFile(dir('model', 'unusedModel.ts'), 'utf8');
+  expect(unusedModel).toContain('export interface UnusedModel {');
+  const unusedStatus = await readFile(dir('model', 'unusedStatus.ts'), 'utf8');
+  expect(unusedStatus).toContain('export const UnusedStatus = {');
+  // A schema referenced only by the excluded `stream` operation is kept too.
+  const streamChunk = await readFile(dir('model', 'streamChunk.ts'), 'utf8');
+  expect(streamChunk).toContain('export interface StreamChunk {');
+
+  // The `stream` tag is still excluded from the generated endpoints — only the
+  // `pets` operation is emitted, and `streamEvents` appears nowhere.
+  const pets = await readFile(dir('pets', 'pets.ts'), 'utf8');
+  expect(pets).toContain('export const listPets =');
+  expect(pets).not.toContain('streamEvents');
+});
+
+test('mock issue-3484 required nullable scalars get a single null branch', async () => {
+  // Regression for #3484: a *required* property typed as an OpenAPI 3.1
+  // nullable union (`type: [<scalar>, 'null']`) — the same shape OAS 3.0
+  // `nullable: true` is upgraded to — must emit a single
+  // `faker.helpers.arrayElement([<value>, null])`. Previously the scalar
+  // getter and the object property layer each added a null branch, producing
+  // `arrayElement([arrayElement([<value>, null]), null])` and skewing null to
+  // ~75%.
+  const content = await readFile(
+    generated('mock', 'issue-3484', 'endpoints.ts'),
+    'utf8',
+  );
+
+  const start = content.indexOf('export const getGetPetResponseMock');
+  expect(start, 'getGetPetResponseMock should be generated').toBeGreaterThan(
+    -1,
+  );
+  const nextExport = content.indexOf('export const ', start + 1);
+  const mock = content.slice(
+    start,
+    nextExport === -1 ? content.length : nextExport,
+  );
+
+  // No property may nest one `arrayElement([..., null])` directly inside
+  // another `arrayElement([..., null])` — that is the double wrap. (The
+  // string-enum `kind` legitimately nests an enum `arrayElement` whose inner
+  // list contains no `null`, so it does not match this pattern.)
+  expect(mock).not.toMatch(
+    /arrayElement\(\[\s*faker\.helpers\.arrayElement\(\[[\s\S]*?null,?\s*\]\),\s*null/,
+  );
+
+  // Boolean is left bare by the scalar getter, so the object layer must still
+  // contribute its single null branch.
+  expect(mock.replace(/\s+/g, ' ')).toContain(
+    'faker.helpers.arrayElement([faker.datatype.boolean(), null])',
+  );
+});
+
+test('mock issue-3200 dictionary values delegate to a bare factory call for primitive-union $refs', async () => {
+  // Regression for #3200: with `schemas: true`, an `additionalProperties`
+  // dictionary whose value is a `$ref` to a primitive `oneOf`/`anyOf`
+  // (e.g. `number | string`) delegated to `get<X>Mock()`. The delegation
+  // wrapped the call in `{ ...get<X>Mock() }`, but the factory returns a
+  // primitive union which is not spreadable: that is invalid TypeScript
+  // (TS2698, enforced by scripts/typecheck-generated.mjs) and would discard
+  // the value as `{}` at runtime. The dictionary value must be the bare call.
+  const content = await readFile(
+    generated('mock', 'issue-3200', 'model', 'index.faker.ts'),
+    'utf8',
+  );
+
+  // Whitespace-tolerant so the assertion survives formatter/generator tweaks
+  // while still pinning the behavior: the dictionary value is the bare call.
+  expect(content).toMatch(
+    /\[faker\.string\.alphanumeric\(5\)\]:\s*getIntegerLikeMock\(\)/,
+  );
+  expect(content).toMatch(
+    /\[faker\.string\.alphanumeric\(5\)\]:\s*getNumberLikeMock\(\)/,
+  );
+  // The primitive-union factory call must never be spread into the object,
+  // regardless of how the braces would be formatted.
+  expect(content).not.toContain('...getIntegerLikeMock()');
+  expect(content).not.toContain('...getNumberLikeMock()');
+});
+
+test('zod issue-3171 applies required from a sibling allOf member to $ref base props', async () => {
+  // `User`/`UserFull` define their properties in a $ref base (UserBase) and
+  // carry `required` only in a sibling allOf member. The required array must be
+  // propagated onto the base properties instead of being dropped. The open
+  // sibling (`.and(...passthrough())`) stays — neither member sets
+  // additionalProperties:false, so extra keys remain allowed. See #3171.
+  const file = generated('zod', 'issue-3171', 'issue-3171.ts');
+  const content = await readFile(file, 'utf8');
+
+  // User: only `id` is required; name/email stay optional.
+  expect(content).toContain('id: zod.string().uuid(),');
+  expect(content).toContain('name: zod.string().optional(),');
+  expect(content).toContain('email: zod.string().optional(),');
+
+  // UserFull: every field required -> the response object has no optional field.
+  const start = content.indexOf('export const GetUserResponse');
+  expect(start, 'GetUserResponse should be generated').toBeGreaterThan(-1);
+  const userFull = content.slice(start);
+  expect(userFull).toContain('id: zod.string().uuid(),');
+  expect(userFull).toContain('name: zod.string(),');
+  expect(userFull).toContain('email: zod.string(),');
+  expect(userFull).not.toContain('name: zod.string().optional()');
+  expect(userFull).not.toContain('email: zod.string().optional()');
+
+  // The open-object sibling is preserved (additional properties allowed).
+  expect(content).toContain('.and(zod.object({}).passthrough())');
+});
+
+test('default index-mock-file-split emits dedicated mock barrels in split mode (#3318)', async () => {
+  // Regression for #3318: in `split` mode, `mock: { indexMockFiles: true }` was
+  // silently ignored (only `tags-split` honored it), so MSW mocks could not be
+  // isolated into their own barrel. The generated `index.msw.ts` keeps MSW out
+  // of any models/production barrel, avoiding the jsdom `WritableStream`
+  // module-eval crash when a hand-rolled barrel re-exports `.msw`.
+  const mswBarrel = await readFile(
+    generated('default', 'index-mock-file-split', 'index.msw.ts'),
+    'utf8',
+  );
+  // The single split-mode mock file is re-exported wholesale from the barrel.
+  expect(mswBarrel).toMatch(/export \* from '\.\/endpoints\.msw'/);
+
+  // One barrel per generator type: the faker entry gets its own `index.faker.ts`
+  // so the per-extension loop is exercised, not just the single-MSW path.
+  const fakerBarrel = await readFile(
+    generated('default', 'index-mock-file-split', 'index.faker.ts'),
+    'utf8',
+  );
+  expect(fakerBarrel).toMatch(/export \* from '\.\/endpoints\.faker'/);
 });

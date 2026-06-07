@@ -11,6 +11,10 @@ import {
 } from '@orval/core';
 import { prop } from 'remeda';
 
+import {
+  formatMockFactoryDeclaration,
+  getMockFactorySignatureParts,
+} from '../../mock-types';
 import type { MockDefinition, MockSchema, MockSchemaObject } from '../../types';
 import { overrideVarName } from '../getters';
 import { getMockScalar } from '../getters/scalar';
@@ -341,11 +345,16 @@ export function resolveMockValue({
       // so the spread form keeps callers (combineSchemasMock, object
       // properties) working without other changes. For everything else
       // (scalars, arrays, nullables) emit the bare call.
+      //
+      // A `oneOf`/`anyOf` is only object-like when *every* branch resolves to
+      // an object. A composition of primitives (e.g. `number | string`) makes
+      // the factory return a primitive union, which is not spreadable: emitting
+      // `{ ...get<X>Mock() }` is invalid TypeScript (TS2698) and would discard
+      // the value as `{}` at runtime, so it must use the bare call (#3200).
       const isObjectLike =
         newSchema.type === 'object' ||
         !!newSchema.allOf ||
-        !!newSchema.oneOf ||
-        !!newSchema.anyOf;
+        resolvesToObjectLike(newSchema, context);
       const callValue = isObjectLike
         ? `{ ...${factoryName}() }`
         : `${factoryName}()`;
@@ -359,6 +368,7 @@ export function resolveMockValue({
         imports,
         name: newSchema.name,
         type: getType(newSchema),
+        nullWrapped: Boolean(newSchema.nullable) && !mockOptions?.nonNullable,
       };
     }
 
@@ -397,13 +407,27 @@ export function resolveMockValue({
           | undefined;
         const discriminatedProperty = discriminator?.propertyName;
 
-        let type = `Partial<${newSchema.name}>`;
+        let overrideType = `Partial<${newSchema.name}>`;
         if (discriminatedProperty) {
-          type = `Omit<${type}, '${discriminatedProperty}'>`;
+          overrideType = `Omit<${overrideType}, '${discriminatedProperty}'>`;
         }
 
-        const args = `${overrideVarName}: ${type} = {}`;
-        const func = `export const ${funcName} = (${args}): ${newSchema.name} => ({${scalar.value.startsWith('...') ? '' : '...'}${scalar.value}, ...${overrideVarName}});`;
+        const { param, returnType, returnCast } = getMockFactorySignatureParts(
+          newSchema.name,
+          mockOptions,
+          {
+            isOverridable: true,
+            overrideType,
+          },
+        );
+        const func = formatMockFactoryDeclaration(
+          funcName,
+          param,
+          returnType,
+          `{${scalar.value.startsWith('...') ? '' : '...'}${scalar.value}, ...${overrideVarName}}`,
+          returnCast,
+          { terminateStatement: true },
+        );
         splitMockImplementations.push(func);
       }
 
@@ -447,4 +471,63 @@ function getType(schema: MockSchema) {
     (schema.type as string | undefined) ??
     (schema.properties ? 'object' : schema.items ? 'array' : undefined)
   );
+}
+
+// Whether a schema (or a `$ref` to one) ultimately produces an object mock.
+// Used to decide if a delegated `get<X>Mock()` call may be spread into an
+// object literal. Object-like schemas are `type: 'object'`, `properties`,
+// `additionalProperties` and `allOf`; a `oneOf`/`anyOf` qualifies only when
+// every branch resolves to an object. A union containing a primitive
+// (e.g. `number | string`) does not, since spreading that union is invalid
+// TypeScript. `seen` carries the `$ref`s on the current resolution path to
+// guard against self-referential compositions. A fresh copy is taken at each
+// `$ref` hop so sibling branches sharing a `$ref` don't falsely trip the guard.
+function resolvesToObjectLike(
+  schema: MockSchema,
+  context: ContextSpec,
+  seen = new Set<string>(),
+): boolean {
+  let resolved: Partial<OpenApiSchemaObject> | undefined;
+
+  if (isReference(schema)) {
+    // A non-string or already-visited `$ref` can't be resolved further here.
+    if (typeof schema.$ref !== 'string' || seen.has(schema.$ref)) {
+      return false;
+    }
+    seen = new Set(seen).add(schema.$ref);
+    const { refPaths } = getRefInfo(schema.$ref, context);
+    resolved = Array.isArray(refPaths)
+      ? (prop(
+          context.spec,
+          // @ts-expect-error: refPaths are not guaranteed to be valid keys of the spec
+          ...refPaths,
+        ) as Partial<OpenApiSchemaObject>)
+      : undefined;
+  } else {
+    resolved = schema as Partial<OpenApiSchemaObject>;
+  }
+
+  if (!resolved) {
+    return false;
+  }
+
+  if (
+    resolved.type === 'object' ||
+    resolved.properties ||
+    resolved.additionalProperties ||
+    resolved.allOf
+  ) {
+    return true;
+  }
+
+  const branches = (resolved.oneOf ?? resolved.anyOf) as
+    | MockSchema[]
+    | undefined;
+  if (branches && branches.length > 0) {
+    return branches.every((branch) =>
+      resolvesToObjectLike(branch, context, seen),
+    );
+  }
+
+  return false;
 }

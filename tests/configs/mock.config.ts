@@ -464,6 +464,23 @@ export default defineConfig({
       target: '../specifications/faker-schemas-string-enum-ref.yaml',
     },
   },
+  issue3200: {
+    output: {
+      target: '../generated/mock/issue-3200/endpoints.ts',
+      schemas: '../generated/mock/issue-3200/model',
+      client: 'axios',
+      mock: {
+        generators: [
+          { type: 'faker', schemas: true, operationResponses: true },
+        ],
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3200.yaml',
+    },
+  },
   issue2465: {
     output: {
       target: '../generated/mock/issue-2465/endpoints.ts',
@@ -484,6 +501,158 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/issue-2465.yaml',
+    },
+  },
+  issue3484: {
+    output: {
+      target: '../generated/mock/issue-3484/endpoints.ts',
+      schemas: '../generated/mock/issue-3484/model',
+      client: 'fetch',
+      mock: true,
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3484.yaml',
+    },
+  },
+  issue3525: {
+    output: {
+      target: '../generated/mock/issue-3525/endpoints.ts',
+      schemas: '../generated/mock/issue-3525/model',
+      client: 'fetch',
+      mock: {
+        generators: [
+          { type: 'msw' },
+          { type: 'faker', schemas: true, operationResponses: true },
+        ],
+      },
+      override: {
+        mock: {
+          required: true,
+          nonNullable: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3525.yaml',
+    },
+  },
+  issue3525Multi: {
+    output: {
+      target: '../generated/mock/issue-3525-multi/endpoints.ts',
+      schemas: '../generated/mock/issue-3525-multi/model',
+      client: 'fetch',
+      mock: {
+        generators: [
+          { type: 'msw' },
+          { type: 'faker', schemas: true, operationResponses: true },
+        ],
+      },
+      override: {
+        mock: {
+          required: true,
+          nonNullable: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3525-multi.yaml',
+    },
+  },
+  issue3525Oas31: {
+    output: {
+      target: '../generated/mock/issue-3525-oas31/endpoints.ts',
+      schemas: '../generated/mock/issue-3525-oas31/model',
+      client: 'fetch',
+      mock: {
+        generators: [
+          { type: 'msw' },
+          { type: 'faker', schemas: true, operationResponses: true },
+        ],
+      },
+      override: {
+        mock: {
+          required: true,
+          nonNullable: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3525-oas31.yaml',
+    },
+  },
+  issue3525WidgetMock: {
+    output: {
+      target: '../generated/mock/issue-3525-widget-mock/endpoints.ts',
+      schemas: '../generated/mock/issue-3525-widget-mock/model',
+      client: 'fetch',
+      mock: {
+        generators: [{ type: 'msw' }],
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3525-widget-mock.yaml',
+    },
+  },
+  issue3525WidgetMockStrict: {
+    output: {
+      target: '../generated/mock/issue-3525-widget-mock-strict/endpoints.ts',
+      schemas: '../generated/mock/issue-3525-widget-mock-strict/model',
+      client: 'fetch',
+      mock: {
+        generators: [{ type: 'msw' }],
+      },
+      override: {
+        mock: {
+          required: true,
+          nonNullable: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3525-widget-mock.yaml',
+    },
+  },
+  fakerArrayItems: {
+    output: {
+      target: '../generated/mock/faker-array-items/endpoints.ts',
+      schemas: '../generated/mock/faker-array-items/model',
+      client: 'axios',
+      mock: {
+        generators: [{ type: 'faker', arrayItems: true }],
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/faker-array-items.yaml',
+    },
+  },
+  fakerArrayItemsTagsSplit: {
+    output: {
+      target: '../generated/mock/faker-array-items-tags-split/endpoints.ts',
+      schemas: '../generated/mock/faker-array-items-tags-split/model',
+      mode: 'tags-split',
+      client: 'axios',
+      mock: {
+        generators: [{ type: 'faker', arrayItems: true }],
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/faker-array-items-tags-split.yaml',
     },
   },
 });

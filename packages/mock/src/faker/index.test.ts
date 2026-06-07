@@ -10,7 +10,13 @@ import type {
 import { isFakerMock, isMswMock, OutputMockType } from '@orval/core';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import { generateFaker, generateFakerImports } from './index';
+import { createTestContextSpec } from '../../../core/src/test-utils/context';
+import { dedupeStrictMockTypeDeclarations } from '../mock-types';
+import {
+  generateFaker,
+  generateFakerForSchemas,
+  generateFakerImports,
+} from './index';
 
 const mockVerbOptions = {
   operationId: 'getUser',
@@ -153,5 +159,86 @@ describe('discriminated GlobalMockOptions union', () => {
       }) as ReturnType<ClientMockBuilder>;
     expect(isMswMock(mock)).toBe(false);
     expect(isFakerMock(mock)).toBe(false);
+  });
+});
+
+describe('generateFakerForSchemas strict mock types (#3525)', () => {
+  const context = createTestContextSpec({
+    override: {
+      mock: {
+        required: true,
+        nonNullable: true,
+      },
+    },
+  });
+
+  it('exposes strict schema names and omits inline type declarations', () => {
+    const result = generateFakerForSchemas(
+      [
+        {
+          name: 'Pet',
+          model: 'Pet',
+          imports: [],
+          schema: {
+            type: 'object',
+            required: ['id', 'name'],
+            properties: {
+              id: { type: 'integer' },
+              name: { type: 'string' },
+              tag: { type: 'string', nullable: true },
+            },
+          },
+        },
+      ],
+      context,
+      { type: OutputMockType.FAKER, schemas: true },
+    );
+
+    expect(result.strictMockSchemaTypeNames).toEqual(['Pet']);
+    expect(result.implementation).not.toContain('export type PetMock = {');
+    expect(result.implementation).not.toContain('export type KeysWithNull<O>');
+    expect(result.implementation).toContain(
+      'export const getPetMock = <O extends Partial<Pet> = {}>(overrideResponse?: O): MockWithNullableOverrides<Pet, O, PetMock> =>',
+    );
+    expect(result.implementation).toContain(
+      ') as MockWithNullableOverrides<Pet, O, PetMock>;',
+    );
+    expect(result.implementation).not.toContain(', null]');
+  });
+
+  it('includes non-overridable strict schemas in strictMockSchemaTypeNames', () => {
+    const result = generateFakerForSchemas(
+      [
+        {
+          name: 'Status',
+          model: 'Status',
+          imports: [],
+          schema: {
+            type: 'string',
+            enum: ['active', 'inactive'],
+          },
+        },
+      ],
+      context,
+      { type: OutputMockType.FAKER, schemas: true },
+    );
+
+    expect(result.strictMockSchemaTypeNames).toEqual(['Status']);
+    expect(result.implementation).not.toContain('overrideResponse');
+    expect(result.implementation).toContain(
+      'export const getStatusMock = (): StatusMock =>',
+    );
+    expect(result.implementation).not.toContain('export type StatusMock = {');
+
+    const finalized = dedupeStrictMockTypeDeclarations(result.implementation, {
+      mockOptions: { required: true, nonNullable: true },
+      strictSchemaTypeNames: result.strictMockSchemaTypeNames,
+    });
+
+    expect(finalized).toContain('export type StatusMock = {');
+    expect(finalized).toContain('export type KeysWithNull<O>');
+    expect(finalized.indexOf('export type StatusMock')).toBeLessThan(
+      finalized.indexOf('export const getStatusMock'),
+    );
   });
 });

@@ -25,6 +25,7 @@ import {
   resolveMockOverride,
   resolveMockValue,
 } from '../resolvers';
+import { extractArrayItemMock } from './array-item-factory';
 import { getMockObject } from './object';
 
 interface GetMockScalarOptions {
@@ -143,9 +144,13 @@ export function getMockScalar({
     ),
   };
 
-  // OpenAPI 3.1 null unions only — 3.0 `nullable: true` is handled in object.ts
-  // to avoid double-wrapping scalar values that object.ts already null-randomizes.
+  // Both OpenAPI 3.1 `type: [..., 'null']` and OpenAPI 3.0 `nullable: true`
+  // reach here as a null union, because @scalar/openapi-parser upgrades 3.0
+  // inputs to 3.1 before mock generation. When this getter wraps the value via
+  // `getNullable` it flags the returned MockDefinition with `nullWrapped` so the
+  // object property layer does not add a second `arrayElement([..., null])`.
   const isNullable = Array.isArray(item.type) && item.type.includes('null');
+  const nullWrapped = isNullable && !nonNullableOption;
   // The @scalar/openapi-parser upgrader rewrites `format: binary` to
   // `contentMediaType: application/octet-stream` when upgrading OAS 3.0 → 3.1;
   // treat both equivalently so the mock emits the binary format value
@@ -161,6 +166,7 @@ export function getMockScalar({
       imports: [],
       name: item.name,
       overrided: false,
+      nullWrapped,
     };
   }
   if (item.format && ALL_FORMAT[item.format]) {
@@ -176,6 +182,7 @@ export function getMockScalar({
       imports: [],
       name: item.name,
       overrided: false,
+      nullWrapped,
     };
   }
 
@@ -249,6 +256,9 @@ export function getMockScalar({
         enums: item.enum,
         imports: numberImports,
         name: item.name,
+        // `item.enum` / `const` reassign `value` after `getNullable`, discarding
+        // the wrap — so only the plain numeric path is actually null-wrapped.
+        nullWrapped: nullWrapped && !item.enum && !('const' in item),
       };
     }
 
@@ -305,6 +315,7 @@ export function getMockScalar({
         schema: {
           ...resolvedItems,
           name: item.name,
+          parentName: item.parentName,
           path: item.path ? `${item.path}.[]` : '#.[]',
         },
         combine,
@@ -326,6 +337,21 @@ export function getMockScalar({
       }
 
       let mapValue = value;
+
+      const extractedItemCall = extractArrayItemMock({
+        items: resolvedItems,
+        propertyName: item.name,
+        parentName: item.parentName,
+        operationId,
+        tags,
+        mapValue,
+        context,
+        splitMockImplementations,
+        imports: resolvedImports,
+      });
+      if (extractedItemCall) {
+        mapValue = extractedItemCall;
+      }
 
       if (
         combine &&
@@ -450,6 +476,7 @@ export function getMockScalar({
         enums: item.enum,
         name: item.name,
         imports: stringImports,
+        nullWrapped,
       };
     }
 
@@ -503,7 +530,7 @@ export function getMockScalar({
 // Returns the $ref string from array `items` — either direct ($ref on items
 // itself) or wrapped in a single-element allOf/oneOf/anyOf composition.
 // Multi-element compositions return undefined to preserve combine semantics.
-function extractItemsRef(items: MockSchema): string | undefined {
+export function extractItemsRef(items: MockSchema): string | undefined {
   if (isReference(items)) {
     return items.$ref;
   }

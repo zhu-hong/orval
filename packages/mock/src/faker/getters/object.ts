@@ -181,6 +181,7 @@ export function getMockObject({
             schema: {
               ...(prop as Record<string, unknown>),
               name: key,
+              parentName: schemaItem.name,
               path: schemaItem.path ? `${schemaItem.path}.${key}` : `#.${key}`,
             },
             mockOptions,
@@ -209,6 +210,7 @@ export function getMockObject({
             Array.isArray(prop.type) && prop.type.includes('null');
           if (
             isNullable &&
+            !resolvedValue.nullWrapped &&
             !resolvedValue.overrided &&
             !mockOptions?.nonNullable
           ) {

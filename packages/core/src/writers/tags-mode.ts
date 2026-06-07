@@ -5,6 +5,7 @@ import type { WriteModeProps } from '../types';
 import {
   conventionName,
   getFileInfo,
+  getSchemasImportPath,
   isFunction,
   isString,
   isSyntheticDefaultImportsAllow,
@@ -13,6 +14,7 @@ import {
 } from '../utils';
 import { escapeRegExp } from '../utils/string';
 import { writeGeneratedFile } from './file';
+import { getFinalizeMockImplementationOptions } from './finalize-mock-implementation';
 import { generateImportsForBuilder } from './generate-imports-for-builder';
 import { collapseInlineMockOutputs } from './mock-outputs';
 import { generateTargetForTags } from './target-tags';
@@ -70,17 +72,25 @@ export async function writeTagsMode({
         const implementationMock = mockOutputs
           .map((m) => m.implementation)
           .join('\n\n');
+        const finalizedImplementationMock = builder.finalizeMockImplementation
+          ? builder.finalizeMockImplementation(
+              implementationMock,
+              getFinalizeMockImplementationOptions(output, mockOutputs),
+            )
+          : implementationMock;
 
         let data = header;
 
+        const schemaCustomImportPath = getSchemasImportPath(output.schemas);
         const schemasPathRelative = output.schemas
-          ? upath.getRelativeImportPath(
+          ? (schemaCustomImportPath ??
+            upath.getRelativeImportPath(
               targetPath,
               getFileInfo(
                 isString(output.schemas) ? output.schemas : output.schemas.path,
                 { extension: output.fileExtension },
               ).dirname,
-            )
+            ))
           : './' + filename + '.schemas' + extension.replace(/\.ts$/, '');
 
         const implementationImports = imports.filter((imp) => {
@@ -231,7 +241,7 @@ export async function writeTagsMode({
         if (mockOutputs.length > 0) {
           data += '\n\n';
 
-          data += implementationMock;
+          data += finalizedImplementationMock;
         }
 
         const implementationPath = path.join(

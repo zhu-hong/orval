@@ -12,6 +12,7 @@ import {
 import {
   conventionName,
   getFileInfo,
+  getSchemasImportPath,
   isFunction,
   isString,
   isSyntheticDefaultImportsAllow,
@@ -20,6 +21,7 @@ import {
 } from '../utils';
 import { getMockFileExtensionByTypeName } from '../utils/file-extensions';
 import { writeGeneratedFile } from './file';
+import { getFinalizeMockImplementationOptions } from './finalize-mock-implementation';
 import { generateImportsForBuilder } from './generate-imports-for-builder';
 import { generateTargetForTags } from './target-tags';
 import { getOrvalGeneratedTypes, getTypedResponse } from './types';
@@ -93,14 +95,16 @@ export async function writeSplitTagsMode({
         let implementationData = header;
 
         const importerPath = path.join(dirname, tag, tag + extension);
+        const schemaCustomImportPath = getSchemasImportPath(output.schemas);
         const relativeSchemasPath = output.schemas
-          ? upath.getRelativeImportPath(
+          ? (schemaCustomImportPath ??
+            upath.getRelativeImportPath(
               importerPath,
               getFileInfo(
                 isString(output.schemas) ? output.schemas : output.schemas.path,
                 { extension: output.fileExtension },
               ).dirname,
-            )
+            ))
           : '../' + filename + '.schemas' + extension.replace(/\.ts$/, '');
 
         // In tags-split mode, each tag lives in its own subdirectory
@@ -264,16 +268,22 @@ export async function writeSplitTagsMode({
             relativeSchemasPath,
           );
 
+          const finalizedMockImplementation = builder.finalizeMockImplementation
+            ? builder.finalizeMockImplementation(
+                mockOutput.implementation,
+                getFinalizeMockImplementationOptions(output, mockOutput),
+              )
+            : mockOutput.implementation;
           let mockData = header;
           mockData += builder.importsMock({
-            implementation: mockOutput.implementation,
+            implementation: finalizedMockImplementation,
             imports: importsMockForBuilder,
             projectName,
             hasSchemaDir: !!output.schemas,
             isAllowSyntheticDefaultImports,
             options: entry,
           });
-          mockData += `\n${mockOutput.implementation}`;
+          mockData += `\n${finalizedMockImplementation}`;
 
           const mockPath = path.join(
             dirname,

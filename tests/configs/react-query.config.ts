@@ -66,6 +66,48 @@ export default defineConfig({
       target: '../specifications/issue-2999.yaml',
     },
   },
+  'issue-2540-external-ref-import-path': {
+    output: {
+      target:
+        '../generated/react-query/issue-2540-external-ref-import-path/endpoints.ts',
+      schemas:
+        '../generated/react-query/issue-2540-external-ref-import-path/model',
+      client: 'react-query',
+      mode: 'tags-split',
+      // indexFiles:false forces direct file-path imports, which is where #2540's
+      // wrong external-YAML-basename path used to surface (the barrel masked it).
+      indexFiles: false,
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-2540/issue-2540.yaml',
+    },
+  },
+  // #3301: filtering endpoints by tags must not drop unreferenced
+  // `components.schemas`. `includeUnreferencedSchemas: true` keeps every schema
+  // (including the orphan `UnusedModel`/`UnusedStatus`) while the `stream` tag
+  // is still excluded from the generated endpoints.
+  'issue-3301-include-unreferenced-schemas': {
+    output: {
+      target:
+        '../generated/react-query/issue-3301-include-unreferenced-schemas/endpoints.ts',
+      schemas:
+        '../generated/react-query/issue-3301-include-unreferenced-schemas/model',
+      client: 'react-query',
+      mode: 'tags-split',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3301/issue-3301.yaml',
+      filters: {
+        mode: 'exclude',
+        tags: ['stream'],
+        includeUnreferencedSchemas: true,
+      },
+    },
+  },
   basic: {
     output: {
       target: '../generated/react-query/basic/endpoints.ts',
@@ -190,6 +232,31 @@ export default defineConfig({
         query: {
           shouldSplitQueryKey: true,
           shouldFilterQueryKey: true,
+          mutationInvalidates: [
+            {
+              onMutations: ['createPets'],
+              invalidates: ['showPetById'],
+            },
+          ],
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  shouldFilterBooleanQueryKey: {
+    output: {
+      target: '../generated/react-query/filter-boolean-query-key/endpoints.ts',
+      schemas: '../generated/react-query/filter-boolean-query-key/model',
+      client: 'react-query',
+      override: {
+        query: {
+          shouldSplitQueryKey: true,
+          shouldFilterQueryKey: true,
+          queryKeyFilter: 'Boolean',
           mutationInvalidates: [
             {
               onMutations: ['createPets'],

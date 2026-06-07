@@ -63,6 +63,7 @@ const createOutput = (
       jsDoc: {},
       header: false,
       hono: {
+        handlerGenerationStrategy: 'smart',
         compositeRoute: '',
         validator: true,
         validatorOutputPath: '',
@@ -2520,6 +2521,43 @@ describe('angular httpResource generator', () => {
       expect(petsFile?.content).not.toContain('createPet');
       expect(healthFile?.content).toContain('getHealthResource');
       expect(healthFile?.content).not.toContain('getPetByIdResource');
+    });
+  });
+
+  // ── urlEncodeParameters ─────────────────────────────────────────────
+
+  describe('urlEncodeParameters', () => {
+    const generateRetrievalHeader = (urlEncodeParameters: boolean): string => {
+      const verbOption = createVerbOption();
+      routeRegistry.set('getPetById', '/api/pets/${petId}');
+
+      return generateHttpResourceHeader({
+        title: 'PetService',
+        isRequestOptions: true,
+        isMutator: false,
+        isGlobalMutator: false,
+        provideIn: 'root',
+        hasAwaitedType: false,
+        output: createOutput({ urlEncodeParameters }),
+        verbOptions: { getPetById: verbOption },
+        clientImplementation: '',
+      } as never);
+    };
+
+    it('encodes the signal path parameter when urlEncodeParameters is true', () => {
+      const header = generateRetrievalHeader(true);
+
+      expect(header).toContain(
+        '`/api/pets/${encodeURIComponent(String(petId()))}`',
+      );
+      expect(header).not.toContain('`/api/pets/${petId()}`');
+    });
+
+    it('leaves the route unchanged when urlEncodeParameters is false', () => {
+      const header = generateRetrievalHeader(false);
+
+      expect(header).toContain('`/api/pets/${petId()}`');
+      expect(header).not.toContain('encodeURIComponent');
     });
   });
 });

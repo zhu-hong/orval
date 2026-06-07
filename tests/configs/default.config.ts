@@ -436,6 +436,25 @@ export default defineConfig({
       target: '../specifications/petstore.yaml',
     },
   },
+  indexMockFileSplit: {
+    output: {
+      target: '../generated/default/index-mock-file-split/endpoints.ts',
+      schemas: '../generated/default/index-mock-file-split/model',
+      client: 'fetch',
+      // Both generators so split mode emits `index.msw.ts` AND `index.faker.ts`,
+      // exercising the per-extension barrel loop (not just the single MSW case).
+      mock: {
+        indexMockFiles: true,
+        generators: [{ type: 'msw' }, { type: 'faker' }],
+      },
+      mode: 'split',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
   petstoreNamingConventionCamelCase: {
     input: '../specifications/petstore.yaml',
     output: {
@@ -593,6 +612,15 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/petstore.yaml',
+    },
+  },
+  'jsdoc-formatting': {
+    input: '../specifications/jsdoc-formatting.yaml',
+    output: {
+      target: '../generated/default/jsdoc-formatting/endpoints.ts',
+      schemas: '../generated/default/jsdoc-formatting/model',
+      clean: true,
+      formatter: 'prettier',
     },
   },
   'multi-files-with-same-import-names': {
