@@ -1737,6 +1737,57 @@ describe('generateZodValidationSchemaDefinition`', () => {
     expect(parsed.zod).not.toContain('.hostname()');
   });
 
+  // Regression test for #3472: in Zod v4, string formats must be emitted as
+  // top-level APIs (e.g. `zod.uuid()`, `zod.iso.datetime()`) rather than the
+  // deprecated method-chain form (`zod.string().uuid()`). Zod v3 keeps the
+  // method-chain form. Mirrors the minimal `Example` schema from the issue.
+  it('emits top-level string format validators in v4 and method-chain in v3 (issue #3472)', () => {
+    const schema: OpenApiSchemaObject = {
+      type: 'object',
+      properties: {
+        id: { type: 'string', format: 'uuid' },
+        createdAt: { type: 'string', format: 'date-time' },
+      },
+    };
+
+    const context = {
+      output: {
+        override: {
+          useDates: false,
+          zod: { dateTimeOptions: {}, timeOptions: {} },
+        },
+      },
+    } as ContextSpec;
+
+    const generate = (isZodV4: boolean) =>
+      parseZodValidationSchemaDefinition(
+        generateZodValidationSchemaDefinition(
+          schema,
+          context,
+          'Example',
+          false,
+          isZodV4,
+          { required: true },
+        ),
+        context,
+        false,
+        false,
+        isZodV4,
+      ).zod;
+
+    // Zod v4: top-level APIs, no `zod.string()` prefix.
+    const v4 = generate(true);
+    expect(v4).toContain('zod.uuid()');
+    expect(v4).toContain('zod.iso.datetime(');
+    expect(v4).not.toContain('zod.string().uuid()');
+    expect(v4).not.toContain('zod.string().datetime(');
+
+    // Zod v3: method-chain form is retained.
+    const v3 = generate(false);
+    expect(v3).toContain('zod.string().uuid()');
+    expect(v3).toContain('zod.string().datetime(');
+  });
+
   describe('description handling', () => {
     const context = makeContextSpec({
       override: {
@@ -5209,6 +5260,142 @@ describe('generateResponseSchemaForNonJsonContentTypes', () => {
 
     expect(result.implementation).toBe(
       'export const ClearCartResponse = zod.void()\n\n',
+    );
+  });
+
+  it('generates a response schema for a 201-only response in single mode', async () => {
+    const schema = {
+      pathRoute: '/items',
+      context: {
+        spec: {
+          paths: {
+            '/items': {
+              post: {
+                operationId: 'createItem',
+                responses: {
+                  '201': {
+                    description: 'Created',
+                    content: {
+                      'application/json': {
+                        schema: {
+                          type: 'object',
+                          required: ['id'],
+                          properties: { id: { type: 'string' } },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        output: { override: { zod: { generateEachHttpStatus: false } } },
+      },
+    } as unknown as GeneratorOptions;
+
+    const result = await generateZod(
+      {
+        pathRoute: '/items',
+        verb: 'post',
+        operationName: 'createItem',
+        override: {
+          zod: { strict: {}, generate: { response: true }, coerce: {} },
+        },
+      } as unknown as Parameters<typeof generateZod>[0],
+      schema,
+      testOutput,
+    );
+
+    expect(result.implementation).toBe(
+      'export const CreateItemResponse = zod.object({\n  "id": zod.string()\n})\n\n',
+    );
+  });
+
+  it('generates a response schema for a 202-only response in single mode', async () => {
+    const schema = {
+      pathRoute: '/jobs',
+      context: {
+        spec: {
+          paths: {
+            '/jobs': {
+              post: {
+                operationId: 'runItem',
+                responses: {
+                  '202': {
+                    description: 'Accepted',
+                    content: {
+                      'application/json': {
+                        schema: {
+                          type: 'object',
+                          required: ['job_id'],
+                          properties: { job_id: { type: 'string' } },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        output: { override: { zod: { generateEachHttpStatus: false } } },
+      },
+    } as unknown as GeneratorOptions;
+
+    const result = await generateZod(
+      {
+        pathRoute: '/jobs',
+        verb: 'post',
+        operationName: 'runItem',
+        override: {
+          zod: { strict: {}, generate: { response: true }, coerce: {} },
+        },
+      } as unknown as Parameters<typeof generateZod>[0],
+      schema,
+      testOutput,
+    );
+
+    expect(result.implementation).toBe(
+      'export const RunItemResponse = zod.object({\n  "job_id": zod.string()\n})\n\n',
+    );
+  });
+
+  it('generates zod.void() for a 201 response without a body in single mode', async () => {
+    const schema = {
+      pathRoute: '/items',
+      context: {
+        spec: {
+          paths: {
+            '/items': {
+              post: {
+                operationId: 'createItem',
+                responses: {
+                  '201': { description: 'Created' },
+                },
+              },
+            },
+          },
+        },
+        output: { override: { zod: { generateEachHttpStatus: false } } },
+      },
+    } as unknown as GeneratorOptions;
+
+    const result = await generateZod(
+      {
+        pathRoute: '/items',
+        verb: 'post',
+        operationName: 'createItem',
+        override: {
+          zod: { strict: {}, generate: { response: true }, coerce: {} },
+        },
+      } as unknown as Parameters<typeof generateZod>[0],
+      schema,
+      testOutput,
+    );
+
+    expect(result.implementation).toBe(
+      'export const CreateItemResponse = zod.void()\n\n',
     );
   });
 });
@@ -10022,5 +10209,222 @@ describe('generateZod preprocess regression (#3511)', () => {
     expect(result.implementation).toContain(
       'export const TestResponse = zod.preprocess(responseMutator,',
     );
+  });
+});
+
+describe('enum/const value escaping (#3505)', () => {
+  const context = makeContextSpec();
+
+  it('JS-escapes backslashes in z.enum values', () => {
+    const schema: OpenApiSchemaObject = {
+      type: 'string',
+      enum: [String.raw`App\Models\Document`, String.raw`App\Models\Template`],
+    };
+
+    const result = generateZodValidationSchemaDefinition(
+      schema,
+      context,
+      'testEnumBackslash',
+      false,
+      false,
+      { required: true },
+    );
+
+    expect(result.functions).toContainEqual([
+      'enum',
+      String.raw`['App\\Models\\Document', 'App\\Models\\Template']`,
+    ]);
+
+    const parsed = parseZodValidationSchemaDefinition(
+      result,
+      context,
+      false,
+      false,
+      false,
+    );
+    expect(parsed.zod).toBe(
+      String.raw`zod.enum(['App\\Models\\Document', 'App\\Models\\Template'])`,
+    );
+  });
+
+  it('JS-escapes a z.enum value ending in a backslash', () => {
+    const schema: OpenApiSchemaObject = {
+      type: 'string',
+      enum: ['C:\\logs\\', 'C:\\tmp\\'],
+    };
+
+    const result = generateZodValidationSchemaDefinition(
+      schema,
+      context,
+      'testEnumTrailingBackslash',
+      false,
+      false,
+      { required: true },
+    );
+
+    expect(result.functions).toContainEqual([
+      'enum',
+      String.raw`['C:\\logs\\', 'C:\\tmp\\']`,
+    ]);
+  });
+
+  it('does not escape forward slashes in z.enum values (#3530)', () => {
+    const schema: OpenApiSchemaObject = {
+      type: 'string',
+      enum: ['Asia/Tokyo', 'America/New_York'],
+    };
+
+    const result = generateZodValidationSchemaDefinition(
+      schema,
+      context,
+      'testEnumSlash',
+      false,
+      false,
+      { required: true },
+    );
+
+    expect(result.functions).toContainEqual([
+      'enum',
+      "['Asia/Tokyo', 'America/New_York']",
+    ]);
+  });
+
+  it('JS-escapes backslashes in z.literal values from mixed enums', () => {
+    const schema: OpenApiSchemaObject = {
+      type: 'string',
+      enum: [String.raw`App\Models\Document`, 1],
+    };
+
+    const result = generateZodValidationSchemaDefinition(
+      schema,
+      context,
+      'testMixedEnumBackslash',
+      false,
+      false,
+      { required: true },
+    );
+
+    expect(result.functions).toContainEqual([
+      'oneOf',
+      [
+        {
+          functions: [['literal', String.raw`'App\\Models\\Document'`]],
+          consts: [],
+        },
+        { functions: [['literal', 1]], consts: [] },
+      ],
+    ]);
+  });
+
+  it('JS-escapes backslashes in string const values (zod v3 branch)', () => {
+    const schema = {
+      type: 'string',
+      const: String.raw`App\Models\Document`,
+    } as OpenApiSchemaObject;
+
+    const result = generateZodValidationSchemaDefinition(
+      schema,
+      context,
+      'testConstBackslashV3',
+      false,
+      false,
+      { required: true },
+    );
+
+    expect(result.functions).toContainEqual([
+      'literal',
+      String.raw`"App\\Models\\Document"`,
+    ]);
+  });
+
+  it('JS-escapes backslashes in string const values (zod v4 branch)', () => {
+    const schema = {
+      type: 'string',
+      const: String.raw`App\Models\Document`,
+    } as OpenApiSchemaObject;
+
+    const result = generateZodValidationSchemaDefinition(
+      schema,
+      context,
+      'testConstBackslashV4',
+      false,
+      true,
+      { required: true },
+    );
+
+    expect(result.functions).toContainEqual([
+      'literal',
+      String.raw`"App\\Models\\Document"`,
+    ]);
+  });
+
+  it('JS-escapes backslashes in string values of object defaults', () => {
+    const schema: OpenApiSchemaObject = {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+      },
+      default: { path: 'C:\\logs\\' },
+    };
+
+    const result = generateZodValidationSchemaDefinition(
+      schema,
+      context,
+      'testDefaultBackslash',
+      false,
+      false,
+      { required: false },
+    );
+
+    expect(result.consts).toEqual([
+      String.raw`export const testDefaultBackslashDefault = { path: "C:\\logs\\" as const };`,
+    ]);
+  });
+
+  it('JS-escapes backslashes in string array items of object defaults', () => {
+    const schema: OpenApiSchemaObject = {
+      type: 'object',
+      properties: {
+        paths: { type: 'array', items: { type: 'string' } },
+      },
+      default: { paths: ['C:\\logs\\'] },
+    };
+
+    const result = generateZodValidationSchemaDefinition(
+      schema,
+      context,
+      'testDefaultArrayBackslash',
+      false,
+      false,
+      { required: false },
+    );
+
+    expect(result.consts).toEqual([
+      String.raw`export const testDefaultArrayBackslashDefault = { paths: ["C:\\logs\\" as const] };`,
+    ]);
+  });
+
+  it('keeps date defaults byte-identical under useDates (no churn)', () => {
+    const dateContext = makeContextSpec({
+      override: { useDates: true },
+    });
+    const schema = {
+      type: 'string',
+      format: 'date-time',
+      default: '2024-01-01T00:00:00Z',
+    } as OpenApiSchemaObject;
+
+    const result = generateZodValidationSchemaDefinition(
+      schema,
+      dateContext,
+      'testDateDefault',
+      false,
+      false,
+      { required: false },
+    );
+
+    expect(result.consts).toEqual([
+      'export const testDateDefaultDefault = new Date("2024-01-01T00:00:00Z");',
+    ]);
   });
 });

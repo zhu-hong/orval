@@ -44,7 +44,12 @@ export function resolveMockOverride(
   // Regex keys still match against the original (un-normalized) path so users
   // can opt into array-scoped targeting explicitly if ever needed.
   const normalizedPath = stripArrayMarkerSegments(path);
-  const property = Object.entries(properties).find(([key]) => {
+  const entries = Object.entries(properties);
+
+  // Tier 1 — explicit matches: regex (against name or full path) and exact
+  // array-transparent path. Checked first so a specific override (regex or
+  // dotted path like `country.name`) always wins over the bare-name fallback.
+  let property = entries.find(([key]) => {
     if (isRegex(key)) {
       const regex = new RegExp(key.slice(1, -1));
       if (regex.test(item.name) || regex.test(path)) {
@@ -58,6 +63,16 @@ export function resolveMockOverride(
 
     return false;
   });
+
+  // Tier 2 — bare property-name transparency (#3470): a dot-less key applies
+  // wherever the property literally appears, including inside non-array nested
+  // objects, mirroring the array transparency from #2465. Only reached when no
+  // explicit Tier 1 key matched, so it never overrides a more specific key.
+  if (!property) {
+    property = entries.find(
+      ([key]) => !isRegex(key) && !key.includes('.') && key === item.name,
+    );
+  }
 
   if (!property) {
     return;
@@ -191,6 +206,10 @@ interface ResolveMockValueOptions {
   // This is used to prevent recursion when combining schemas
   // When an element is added to the array, it means on this iteration, we've already seen this property
   existingReferencedProperties: string[];
+  // Tracks the current contiguous `allOf` composition to break cyclic
+  // inheritance; threaded through to `combineSchemasMock`.
+  // See `existingReferencedAllOfRefs` docs in getters/combine.ts.
+  existingReferencedAllOfRefs?: string[];
   splitMockImplementations: string[];
   allowOverride?: boolean;
 }
@@ -204,6 +223,7 @@ export function resolveMockValue({
   context,
   imports,
   existingReferencedProperties,
+  existingReferencedAllOfRefs = [],
   splitMockImplementations,
   allowOverride,
 }: ResolveMockValueOptions): MockDefinition & { type?: string } {
@@ -388,6 +408,7 @@ export function resolveMockValue({
       context,
       imports,
       existingReferencedProperties,
+      existingReferencedAllOfRefs,
       splitMockImplementations,
       allowOverride,
     });
@@ -453,6 +474,7 @@ export function resolveMockValue({
     context,
     imports,
     existingReferencedProperties,
+    existingReferencedAllOfRefs,
     splitMockImplementations,
     allowOverride,
   });

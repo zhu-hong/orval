@@ -333,6 +333,22 @@ my-app/src/
     └── petstore.ts
 ```
 
+When [`schemas`](#schemas) is configured, models go to a dedicated directory with per-file output. With [`indexFiles`](#indexfiles) enabled (the default), a barrel `index.ts` re-exports all schemas so service files import from a single path. With `indexFiles: false`, each schema is imported individually (e.g., `../models/pet`). All schemas — domain types, generic wrappers, and bound aliases — live in this single shared directory and are never duplicated per tag:
+
+```
+my-app/src/
+├── models/
+│   ├── index.ts
+│   ├── pet.ts
+│   ├── listResponse.ts
+│   ├── pagination.ts
+│   └── userListResponse.ts
+├── pets/
+│   └── pets.ts              ← imports from ../models
+└── users/
+    └── users.ts             ← imports from ../models
+```
+
 ## baseUrl
 
 **Type:** `String | Object`
@@ -501,13 +517,31 @@ export default defineConfig({
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `indexMockFiles` | `Boolean` | `false` | In `split` and `tags-split` modes, emit one root-level `index.<ext>.ts` file per generator entry that re-exports the mocks (e.g. `index.msw.ts`, `index.faker.ts`). In `tags-split` it re-exports the per-tag mocks; in `split` it re-exports the single mock file. Useful to keep mocks (e.g. MSW) in a dedicated barrel that production/model barrels never import. |
+| `path` | `String` | `undefined` | Shared output directory for all mock files. Per-generator `path` values override this. When set in `single` or `tags` mode, mock code is written to separate files (relative to `path`) instead of being inlined into the implementation file. Ignored on function-form generators, which always fall back to the shared `path`. |
 | `generators` | `Array<MockOptions \| Function>` | `[]` | One entry per output mock file. Each entry can be an object (`MockOptions`) or a custom `ClientMockBuilder` function. |
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      mock: {
+        path: './src/api/mocks',
+        generators: [
+          { type: 'msw', path: './src/api/mocks/msw' },
+          { type: 'faker' },
+        ],
+      },
+    },
+  },
+});
+```
 
 ### MSW generator (`type: 'msw'`)
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `type` | `'msw'` | required | Discriminator for MSW handler generation. |
+| `path` | `String` | `undefined` | Output directory for this generator's mock files. Overrides the shared `mock.path` when set. When provided in `single` or `tags` mode, mock code is written to separate files (relative to `path`) instead of being inlined into the implementation file. |
 | `delay` | `Number \| Function \| false` | `false` | Response delay in ms. |
 | `delayFunctionLazyExecute` | `Boolean` | `false` | Execute delay function at runtime instead of at build time. |
 | `baseUrl` | `String` | `''` | Base URL for the generated MSW handlers. |
@@ -523,6 +557,7 @@ The Faker generator emits the same `get<Op>ResponseMock` factories MSW would emi
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `type` | `'faker'` | required | Discriminator for Faker-only output. |
+| `path` | `String` | `undefined` | Output directory for this generator's mock files. Overrides the shared `mock.path` when set. When provided in `single` or `tags` mode, mock code is written to separate files (relative to `path`) instead of being inlined into the implementation file. |
 | `useExamples` | `Boolean` | `false` | Use OpenAPI examples to seed response values. |
 | `generateEachHttpStatus` | `Boolean` | `false` | Generate response factories for every documented status code. |
 | `locale` | `String` | `'en'` | Faker.js locale. |
@@ -2254,6 +2289,33 @@ export interface LocalizedCategory {
 ```
 
 Each schema's `$dynamicRef: '#category'` resolves to its own type because it declares `$dynamicAnchor: category`.
+
+#### Output layout with `$dynamicRef` generics
+
+Generic templates, bound aliases, and their type arguments are all emitted as individual model files in the same shared location — they are never duplicated per tag. In `tags` and `tags-split` mode, every tag's service file imports from a single shared schema source.
+
+With [`schemas`](#schemas) configured and `tags-split` mode ([`indexFiles`](#indexfiles) shown at its default, `true`):
+
+```
+models/
+├── index.ts                      ← barrel re-exports everything (indexFiles: true)
+├── apiEnvelopeTemplate.ts        ← generic template (ApiEnvelopeTemplate<T>)
+├── paginatedTemplate.ts          ← generic template (PaginatedTemplate<T>)
+├── pet.ts                        ← domain type
+├── owner.ts                      ← domain type
+├── paginatedPetItems.ts          ← bound alias (PaginatedTemplate<Pet>)
+└── paginatedOwnerItems.ts        ← bound alias (PaginatedTemplate<Owner>)
+pets/
+└── pets.ts                       ← import { ... } from '../models'
+owners/
+└── owners.ts                     ← import { ... } from '../models'
+```
+
+With [`indexFiles: false`](#indexfiles), no barrel is generated and service files import each schema individually (e.g., `import type { Pet } from '../models/pet'`).
+
+Without a dedicated `schemas` directory, all schemas go into a single `petstore.schemas.ts` file at the output root.
+
+When using [`input.filters.tags`](/docs/reference/configuration/input#tags) to filter endpoints, schemas referenced exclusively through `$dynamicAnchor` + `$ref` bindings in inline response `$defs` are automatically discovered and included in the output — no manual [`filters.schemas`](/docs/reference/configuration/input#schemas) configuration is needed.
 
 #### Limitations
 

@@ -219,3 +219,63 @@ export function applyStrictMockReturnType(
 
   return result;
 }
+
+const STRICT_MOCK_SCHEMA_TYPE_FROM_OVERRIDES =
+  /MockWithNullableOverrides<([A-Z]\w*),/g;
+const STRICT_MOCK_SCHEMA_TYPE_FROM_OVERRIDE_ALIAS =
+  /MockWithNullableOverrides<[^,]+,\s*[^,]+,\s*([A-Z]\w*Mock)>/g;
+const STRICT_MOCK_SCHEMA_TYPE_FROM_MOCK_ALIAS_RETURN =
+  /\): ([A-Z]\w*Mock)(?:\[\]|;)/g;
+
+/** Inverse of {@link getStrictMockTypeName}: `PetMock` → `Pet`, `WidgetMockMock` → `WidgetMock`. */
+function getSchemaTypeNameFromStrictMockAlias(alias: string): string {
+  return alias.endsWith('Mock') ? alias.slice(0, -4) : alias;
+}
+
+/**
+ * Collect schema type names referenced by strict mock factories in generated
+ * implementation text (nested split factories, array item helpers, etc.).
+ *
+ * This reverse-parses emitted factory syntax and is therefore coupled to the
+ * current `formatMockFactoryDeclaration` / `getMockFactorySignatureParts`
+ * shape. The structurally robust alternative is to record each nested item's
+ * schema name where split factories are generated (array-item / faker getters,
+ * where the `$ref` name is known) and thread it into `strictMockSchemaTypeNames`.
+ */
+export function collectStrictMockSchemaTypeNamesFromImplementation(
+  implementation: string,
+): string[] {
+  const names = new Set<string>();
+
+  for (const match of implementation.matchAll(
+    STRICT_MOCK_SCHEMA_TYPE_FROM_OVERRIDES,
+  )) {
+    names.add(match[1]);
+  }
+
+  for (const pattern of [
+    STRICT_MOCK_SCHEMA_TYPE_FROM_OVERRIDE_ALIAS,
+    STRICT_MOCK_SCHEMA_TYPE_FROM_MOCK_ALIAS_RETURN,
+  ]) {
+    for (const match of implementation.matchAll(pattern)) {
+      names.add(getSchemaTypeNameFromStrictMockAlias(match[1]));
+    }
+  }
+
+  return [...names];
+}
+
+export function mergeStrictMockSchemaTypeNames(
+  ...groups: Array<Iterable<string> | undefined>
+): string[] | undefined {
+  const names = new Set<string>();
+
+  for (const group of groups) {
+    if (!group) continue;
+    for (const name of group) {
+      names.add(name);
+    }
+  }
+
+  return names.size > 0 ? [...names] : undefined;
+}

@@ -7,11 +7,11 @@
 import {
   type ContextSpec,
   EnumGeneration,
-  escape,
   type GeneratorImport,
   getRefInfo,
   isReference,
   isString,
+  jsStringLiteralEscape,
   mergeDeep,
   type MockOptions,
   type OpenApiSchemaObject,
@@ -43,6 +43,10 @@ interface GetMockScalarOptions {
   // This is used to prevent recursion when combining schemas
   // When an element is added to the array, it means on this iteration, we've already seen this property
   existingReferencedProperties: string[];
+  // Tracks the current contiguous `allOf` composition to break cyclic
+  // inheritance; threaded through to `combineSchemasMock`.
+  // See `existingReferencedAllOfRefs` docs in getters/combine.ts.
+  existingReferencedAllOfRefs?: string[];
   splitMockImplementations: string[];
   // This is used to add the overrideResponse to the object
   allowOverride?: boolean;
@@ -57,6 +61,7 @@ export function getMockScalar({
   combine,
   context,
   existingReferencedProperties,
+  existingReferencedAllOfRefs = [],
   splitMockImplementations,
   allowOverride = false,
 }: GetMockScalarOptions): MockDefinition {
@@ -325,6 +330,7 @@ export function getMockScalar({
         context,
         imports,
         existingReferencedProperties,
+        existingReferencedAllOfRefs,
         splitMockImplementations,
       });
 
@@ -520,6 +526,7 @@ export function getMockScalar({
         context,
         imports,
         existingReferencedProperties,
+        existingReferencedAllOfRefs,
         splitMockImplementations,
         allowOverride,
       });
@@ -579,7 +586,7 @@ function getEnum(
     .filter((e) => e !== null) // TODO fix type, e can absolutely be null
     .map((e) =>
       type === 'string' || (type === undefined && isString(e))
-        ? `'${escape(e)}'`
+        ? `'${jsStringLiteralEscape(e)}'`
         : e,
     )
     .join(',');

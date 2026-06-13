@@ -31,14 +31,17 @@ export function getArrayItemMockFileScope(
   tags: string[],
 ): string {
   const mode = context.output.mode;
+  const mockType = context.activeMockOutputType ?? OutputMockType.MSW;
+  let base: string;
   if (mode === OutputMode.TAGS || mode === OutputMode.TAGS_SPLIT) {
     const tag = tags.length > 0 ? tags[0] : DefaultTag;
-    return `tag:${kebab(tag)}`;
+    base = `tag:${kebab(tag)}`;
+  } else if (mode === OutputMode.SPLIT) {
+    base = 'split';
+  } else {
+    base = 'single';
   }
-  if (mode === OutputMode.SPLIT) {
-    return 'split';
-  }
-  return 'single';
+  return `${base}:${mockType}`;
 }
 
 function getFileLevelExtractedFactories(
@@ -56,17 +59,13 @@ function getFileLevelExtractedFactories(
 }
 
 /**
- * True when the active faker generator entry opts into reusable array-item
- * mock factories for object-like array item schemas in operation responses.
+ * True when any mock generator entry opts into reusable array-item mock
+ * factories for object-like array item schemas in operation responses.
  */
 export function shouldExtractArrayItemFactories(context: ContextSpec): boolean {
-  const fakerEntry = context.output.mock.generators.find(
-    (g) =>
-      !isFunction(g) &&
-      g.type === OutputMockType.FAKER &&
-      g.arrayItems === true,
+  return context.output.mock.generators.some(
+    (g) => !isFunction(g) && g.arrayItems === true,
   );
-  return !!fakerEntry;
 }
 
 /**
