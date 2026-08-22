@@ -19,12 +19,21 @@ import {
   jsStringEscape,
   type NormalizedOutputOptions,
   type OpenApiInfoObject,
+  getKey,
+  getPropertyAccessor,
   pascal,
   upath,
   type Verbs,
 } from '@orval/core';
 import { generateClient, generateFetchHeader } from '@orval/fetch';
-import { generateZod } from '@orval/zod';
+import { generateZod, getZodImportSource } from '@orval/zod';
+
+// Always a namespace import: `import { z as zod }` pulls in zod's assembled `z` object,
+// which transitively references every locale table and cannot be tree-shaken. Matches
+// what `@orval/zod` and `@orval/effect` already emit via `namespaceImport`.
+const getZodSchemaImportStatement = (
+  variant: NormalizedOutputOptions['override']['zod']['variant'],
+) => `import * as zod from '${getZodImportSource(variant)}';`;
 
 const getHeader = (
   option: false | ((info: OpenApiInfoObject) => string | string[]),
@@ -44,6 +53,9 @@ const getAnnotations = (verb: Verbs): string => {
     case 'get':
     case 'head': {
       return '{ readOnlyHint: true, destructiveHint: false }';
+    }
+    case 'query': {
+      return '{ readOnlyHint: true, destructiveHint: false, idempotentHint: true }';
     }
     case 'post': {
       return '{ destructiveHint: false }';
@@ -92,7 +104,7 @@ export const getMcpHeader: ClientHeaderBuilder = ({ verbOptions, output }) => {
   const importSchemaNames = new Set(
     Object.values(verbOptions).flatMap((verbOption) => {
       const imports = [];
-      const pascalOperationName = pascal(verbOption.operationName);
+      const pascalOperationName = pascal(verbOption.typeName);
 
       if (verbOption.queryParams) {
         imports.push(`${pascalOperationName}Params`);
@@ -142,7 +154,7 @@ export const generateMcp: ClientBuilder = (verbOptions) => {
     .map((param, index) => {
       const paramName = originalParamNames[index];
       const paramType = param.implementation.split(': ')[1];
-      return `    ${paramName}: ${paramType}`;
+      return `    ${getKey(paramName)}: ${paramType}`;
     })
     .join(',\n');
   if (pathParamsType) {
@@ -172,7 +184,7 @@ ${handlerArgsTypes.join('\n')}
   const fetchParams = [];
   if (verbOptions.params.length > 0) {
     const pathParamsArgs = originalParamNames
-      .map((paramName) => `args.pathParams.${paramName}`)
+      .map((paramName) => `args.pathParams${getPropertyAccessor(paramName)}`)
       .join(', ');
 
     fetchParams.push(pathParamsArgs);
@@ -246,7 +258,7 @@ export const generateServer = (
 
   const toolImplementations = Object.values(verbOptions)
     .map((verbOption) => {
-      const pascalOperationName = pascal(verbOption.operationName);
+      const pascalOperationName = pascal(verbOption.typeName);
       const inputSchemaTypes = [];
       if (verbOption.params.length > 0)
         inputSchemaTypes.push(`pathParams: ${pascalOperationName}Params`);
@@ -306,7 +318,7 @@ tools.${verbOption.operationName} = server.registerTool(
     .flatMap((verbOption) => {
       const imports = [];
 
-      const pascalOperationName = pascal(verbOption.operationName);
+      const pascalOperationName = pascal(verbOption.typeName);
 
       if (verbOption.headers) imports.push(`  ${pascalOperationName}Header`);
       if (verbOption.params.length > 0)
@@ -433,7 +445,7 @@ const generateZodFiles = async (
     mutators: allMutators,
   });
 
-  let content = `${header}import { z as zod } from 'zod';\n${mutatorsImports}\n`;
+  let content = `${header}${getZodSchemaImportStatement(output.override.zod.variant)}\n${mutatorsImports}\n`;
 
   const zodPath = path.join(dirname, `tool-schemas.zod${extension}`);
 
@@ -510,7 +522,7 @@ const generateHttpClientFiles = async (
     ',\n',
   )} } from '${relativeSchemasPath}';`;
 
-  const fetchHeader = generateFetchHeader({
+  const rawFetchHeader = generateFetchHeader({
     title: '',
     isRequestOptions: false,
     isMutator: false,
@@ -522,6 +534,16 @@ const generateHttpClientFiles = async (
     verbOptions,
     clientImplementation,
   });
+
+  const fetchHeader =
+    typeof rawFetchHeader === 'string'
+      ? rawFetchHeader
+      : [
+          rawFetchHeader.implementation,
+          ...(rawFetchHeader.sharedTypes ?? []).map(
+            (t) => `${t.exported ? 'export ' : ''}${t.code}`,
+          ),
+        ].join('\n');
 
   const content = [
     header,

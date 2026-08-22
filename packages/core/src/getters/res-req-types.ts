@@ -16,7 +16,7 @@ import {
   type OpenApiSchemaObject,
   type ResReqTypesValue,
 } from '../types';
-import { camel } from '../utils';
+import { camel, sanitize } from '../utils';
 import { isReference } from '../utils/assertion';
 import { pascal } from '../utils/case';
 import {
@@ -245,7 +245,15 @@ export function getResReqTypes(
       if (res.content) {
         const contents = Object.entries(res.content).map(
           ([contentType, mediaType], index, arr) => {
-            let propName = key ? pascal(name) + pascal(key) : undefined;
+            let propName = key
+              ? sanitize(pascal(name) + pascal(key), {
+                  underscore: '_',
+                  whitespace: '_',
+                  dash: true,
+                  es5keyword: true,
+                  es5IdentifierName: true,
+                })
+              : undefined;
 
             if (propName && arr.length > 1) {
               propName = propName + pascal(getNumberWord(index + 1));
@@ -388,7 +396,15 @@ export function getResReqTypes(
           : undefined;
 
       if (swaggerSchema) {
-        const propName = key ? pascal(name) + pascal(key) : undefined;
+        const propName = key
+          ? sanitize(pascal(name) + pascal(key), {
+              underscore: '_',
+              whitespace: '_',
+              dash: true,
+              es5keyword: true,
+              es5IdentifierName: true,
+            })
+          : undefined;
         const resolvedValue = resolveObject({
           schema: swaggerSchema,
           propName,
@@ -777,20 +793,38 @@ function resolveSchemaPropertiesToFormData({
       property.type === 'object' ||
       (Array.isArray(property.type) && property.type.includes('object'))
     ) {
-      formDataValue =
-        context.output.override.formData.arrayHandling ===
-        FormDataArrayHandling.EXPLODE
-          ? resolveSchemaPropertiesToFormData({
-              schema: property,
-              variableName,
-              propName: nonOptionalValueKey,
-              context,
-              isRequestBodyOptional,
-              keyPrefix: `${keyPrefix}${key}.`,
-              depth: depth + 1,
-              encoding,
-            })
-          : `${variableName}.append(\`${keyPrefix}${key}\`, JSON.stringify(${nonOptionalValueKey}));\n`;
+      // `style: deepObject` + `explode: true` encodes each property as a
+      // bracketed key on the parent, e.g. `metadata[order_id]=6735`. This is
+      // the default for `deepObject` and is how Swagger/OpenAPI serializers
+      // (and the generated runtime) represent nested objects in url-encoded
+      // bodies. See orval issue #3803.
+      const isDeepObject =
+        isUrlEncoded && fieldEncoding?.style === 'deepObject';
+
+      if (isDeepObject) {
+        // style: deepObject — emit each property as `key[subkey]=value`
+        const inner = `${nonOptionalValueKey} && Object.entries(${nonOptionalValueKey}).forEach(([k, v]) => {
+          if (v !== undefined && v !== null) {
+            ${variableName}.append(\`${keyPrefix}${key}[\${k}]\`, typeof v === 'object' ? JSON.stringify(v) : String(v));
+          }
+        });\n`;
+        formDataValue = inner;
+      } else {
+        formDataValue =
+          context.output.override.formData.arrayHandling ===
+          FormDataArrayHandling.EXPLODE
+            ? resolveSchemaPropertiesToFormData({
+                schema: property,
+                variableName,
+                propName: nonOptionalValueKey,
+                context,
+                isRequestBodyOptional,
+                keyPrefix: `${keyPrefix}${key}.`,
+                depth: depth + 1,
+                encoding,
+              })
+            : `${variableName}.append(\`${keyPrefix}${key}\`, JSON.stringify(${nonOptionalValueKey}));\n`;
+      }
     } else if (
       property.type === 'array' ||
       (Array.isArray(property.type) && property.type.includes('array'))

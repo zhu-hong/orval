@@ -2,6 +2,7 @@ import {
   type ContextSpec,
   type GeneratorImport,
   getRefInfo,
+  getRequiredKeys,
   isFunction,
   isReference,
   type MockOptions,
@@ -19,8 +20,9 @@ import {
 } from '../../mock-types';
 import type { MockDefinition, MockSchema, MockSchemaObject } from '../../types';
 import { overrideVarName } from '../getters';
+import { collectAllOfRequiredWithDeclared } from '../getters/all-of-required';
 import { getMockScalar } from '../getters/scalar';
-import { mergeReturnedMockImports } from '../imports';
+import { appendImportsDelta, mergeReturnedMockImports } from '../imports';
 
 function isRegex(key: string) {
   return key.startsWith('/') && key.endsWith('/');
@@ -93,6 +95,25 @@ export function resolveMockOverride(
   };
 }
 
+/** Resolves a `$ref` string to its schema in the loaded spec, if any. */
+export function resolveRefTarget(
+  ref: string | undefined,
+  context: ContextSpec,
+): Partial<OpenApiSchemaObject> | undefined {
+  if (typeof ref !== 'string') return undefined;
+  // getRefInfo throws on refs without a '#' fragment
+  const [, fragment] = ref.split('#');
+  if (!fragment) return undefined;
+  const { refPaths } = getRefInfo(ref, context);
+  if (!Array.isArray(refPaths)) return undefined;
+
+  return prop(
+    context.spec,
+    // @ts-expect-error: [ts2556] refPaths are not guaranteed to be valid keys of the spec
+    ...refPaths,
+  ) as Partial<OpenApiSchemaObject> | undefined;
+}
+
 /** OpenAPI 3.0 `nullable: true` or 3.1 `type` unions that include `null`. */
 export function isNullableSchema(schema: unknown): boolean {
   if (!schema || typeof schema !== 'object') {
@@ -158,6 +179,11 @@ function isComponentsSchemaRef(refPaths: string[] | undefined): boolean {
  * property declared on the referenced schema. In that case we must inline
  * the schema body so the override actually applies; the shared
  * `get<X>Mock` factory has no knowledge of operation-scoped overrides.
+ *
+ * Schema-scoped overrides (`override.mock.schemas`) need no special handling
+ * here: they target a schema's *own* properties, so the schema's `get<X>Mock`
+ * factory — built with the same mock options — already bakes them in, and
+ * delegating to it preserves the override.
  *
  * Reuses `resolveMockOverride` so the same matching rules apply as for
  * regular property mocks — bare name, regex (`/.../`), and exact-path
@@ -239,13 +265,7 @@ export function resolveMockValue({
     const schemaRefPath = typeof schema.$ref === 'string' ? schema.$ref : '';
     const { name, refPaths } = getRefInfo(schemaRefPath, context);
 
-    const schemaRef = Array.isArray(refPaths)
-      ? (prop(
-          context.spec,
-          // @ts-expect-error: [ts2556] refPaths are not guaranteed to be valid keys of the spec
-          ...refPaths,
-        ) as Partial<OpenApiSchemaObject>)
-      : undefined;
+    const schemaRef = resolveRefTarget(schemaRefPath, context);
 
     const newSchema = {
       ...schemaRef,
@@ -254,7 +274,7 @@ export function resolveMockValue({
       isRef: true,
       required: [
         ...((schemaRef?.required as string[] | undefined) ?? []),
-        ...(schemaReference.required ?? []),
+        ...getRequiredKeys(schemaReference, name),
       ],
       ...(schemaReference.nullable === undefined
         ? {}
@@ -342,6 +362,28 @@ export function resolveMockValue({
         ? 'oneOf'
         : 'anyOf';
 
+    // A shared factory only encodes the referenced schema's OWN optionality.
+    // When this $ref sits inside an allOf composition, combineSchemasMock
+    // attaches the composition-wide `required` union (schemaReference.required),
+    // e.g. a constraint-only sibling `{ required: [id] }` makes the base's
+    // optional `id` required. Delegating would keep the factory's
+    // `arrayElement([..., undefined])` branch for that property and emit a
+    // mock the composed type rejects, so inline the schema body instead.
+    // The target's effective shape is computed recursively: its properties
+    // and required may themselves live behind the target's own allOf chain.
+    const targetEffective = schemaRef
+      ? collectAllOfRequiredWithDeclared(
+          [schemaRef as MockSchema],
+          context,
+          new Set(),
+        )
+      : undefined;
+    const delegationDropsRequired = (schemaReference.required ?? []).some(
+      (requiredName) =>
+        targetEffective?.declared.has(requiredName) &&
+        !targetEffective.required.includes(requiredName),
+    );
+
     // When schema-level faker factories are being emitted (`schemas: true`),
     // delegate to `get<X>Mock()` instead of inlining the body. The factory
     // already encodes the same fields, so this both deduplicates the output
@@ -349,6 +391,11 @@ export function resolveMockValue({
     const canDelegate =
       shouldDelegateToSchemaFactories(context) &&
       isComponentsSchemaRef(refPaths) &&
+      // A ref already on the resolution path is recursive: delegating would
+      // emit a factory call that re-enters itself at runtime. Inline it so
+      // the recursion terminators can cut the cycle instead.
+      !existingReferencedProperties.includes(name) &&
+      !delegationDropsRequired &&
       !hasOverrideTouchingSchema(
         schemaRef?.properties as Record<string, unknown> | undefined,
         mockOptions,
@@ -479,7 +526,12 @@ export function resolveMockValue({
       };
       scalar.imports.push(typeImport);
       if (scalar.imports !== imports) {
-        imports.push(typeImport);
+        // Forward the helper's whole import set, not just the type import.
+        // Pushing only `typeImport` mutates `imports`, which suppresses the
+        // `mergeReturnedMockImports` call below and drops the imports the
+        // helper body needs at runtime — e.g. an enum referenced through
+        // `Object.values(...)` (#3656).
+        appendImportsDelta(imports, scalar.imports, 0);
       }
     }
 
@@ -545,14 +597,7 @@ function resolvesToObjectLike(
       return false;
     }
     seen = new Set(seen).add(schema.$ref);
-    const { refPaths } = getRefInfo(schema.$ref, context);
-    resolved = Array.isArray(refPaths)
-      ? (prop(
-          context.spec,
-          // @ts-expect-error: refPaths are not guaranteed to be valid keys of the spec
-          ...refPaths,
-        ) as Partial<OpenApiSchemaObject>)
-      : undefined;
+    resolved = resolveRefTarget(schema.$ref, context);
   } else {
     resolved = schema as Partial<OpenApiSchemaObject>;
   }

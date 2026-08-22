@@ -4,6 +4,7 @@ import {
   generateMutatorConfig,
   generateMutatorRequestOptions,
   generateOptions,
+  generateResponseDateDeserializer,
   type GeneratorDependency,
   type GeneratorMutator,
   type GeneratorOptions,
@@ -13,19 +14,17 @@ import {
   getSuccessResponseType,
   type GetterResponse,
   isObject,
+  isOperationInTagBucket,
   isSyntheticDefaultImportsAllow,
-  kebab,
   makeRouteSafe,
   OutputHttpClient,
   pascal,
   toObjectString,
 } from '@orval/core';
-import {
-  generateFetchHeader,
-  generateRequestFunction as generateFetchRequestFunction,
-} from '@orval/fetch';
+import { generateFetchHeader } from '@orval/fetch';
 
-import { getHasSignal, vueUnRefParams, vueWrapTypeWithMaybeRef } from './utils';
+import type { FrameworkAdapter } from './framework-adapter';
+import { getHasSignal } from './utils';
 
 export const AXIOS_DEPENDENCIES = [
   {
@@ -70,23 +69,6 @@ export const ANGULAR_HTTP_DEPENDENCIES = [
     dependency: 'rxjs/operators',
   },
 ] as const satisfies readonly GeneratorDependency[];
-
-export const generateQueryRequestFunction = (
-  verbOptions: GeneratorVerbOptions,
-  options: GeneratorOptions,
-  isVue: boolean,
-  isAngularClient = false,
-) => {
-  if (
-    isAngularClient ||
-    options.context.output.httpClient === OutputHttpClient.ANGULAR
-  ) {
-    return generateAngularHttpRequestFunction(verbOptions, options);
-  }
-  return options.context.output.httpClient === OutputHttpClient.AXIOS
-    ? generateAxiosRequestFunction(verbOptions, options, isVue)
-    : generateFetchRequestFunction(verbOptions, options);
-};
 
 export const generateAngularHttpRequestFunction = (
   {
@@ -143,7 +125,6 @@ export const generateAngularHttpRequestFunction = (
       hasSignal,
       hasSignalParam,
       isExactOptionalPropertyTypes,
-      isVue: false,
       isAngular: context.output.httpClient === OutputHttpClient.ANGULAR,
     });
 
@@ -309,18 +290,16 @@ export const generateAxiosRequestFunction = (
     paramsSerializer,
   }: GeneratorVerbOptions,
   { route: _route, context }: GeneratorOptions,
-  isVue: boolean,
+  adapter: FrameworkAdapter,
 ) => {
-  let props = _props;
+  const props = adapter.transformProps(_props);
   let route = _route;
-
-  if (isVue) {
-    props = vueWrapTypeWithMaybeRef(_props);
-  }
 
   if (context.output.urlEncodeParameters) {
     route = makeRouteSafe(route);
   }
+
+  const unrefStatements = adapter.getRequestUnrefStatements(props);
 
   const isRequestOptions = override.requestOptions !== false;
   const isFormData = !override.formData.disabled;
@@ -342,6 +321,21 @@ export const generateAxiosRequestFunction = (
     isFormUrlEncoded,
   });
 
+  const dateDeserializer = override.useDatesTransform
+    ? generateResponseDateDeserializer({ operationName, response, context })
+    : undefined;
+  // Emitted AFTER the operation block: the orval writer prepends the
+  // operation's doc comment to this implementation string, so the operation
+  // const must come first to keep the JSDoc attached to it. The deserializer
+  // is only referenced inside the operation body (executed at call time), so
+  // the later declaration has no TDZ issue.
+  const dateDeserializerImplementation = dateDeserializer
+    ? `\n${dateDeserializer.implementation}`
+    : '';
+  const thenDateDeserializer = dateDeserializer
+    ? `.then(${dateDeserializer.name})`
+    : '';
+
   if (mutator) {
     const mutatorConfig = generateMutatorConfig({
       route,
@@ -355,7 +349,6 @@ export const generateAxiosRequestFunction = (
       hasSignal,
       hasSignalParam,
       isExactOptionalPropertyTypes,
-      isVue,
     });
 
     const bodyDefinition = body.definition.replace('[]', String.raw`\[\]`);
@@ -375,45 +368,29 @@ export const generateAxiosRequestFunction = (
       : '';
 
     if (mutator.isHook) {
-      const ret = `${
+      const hookSecondArg =
+        isRequestOptions && mutator.hasSecondArg
+          ? `options${context.output.optionsParamRequired ? '' : '?'}: SecondParameter<ReturnType<typeof ${mutator.name}>>,`
+          : '';
+
+      const callback = `(\n    ${propsImplementation}\n ${hookSecondArg}${getSignalDefinition({ hasSignal, hasSignalParam })}) => {
+        ${unrefStatements}
+        ${bodyForm}
+        return ${operationName}(
+          ${mutatorConfig},
+          ${requestOptions})${thenDateDeserializer};
+        }`;
+
+      return `${
         override.query.shouldExportMutatorHooks ? 'export ' : ''
       }const use${pascal(operationName)}Hook = () => {
         const ${operationName} = ${mutator.name}<${
           response.definition.success || 'unknown'
         }>();
 
-        return useCallback((\n    ${propsImplementation}\n ${
-          isRequestOptions && mutator.hasSecondArg
-            ? `options${context.output.optionsParamRequired ? '' : '?'}: SecondParameter<ReturnType<typeof ${mutator.name}>>,`
-            : ''
-        }${getSignalDefinition({ hasSignal, hasSignalParam })}) => {${bodyForm}
-        return ${operationName}(
-          ${mutatorConfig},
-          ${requestOptions});
-        }, [${operationName}])
+        return ${adapter.wrapHookMutatorCallback(callback, operationName)}
       }
-    `;
-
-      const vueRet = `${
-        override.query.shouldExportMutatorHooks ? 'export ' : ''
-      }const use${pascal(operationName)}Hook = () => {
-        const ${operationName} = ${mutator.name}<${
-          response.definition.success || 'unknown'
-        }>();
-
-        return (\n    ${propsImplementation}\n ${
-          isRequestOptions && mutator.hasSecondArg
-            ? `options${context.output.optionsParamRequired ? '' : '?'}: SecondParameter<ReturnType<typeof ${mutator.name}>>,`
-            : ''
-        }${getSignalDefinition({ hasSignal, hasSignalParam })}) => {${bodyForm}
-        return ${operationName}(
-          ${mutatorConfig},
-          ${requestOptions});
-        }
-      }
-    `;
-
-      return isVue ? vueRet : ret;
+    ${dateDeserializerImplementation}`;
     }
 
     return `${override.query.shouldExportHttpClient ? 'export ' : ''}const ${operationName} = (\n    ${propsImplementation}\n ${
@@ -421,13 +398,13 @@ export const generateAxiosRequestFunction = (
         ? `options${context.output.optionsParamRequired ? '' : '?'}: SecondParameter<typeof ${mutator.name}>,`
         : ''
     }${getSignalDefinition({ hasSignal, hasSignalParam })}) => {
-      ${isVue ? vueUnRefParams(props) : ''}
+      ${unrefStatements}
       ${bodyForm}
       return ${mutator.name}<${response.definition.success || 'unknown'}>(
       ${mutatorConfig},
-      ${requestOptions});
+      ${requestOptions})${thenDateDeserializer};
     }
-  `;
+  ${dateDeserializerImplementation}`;
   }
 
   const isSyntheticDefaultImportsAllowed = isSyntheticDefaultImportsAllow(
@@ -449,7 +426,6 @@ export const generateAxiosRequestFunction = (
     isExactOptionalPropertyTypes,
     hasSignal,
     hasSignalParam,
-    isVue: isVue,
   });
 
   const optionsArgs = generateRequestOptionsArguments({
@@ -463,13 +439,17 @@ export const generateAxiosRequestFunction = (
   const httpRequestFunctionImplementation = `${override.query.shouldExportHttpClient ? 'export ' : ''}const ${operationName} = (\n    ${queryProps} ${optionsArgs} ): Promise<AxiosResponse<${
     response.definition.success || 'unknown'
   }>> => {
-    ${isVue ? vueUnRefParams(props) : ''}
+    ${unrefStatements}
     ${bodyForm}
     return axios${
       isSyntheticDefaultImportsAllowed ? '' : '.default'
-    }.${verb}(${options});
+    }.${verb}(${options})${
+      dateDeserializer
+        ? `.then((res) => { res.data = ${dateDeserializer.name}(res.data); return res; })`
+        : ''
+    };
   }
-`;
+${dateDeserializerImplementation}`;
 
   return httpRequestFunctionImplementation;
 };
@@ -751,42 +731,15 @@ export const getMutationRequestArgs = (
     : '';
 };
 
-export const getHttpFunctionQueryProps = (
-  isVue: boolean,
-  httpClient: OutputHttpClient,
-  queryProperties: string,
-  isAngular = false,
-  hasMutator = false,
-) => {
-  const result =
-    isVue && httpClient === OutputHttpClient.FETCH && queryProperties
-      ? queryProperties
-          .split(',')
-          .map((prop) => `unref(${prop})`)
-          .join(',')
-      : queryProperties;
-
-  // For Angular, prefix with http since request functions take HttpClient as first param
-  // Skip when custom mutator is used - mutator handles HTTP client internally
-  // http is required as first param so no assertion needed
-  if ((isAngular || httpClient === OutputHttpClient.ANGULAR) && !hasMutator) {
-    return result ? `http, ${result}` : 'http';
-  }
-
-  return result;
-};
-
 export const getQueryHeader: ClientHeaderBuilder = (params) => {
   if (params.output.httpClient === OutputHttpClient.FETCH) {
     return generateFetchHeader(params);
   }
 
   if (params.output.httpClient === OutputHttpClient.ANGULAR) {
-    const relevantVerbs = params.tag
-      ? Object.values(params.verbOptions).filter(
-          (verbOption) => kebab(verbOption.tags[0] ?? 'default') === params.tag,
-        )
-      : Object.values(params.verbOptions);
+    const relevantVerbs = Object.values(params.verbOptions).filter(
+      (verbOption) => isOperationInTagBucket(verbOption, params.tag),
+    );
     const hasQueryParams = relevantVerbs.some((v) => v.queryParams);
 
     return hasQueryParams ? getAngularFilteredParamsHelperBody() : '';

@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vite-plus/test';
 
 import type { GeneratorMutator, GeneratorVerbOptions } from '../types';
 import {
   addDependency,
+  generateDependencyImports,
   generateMutatorImports,
   generateVerbImports,
 } from './imports';
@@ -142,6 +143,80 @@ export type MyError = Error;
       });
 
       expect(dep).toBe("import {\n  schema$Value\n} from '../models';\n");
+    });
+
+    it('does not add an import when the name only appears inside another identifier', () => {
+      const dep = addDependency({
+        implementation: 'const value = MySchemaExtra.parse(data);',
+        dependency: '../models',
+        projectName: undefined,
+        hasSchemaDir: true,
+        isAllowSyntheticDefaultImports: true,
+        exports: [{ name: 'MySchema', values: true }],
+      });
+
+      expect(dep).toBeUndefined();
+    });
+
+    // Regression for #3695: an aliased import is referenced by its alias only
+    // (rendered `name as alias`), so a bare occurrence of the pre-alias name in
+    // generated code (e.g. a path param `z` colliding with `z as zod`) must not
+    // pull the dependency in.
+    it('does not add an aliased import when only its pre-alias name appears', () => {
+      const dep = addDependency({
+        implementation: 'export const getUrl = (z: string) => `/${z}`;',
+        dependency: 'zod',
+        projectName: undefined,
+        hasSchemaDir: true,
+        isAllowSyntheticDefaultImports: true,
+        exports: [{ name: 'z', alias: 'zod', values: true }],
+      });
+
+      expect(dep).toBeUndefined();
+    });
+
+    it('adds an aliased import when its alias appears', () => {
+      const dep = addDependency({
+        implementation: 'const schema = zod.string();',
+        dependency: 'zod',
+        projectName: undefined,
+        hasSchemaDir: true,
+        isAllowSyntheticDefaultImports: true,
+        exports: [{ name: 'z', alias: 'zod', values: true }],
+      });
+
+      expect(dep).toBe("import {\n  z as zod\n} from 'zod';\n");
+    });
+  });
+
+  describe('generateDependencyImports', () => {
+    it('indexes referenced identifiers once for all dependency groups', () => {
+      const match = vi.spyOn(String.prototype, 'match');
+
+      try {
+        const result = generateDependencyImports(
+          'const foo = Foo.parse(data); const bar = Bar.parse(data);',
+          [
+            {
+              dependency: 'foo',
+              exports: [{ name: 'Foo', values: true }],
+            },
+            {
+              dependency: 'bar',
+              exports: [{ name: 'Bar', values: true }],
+            },
+          ],
+          undefined,
+          true,
+          true,
+        );
+
+        expect(result).toContain("{\n  Foo\n} from 'foo';");
+        expect(result).toContain("{\n  Bar\n} from 'bar';");
+        expect(match).toHaveBeenCalledTimes(1);
+      } finally {
+        match.mockRestore();
+      }
     });
   });
 

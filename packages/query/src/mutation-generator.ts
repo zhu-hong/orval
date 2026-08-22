@@ -7,6 +7,7 @@ import {
   type GeneratorVerbOptions,
   GetterPropType,
   getFullRoute,
+  getRoute,
   getRouteAsArray,
   type InvalidateTarget,
   type InvalidateTargetParam,
@@ -65,6 +66,42 @@ const HTTP_METHODS = [
   'head',
   'trace',
 ];
+
+const MUTATION_OPERATION_LOCAL_NAMES = new Set([
+  'backupQueryClient',
+  'context',
+  'customOptions',
+  'data',
+  'fetchOptions',
+  'http',
+  'mutationFn',
+  'mutationKey',
+  'mutationOptions',
+  'onMutateResult',
+  'onSuccess',
+  'options',
+  'props',
+  'queryClient',
+  'variables',
+]);
+
+const getMutationOperationReferenceName = (
+  operationName: string,
+  localNames: ReadonlySet<string>,
+): string => {
+  if (!localNames.has(operationName)) {
+    return operationName;
+  }
+
+  let candidate = camel(`${operationName}-request-fn`);
+  let index = 2;
+  while (localNames.has(candidate)) {
+    candidate = camel(`${operationName}-request-fn-${index}`);
+    index += 1;
+  }
+
+  return candidate;
+};
 
 interface OperationRouteInfo {
   route: string;
@@ -314,7 +351,7 @@ const createGenerateInvalidateCall = (
         // prefix must carry the same `baseUrl` – otherwise the predicate /
         // partial key never matches a baseUrl-prefixed cache key. `prefix`
         // has no path params, so `getFullRoute` just concatenates the base.
-        const prefixWithBase = getFullRoute(prefix, servers, baseUrl);
+        const prefixWithBase = getFullRoute(getRoute(prefix), servers, baseUrl);
         // Mirror the verb prefix that `getQueryKeyVerbPrefix` injects into
         // non-GET Query keys; without this, the predicate / partial key
         // would never match a verb-prefixed cache key and the broad
@@ -383,6 +420,7 @@ export const generateMutationHook = async ({
 }> => {
   const {
     operationName,
+    typeName,
     body,
     props,
     mutator,
@@ -419,20 +457,32 @@ export const generateMutationHook = async ({
     .map(({ name, type }) => (type === GetterPropType.BODY ? 'data' : name))
     .join(',');
 
+  const operationLocalNames = new Set(MUTATION_OPERATION_LOCAL_NAMES);
+  for (const { name, type } of props) {
+    operationLocalNames.add(type === GetterPropType.BODY ? 'data' : name);
+  }
+
   const errorType = getQueryErrorType(
-    operationName,
+    typeName,
     response,
     httpClient,
     mutator,
     override.fetch.forceSuccessResponse,
   );
 
+  const operationReferenceName = getMutationOperationReferenceName(
+    operationName,
+    operationLocalNames,
+  );
   const dataType = mutator?.isHook
     ? `ReturnType<typeof use${pascal(operationName)}Hook>`
-    : `typeof ${operationName}`;
+    : `typeof ${operationReferenceName}`;
+  const operationTypeReferenceName = mutator?.isHook
+    ? operationName
+    : operationReferenceName;
 
   const mutationOptionFnReturnType = getQueryOptionsDefinition({
-    operationName,
+    operationName: operationTypeReferenceName,
     mutator,
     definitions,
     prefix: adapter.getQueryOptionsDefinitionPrefix(),
@@ -461,7 +511,7 @@ export const generateMutationHook = async ({
   const useRuntimeFetcher = override.fetch.useRuntimeFetcher;
 
   const mutationArguments = adapter.generateQueryArguments({
-    operationName,
+    operationName: operationTypeReferenceName,
     definitions,
     mutator,
     isRequestOptions,
@@ -472,7 +522,7 @@ export const generateMutationHook = async ({
 
   // Separate arguments for getMutationOptions function (includes http: HttpClient param for Angular)
   const mutationArgumentsForOptions = adapter.generateQueryArguments({
-    operationName,
+    operationName: operationTypeReferenceName,
     definitions,
     mutator,
     isRequestOptions,
@@ -510,7 +560,7 @@ ${hooksOptionImplementation}
 
       ${
         mutator?.isHook
-          ? `const ${operationName} =  use${pascal(operationName)}Hook()`
+          ? `const ${operationReferenceName} =  use${pascal(operationName)}Hook()`
           : ''
       }
 
@@ -520,7 +570,7 @@ ${hooksOptionImplementation}
       }> = (${properties ? 'props' : ''}) => {
           ${properties ? `const {${properties}} = props ?? {};` : ''}
 
-          return  ${operationName}(${adapter.getMutationHttpPrefix(mutator)}${properties}${
+          return  ${operationReferenceName}(${adapter.getMutationHttpPrefix(mutator)}${properties}${
             properties ? ',' : ''
           }${getMutationRequestArgs(isRequestOptions, httpClient, mutator, useRuntimeFetcher)})
         }
@@ -603,22 +653,28 @@ ${
     optionalQueryClientArgument,
   });
 
+  const operationReferenceDeclaration =
+    !mutator?.isHook && operationReferenceName !== operationName
+      ? `const ${operationReferenceName} = ${operationName};`
+      : '';
+
   const implementation = `
+${operationReferenceDeclaration}
 ${mutationOptionsFn}
 
     export type ${pascal(
-      operationName,
+      typeName,
     )}MutationResult = NonNullable<Awaited<ReturnType<${dataType}>>>
     ${
       body.definition
-        ? `export type ${pascal(operationName)}MutationBody = ${
+        ? `export type ${pascal(typeName)}MutationBody = ${
             mutator?.bodyTypeName
               ? `${mutator.bodyTypeName}<${body.definition}>`
               : body.definition
           }${body.isOptional ? ' | undefined' : ''}`
         : ''
     }
-    export type ${pascal(operationName)}MutationError = ${errorType}
+    export type ${pascal(typeName)}MutationError = ${errorType}
 
     ${doc}export const ${camel(
       `${operationPrefix}-${operationName}`,

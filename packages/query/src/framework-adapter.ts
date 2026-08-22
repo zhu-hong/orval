@@ -148,8 +148,14 @@ export interface FrameworkAdapter {
   /** Vue/Angular: skip DataTag annotation on queryKey. Others: include it. */
   shouldAnnotateQueryKey(): boolean;
 
-  /** Vue: unref named path params inside queryOptionsFn. Others: empty string. */
-  getUnrefStatements(props: GetterProps): string;
+  /** Vue: unref all params at the top of the HTTP request fn. Others: empty string. */
+  getRequestUnrefStatements(props: GetterProps): string;
+
+  /**
+   * Vue: unref named path params inside queryOptionsFn (other params stay
+   * reactive for the query key). Others: empty string.
+   */
+  getQueryOptionsUnrefStatements(props: GetterProps): string;
 
   // --- Query Hook Generation ---
   /** Angular: inject(HttpClient). Svelte v6: empty. Others: queryOptions = fn(...). */
@@ -177,6 +183,41 @@ export interface FrameworkAdapter {
 
   /** Whether to cast the query options return type. Solid Query needs this to be false for proper initialData discrimination. */
   shouldCastQueryOptions?(): boolean;
+
+  /**
+   * Declares which `options.query` keys the caller must supply (`require`) and
+   * which are dropped from the accepted type (`exclude`). A `require` key also
+   * makes the `options` parameter itself mandatory.
+   *
+   * Return undefined to keep the default parameter. Returning only `exclude`
+   * reshapes the type without requiring anything.
+   *
+   * Only honoured together with `getOptionsReturnTypeName`, which names the
+   * interface these keys are read off.
+   *
+   * See packages/query/DEVELOPMENT.md, "Solid Query option types".
+   */
+  getUserQueryOptionsConstraint?(
+    type: (typeof QueryType)[keyof typeof QueryType],
+  ): { require?: readonly string[]; exclude?: readonly string[] } | undefined;
+
+  /**
+   * Names the type that `initialData` is picked off for the overload signatures.
+   * Defaults to `DefinedInitialDataOptions` or `UndefinedInitialDataOptions`,
+   * which are plain object types in most target libraries.
+   *
+   * Solid Query overrides this. Its aliases are `Accessor` function types, so
+   * picking a property off one yields `{}`, and its infinite queries need
+   * `DefinedInitialDataInfiniteOptions` or
+   * `UndefinedInitialDataInfiniteOptions`, whose `initialData` is an
+   * `InfiniteData` rather than a single page.
+   */
+  getInitialDataOptionsType?(context: {
+    initialData: 'defined' | 'undefined';
+    isInfinite: boolean;
+    funcReturnType: string;
+    infiniteTypeArgs: string;
+  }): string;
 
   /** queryClient?: QueryClient vs queryClient?: () => QueryClient vs '' */
   getOptionalQueryClientArgument(hasInvalidation?: boolean): string;
@@ -237,6 +278,8 @@ export interface FrameworkAdapter {
     forQueryOptions?: boolean;
     hasInvalidation?: boolean;
     useRuntimeFetcher?: boolean;
+    /** `override.query.options` — the keys already written into the literal. */
+    options?: object | boolean;
   }): string;
 
   // --- Mutation Hook Generation ---
@@ -270,6 +313,12 @@ export interface FrameworkAdapter {
     verbOptions: GeneratorVerbOptions,
     options: GeneratorOptions,
   ): string;
+
+  /**
+   * Wrap a hook-mutator request callback for the HTTP request function.
+   * React/Solid/Svelte: memoize with `useCallback`. Vue: return the callback unchanged.
+   */
+  wrapHookMutatorCallback(callback: string, operationName: string): string;
 
   /** Map a prop to its representation in query properties (e.g., destructured for named path params or name) */
   getQueryPropertyForProp(
@@ -314,7 +363,10 @@ type DefaultableFields =
   | 'isAngularHttp'
   | 'getHttpFirstParam'
   | 'getMutationHttpPrefix'
-  | 'getUnrefStatements'
+  | 'getRequestUnrefStatements'
+  | 'getQueryOptionsUnrefStatements'
+  | 'wrapHookMutatorCallback'
+  | 'generateRequestFunction'
   | 'getQueryInvocationSuffix'
   | 'transformProps'
   | 'shouldDestructureNamedPathParams'

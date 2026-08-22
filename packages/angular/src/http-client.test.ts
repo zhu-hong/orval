@@ -6,7 +6,7 @@ import type {
   ResReqTypesValue,
 } from '@orval/core';
 import { GetterPropType } from '@orval/core';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vite-plus/test';
 
 import { ANGULAR_HTTP_CLIENT_DEPENDENCIES } from './constants';
 import {
@@ -28,12 +28,14 @@ interface AngularOverride {
   provideIn: 'root' | 'any' | boolean;
   client: 'httpClient' | 'httpResource' | 'both';
   runtimeValidation: boolean;
+  queryObjectSerialization: 'spec' | 'legacy';
 }
 
 const angularOverride = {
   provideIn: 'root',
   client: 'httpClient',
   runtimeValidation: false,
+  queryObjectSerialization: 'spec',
 } satisfies AngularOverride;
 
 const createOutput = (
@@ -74,6 +76,8 @@ const createOutput = (
       angular: angularOverride,
       swr: {},
       zod: {
+        version: 'auto',
+        variant: 'classic',
         strict: {
           param: false,
           query: false,
@@ -98,6 +102,8 @@ const createOutput = (
         generateEachHttpStatus: false,
         generateReusableSchemas: false,
         generateMeta: false,
+        generateDiscriminatedUnion: false,
+        exactOptional: false,
         useBrandedTypes: false,
         dateTimeOptions: {},
         timeOptions: {},
@@ -119,10 +125,12 @@ const createOutput = (
         },
         generateEachHttpStatus: false,
         useBrandedTypes: false,
+        exactOptional: false,
       },
       fetch: {
         includeHttpResponseReturnType: true,
         forceSuccessResponse: false,
+        serializeResponseHeaders: false,
         runtimeValidation: false,
         useRuntimeFetcher: false,
       },
@@ -147,6 +155,8 @@ const createOutput = (
     optionsParamRequired: false,
     unionAddMissingProperties: false,
     propertySortOrder: 'Specification',
+    tagsSplitDeduplication: false,
+    commonTypesFileName: 'common-types',
     factoryMethods: {
       functionNamePrefix: 'create',
       mode: 'single',
@@ -197,6 +207,7 @@ const createVerbOption = (
   ({
     operationId: 'getPetById',
     operationName: 'getPetById',
+    typeName: 'getPetById',
     verb: 'get',
     route: '/pets/${petId}',
     pathRoute: '/pets/{petId}',
@@ -213,6 +224,7 @@ const createVerbOption = (
       contentType: '',
       formData: '',
       formUrlEncoded: '',
+      isBlob: false,
       isOptional: true,
     },
     headers: undefined,
@@ -336,15 +348,17 @@ describe('angular HttpClient generator', () => {
 
   describe('generateAngularHeader', () => {
     it('generates @Injectable class with provideIn root', () => {
-      const header = generateAngularHeader({
-        title: 'PetService',
-        isRequestOptions: true,
-        isMutator: false,
-        isGlobalMutator: false,
-        provideIn: 'root',
-        hasAwaitedType: false,
-        verbOptions: {},
-      } as never);
+      const header = generateAngularHeader(
+        createHeaderParams({
+          title: 'PetService',
+          isRequestOptions: true,
+          isMutator: false,
+          isGlobalMutator: false,
+          provideIn: 'root',
+          hasAwaitedType: false,
+          verbOptions: {},
+        }),
+      );
 
       expect(header).toContain("@Injectable({ providedIn: 'root' })");
       expect(header).toContain('export class PetService');
@@ -352,44 +366,50 @@ describe('angular HttpClient generator', () => {
     });
 
     it('generates @Injectable without provideIn when set to false', () => {
-      const header = generateAngularHeader({
-        title: 'PetService',
-        isRequestOptions: true,
-        isMutator: false,
-        isGlobalMutator: false,
-        provideIn: false,
-        hasAwaitedType: false,
-        verbOptions: {},
-      } as never);
+      const header = generateAngularHeader(
+        createHeaderParams({
+          title: 'PetService',
+          isRequestOptions: true,
+          isMutator: false,
+          isGlobalMutator: false,
+          provideIn: false,
+          hasAwaitedType: false,
+          verbOptions: {},
+        }),
+      );
 
       expect(header).toContain('@Injectable()');
       expect(header).not.toContain('providedIn');
     });
 
     it('generates @Injectable with custom provideIn value', () => {
-      const header = generateAngularHeader({
-        title: 'PetService',
-        isRequestOptions: true,
-        isMutator: false,
-        isGlobalMutator: false,
-        provideIn: 'any',
-        hasAwaitedType: false,
-        verbOptions: {},
-      } as never);
+      const header = generateAngularHeader(
+        createHeaderParams({
+          title: 'PetService',
+          isRequestOptions: true,
+          isMutator: false,
+          isGlobalMutator: false,
+          provideIn: 'any',
+          hasAwaitedType: false,
+          verbOptions: {},
+        }),
+      );
 
       expect(header).toContain("@Injectable({ providedIn: 'any' })");
     });
 
     it('includes HttpClientOptions interface when isRequestOptions is true', () => {
-      const header = generateAngularHeader({
-        title: 'PetService',
-        isRequestOptions: true,
-        isMutator: false,
-        isGlobalMutator: false,
-        provideIn: 'root',
-        hasAwaitedType: false,
-        verbOptions: {},
-      } as never);
+      const header = generateAngularHeader(
+        createHeaderParams({
+          title: 'PetService',
+          isRequestOptions: true,
+          isMutator: false,
+          isGlobalMutator: false,
+          provideIn: 'root',
+          hasAwaitedType: false,
+          verbOptions: {},
+        }),
+      );
 
       expect(header).toContain('interface HttpClientOptions');
       expect(header).toContain('readonly headers?: HttpHeaders');
@@ -398,57 +418,65 @@ describe('angular HttpClient generator', () => {
     });
 
     it('omits HttpClientOptions when isRequestOptions is false', () => {
-      const header = generateAngularHeader({
-        title: 'PetService',
-        isRequestOptions: false,
-        isMutator: false,
-        isGlobalMutator: false,
-        provideIn: 'root',
-        hasAwaitedType: false,
-        verbOptions: {},
-      } as never);
+      const header = generateAngularHeader(
+        createHeaderParams({
+          title: 'PetService',
+          isRequestOptions: false,
+          isMutator: false,
+          isGlobalMutator: false,
+          provideIn: 'root',
+          hasAwaitedType: false,
+          verbOptions: {},
+        }),
+      );
 
       expect(header).not.toContain('interface HttpClientOptions');
     });
 
     it('omits HttpClientOptions when isGlobalMutator is true', () => {
-      const header = generateAngularHeader({
-        title: 'PetService',
-        isRequestOptions: true,
-        isMutator: false,
-        isGlobalMutator: true,
-        provideIn: 'root',
-        hasAwaitedType: false,
-        verbOptions: {},
-      } as never);
+      const header = generateAngularHeader(
+        createHeaderParams({
+          title: 'PetService',
+          isRequestOptions: true,
+          isMutator: false,
+          isGlobalMutator: true,
+          provideIn: 'root',
+          hasAwaitedType: false,
+          verbOptions: {},
+        }),
+      );
 
       expect(header).not.toContain('interface HttpClientOptions');
     });
 
     it('includes ThirdParameter when isMutator is true', () => {
-      const header = generateAngularHeader({
-        title: 'PetService',
-        isRequestOptions: true,
-        isMutator: true,
-        isGlobalMutator: false,
-        provideIn: 'root',
-        hasAwaitedType: false,
-        verbOptions: {},
-      } as never);
+      const header = generateAngularHeader(
+        createHeaderParams({
+          title: 'PetService',
+          isRequestOptions: true,
+          isMutator: true,
+          isGlobalMutator: false,
+          provideIn: 'root',
+          hasAwaitedType: false,
+          verbOptions: {},
+        }),
+      );
 
       expect(header).toContain('type ThirdParameter');
     });
 
     it('omits ThirdParameter when isMutator is false', () => {
-      const header = generateAngularHeader({
-        title: 'PetService',
-        isRequestOptions: true,
-        isMutator: false,
-        isGlobalMutator: false,
-        provideIn: 'root',
-        hasAwaitedType: false,
-        verbOptions: {},
-      } as never);
+      const header = generateAngularHeader(
+        createHeaderParams({
+          title: 'PetService',
+          isRequestOptions: true,
+          isMutator: false,
+          isGlobalMutator: false,
+          provideIn: 'root',
+          hasAwaitedType: false,
+          verbOptions: {},
+        }),
+      );
 
       expect(header).not.toContain('type ThirdParameter');
     });
@@ -549,6 +577,7 @@ describe('angular HttpClient generator', () => {
     it('still emits the shared helper when at least one operation lacks paramsFilter', () => {
       const verbWithFilter = createVerbOption({
         operationName: 'a',
+        typeName: 'a',
         queryParams: createQueryParams({
           schema: { name: 'AParams', model: '', imports: [] },
         }),
@@ -565,6 +594,7 @@ describe('angular HttpClient generator', () => {
       });
       const verbWithoutFilter = createVerbOption({
         operationName: 'b',
+        typeName: 'b',
         queryParams: createQueryParams({
           schema: { name: 'BParams', model: '', imports: [] },
         }),
@@ -779,6 +809,131 @@ describe('angular HttpClient generator', () => {
     });
   });
 
+  // ── object query param serialization (issue #3705) ────────────────────
+
+  describe('query parameter object serialization (#3705)', () => {
+    const objectQueryParams: GeneratorVerbOptions['queryParams'] = {
+      schema: { name: 'SearchCatalogParams', model: '', imports: [] },
+      deps: [],
+      isOptional: true,
+      originalSchema: {} as never,
+      requiredNullableKeys: [],
+      objectQueryParams: [{ key: 'arg0', strategy: 'flatten' }],
+    };
+
+    it('emits the object-serialization strategies by default (no serializer/filter)', () => {
+      const verbOption = createVerbOption({ queryParams: objectQueryParams });
+      const options = createGeneratorOptions();
+
+      const impl = generateHttpClientImplementation(verbOption, options);
+
+      expect(impl).toContain('{"arg0":"flatten"} as const');
+    });
+
+    it('suppresses the strategies when a paramsSerializer is configured (raw passthrough wins)', () => {
+      const verbOption = createVerbOption({
+        queryParams: {
+          ...objectQueryParams,
+          nonPrimitiveKeys: ['arg0'],
+        },
+        paramsSerializer: {
+          name: 'mySerializer',
+          path: './my-serializer',
+          default: false,
+          hasErrorType: false,
+          errorTypeName: '',
+          hasSecondArg: false,
+          hasThirdArg: false,
+          isHook: false,
+        },
+      });
+      const options = createGeneratorOptions();
+
+      const impl = generateHttpClientImplementation(verbOption, options);
+
+      expect(impl).not.toContain('as const');
+      expect(impl).toContain('new Set<string>(["arg0"])');
+    });
+
+    it('suppresses the strategies when a paramsFilter is configured', () => {
+      const verbOption = createVerbOption({
+        queryParams: objectQueryParams,
+        paramsFilter: {
+          name: 'myFilter',
+          path: './my-filter',
+          default: false,
+          hasErrorType: false,
+          errorTypeName: '',
+          hasSecondArg: false,
+          hasThirdArg: false,
+          isHook: false,
+        },
+      });
+      const options = createGeneratorOptions();
+
+      const impl = generateHttpClientImplementation(verbOption, options);
+
+      expect(impl).not.toContain('as const');
+      expect(impl).not.toContain('filterParams(');
+    });
+
+    it('restores the pre-#3705 (dropping) behavior with queryObjectSerialization: legacy', () => {
+      const legacyVerbOption = createVerbOption({
+        queryParams: objectQueryParams,
+        override: {
+          ...createVerbOption().override,
+          angular: { ...angularOverride, queryObjectSerialization: 'legacy' },
+        } as GeneratorVerbOptions['override'],
+      });
+      const options = createGeneratorOptions();
+
+      const legacyImpl = generateHttpClientImplementation(
+        legacyVerbOption,
+        options,
+      );
+
+      const specVerbOption = createVerbOption({
+        queryParams: {
+          schema: { name: 'GetPetByIdParams', model: '', imports: [] },
+          deps: [],
+          isOptional: true,
+          originalSchema: {} as never,
+          requiredNullableKeys: [],
+        },
+      });
+      const specImpl = generateHttpClientImplementation(
+        specVerbOption,
+        options,
+      );
+
+      expect(legacyImpl).not.toContain('as const');
+      expect(legacyImpl).not.toContain('objectParamStrategies');
+      // Byte-identical (modulo the operation name/type) to a plain query
+      // param operation with no object-serialization metadata at all.
+      expect(
+        legacyImpl.replaceAll('SearchCatalogParams', 'GetPetByIdParams'),
+      ).toBe(specImpl);
+    });
+
+    it('includes the object-serialization overload in the header only when an operation needs it', () => {
+      const headerWithObjectParams = generateAngularHeader(
+        createHeaderParams({
+          verbOptions: {
+            searchCatalog: createVerbOption({
+              operationName: 'searchCatalog',
+              queryParams: objectQueryParams,
+            }),
+          },
+        }),
+      );
+      const headerWithoutObjectParams =
+        generateAngularHeader(createHeaderParams());
+
+      expect(headerWithObjectParams).toContain('objectParamStrategies');
+      expect(headerWithoutObjectParams).not.toContain('objectParamStrategies');
+    });
+  });
+
   describe('generateHttpClientImplementation', () => {
     it('generates a GET method with typed return', () => {
       const verbOption = createVerbOption();
@@ -866,6 +1021,7 @@ describe('angular HttpClient generator', () => {
       const verbOption = createVerbOption({
         operationId: 'createPet',
         operationName: 'createPet',
+        typeName: 'createPet',
         verb: 'post',
         route: '/pets',
         pathRoute: '/pets',
@@ -879,6 +1035,7 @@ describe('angular HttpClient generator', () => {
           contentType: 'application/json',
           formData: '',
           formUrlEncoded: '',
+          isBlob: false,
           isOptional: false,
         },
         props: [
@@ -907,6 +1064,7 @@ describe('angular HttpClient generator', () => {
       const verbOption = createVerbOption({
         operationId: 'updatePet',
         operationName: 'updatePet',
+        typeName: 'updatePet',
         verb: 'put',
         route: '/pets/${petId}',
         pathRoute: '/pets/{petId}',
@@ -919,6 +1077,7 @@ describe('angular HttpClient generator', () => {
           contentType: 'application/json',
           formData: '',
           formUrlEncoded: '',
+          isBlob: false,
           isOptional: false,
         },
         props: [
@@ -956,6 +1115,7 @@ describe('angular HttpClient generator', () => {
       const verbOption = createVerbOption({
         operationId: 'deletePet',
         operationName: 'deletePet',
+        typeName: 'deletePet',
         verb: 'delete',
         route: '/pets/${petId}',
         pathRoute: '/pets/{petId}',
@@ -968,6 +1128,7 @@ describe('angular HttpClient generator', () => {
           contentType: '',
           formData: '',
           formUrlEncoded: '',
+          isBlob: false,
           isOptional: true,
         },
         response: baseResponse({
@@ -1027,6 +1188,7 @@ describe('angular HttpClient generator', () => {
       const verbOption = createVerbOption({
         operationId: 'authenticate',
         operationName: 'authenticate',
+        typeName: 'authenticate',
         verb: 'post',
         route: '/api/auth',
         pathRoute: '/api/auth',
@@ -1040,6 +1202,7 @@ describe('angular HttpClient generator', () => {
           contentType: 'application/json',
           formData: '',
           formUrlEncoded: '',
+          isBlob: false,
           isOptional: true,
         },
         props: [
@@ -1121,6 +1284,7 @@ describe('angular HttpClient generator', () => {
       const verbOption = createVerbOption({
         operationId: 'getPetFile',
         operationName: 'getPetFile',
+        typeName: 'getPetFile',
         response: baseResponse({
           definition: { success: 'Pet | string', errors: 'Error' },
           types: {
@@ -1140,7 +1304,7 @@ describe('angular HttpClient generator', () => {
       expect(impl).toContain('accept?: GetPetFileAccept');
       expect(impl).toContain('Observable<Pet | string>');
       expect(impl).toContain('this.http.get<Pet>');
-      expect(impl).toContain('as Observable<any>');
+      expect(impl).toContain('as Observable<string>');
       // Content-type dispatch logic
       expect(impl).toContain("responseType: 'json'");
       expect(impl).toContain("responseType: 'text'");
@@ -1154,6 +1318,7 @@ describe('angular HttpClient generator', () => {
       const verbOption = createVerbOption({
         operationId: 'updatePet',
         operationName: 'updatePet',
+        typeName: 'updatePet',
         verb: 'put',
         route: '/pets/${petId}',
         pathRoute: '/pets/{petId}',
@@ -1166,6 +1331,7 @@ describe('angular HttpClient generator', () => {
           contentType: 'application/json',
           formData: '',
           formUrlEncoded: '',
+          isBlob: false,
           isOptional: false,
         },
         props: [
@@ -1215,6 +1381,7 @@ describe('angular HttpClient generator', () => {
       const verbOption = createVerbOption({
         operationId: 'confirmReservation',
         operationName: 'confirmReservation',
+        typeName: 'confirmReservation',
         verb: 'post',
         route: '/reservations/${token}/confirm',
         pathRoute: '/reservations/{token}/confirm',
@@ -1227,6 +1394,7 @@ describe('angular HttpClient generator', () => {
           contentType: 'application/json',
           formData: '',
           formUrlEncoded: '',
+          isBlob: false,
           isOptional: true,
         },
         props: [
@@ -1299,6 +1467,7 @@ describe('angular HttpClient generator', () => {
       const verbOption = createVerbOption({
         operationId: 'updatePet',
         operationName: 'updatePet',
+        typeName: 'updatePet',
         verb: 'put',
         route: '/pets/${petId}',
         pathRoute: '/pets/{petId}',
@@ -1311,6 +1480,7 @@ describe('angular HttpClient generator', () => {
           contentType: 'application/json',
           formData: '',
           formUrlEncoded: '',
+          isBlob: false,
           isOptional: false,
         },
         props: [
@@ -1367,6 +1537,7 @@ describe('angular HttpClient generator', () => {
       const verbOption = createVerbOption({
         operationId: 'listPets',
         operationName: 'listPets',
+        typeName: 'listPets',
         route: '/pets',
         pathRoute: '/pets',
         params: [],
@@ -1416,6 +1587,7 @@ describe('angular HttpClient generator', () => {
       const verbOption = createVerbOption({
         operationId: 'deletePet',
         operationName: 'deletePet',
+        typeName: 'deletePet',
         verb: 'delete',
         route: '/pets/${petId}',
         pathRoute: '/pets/{petId}',
@@ -1428,6 +1600,7 @@ describe('angular HttpClient generator', () => {
           contentType: 'application/json',
           formData: '',
           formUrlEncoded: '',
+          isBlob: false,
           isOptional: false,
         },
         props: [
@@ -1476,6 +1649,7 @@ describe('angular HttpClient generator', () => {
       const verbOption = createVerbOption({
         operationId: 'listPets',
         operationName: 'listPets',
+        typeName: 'listPets',
         route: '/pets',
         pathRoute: '/pets',
         params: [],
@@ -1703,6 +1877,7 @@ describe('angular HttpClient generator', () => {
       const verbOption = createVerbOption({
         operationId: 'createPet',
         operationName: 'createPet',
+        typeName: 'createPet',
         verb: 'post',
         route: '/pets',
         pathRoute: '/pets',
@@ -1716,6 +1891,7 @@ describe('angular HttpClient generator', () => {
           contentType: 'application/json',
           formData: '',
           formUrlEncoded: '',
+          isBlob: false,
           isOptional: false,
         },
         props: [
@@ -1823,6 +1999,7 @@ describe('angular HttpClient generator', () => {
           getPetFile: createVerbOption({
             operationId: 'getPetFile',
             operationName: 'getPetFile',
+            typeName: 'getPetFile',
             response: baseResponse({
               definition: { success: 'Pet | string', errors: 'Error' },
               types: {
@@ -1905,6 +2082,7 @@ describe('angular HttpClient generator', () => {
       const verbOption = createVerbOption({
         operationId: 'listPets',
         operationName: 'listPets',
+        typeName: 'listPets',
         route: '/pets',
         pathRoute: '/pets',
         params: [],
@@ -2013,6 +2191,123 @@ describe('angular HttpClient generator', () => {
 
       expect(impl).toContain('/api/pets/${encodeURIComponent(String(petId))}');
       expect(impl).not.toContain('url: `/api/pets/${petId}`');
+    });
+  });
+
+  // ── override.angular.baseUrl (DI base-url token) ─────────────────────
+
+  describe('override.angular.baseUrl', () => {
+    const outputWithBaseUrl = () =>
+      createOutput({
+        override: {
+          ...createOutput().override,
+          angular: { ...angularOverride, baseUrl: { apiId: 'example-api' } },
+        },
+      });
+
+    it('injects a `baseUrl` field in the header when configured', () => {
+      const header = generateAngularHeader(
+        createHeaderParams({ output: outputWithBaseUrl() }),
+      );
+
+      expect(header).toContain(
+        'private readonly baseUrl = inject(EXAMPLE_API_BASE_URL);',
+      );
+    });
+
+    it('omits the `baseUrl` field when the option is unset (byte-identical to today)', () => {
+      const withOption = generateAngularHeader(
+        createHeaderParams({ output: outputWithBaseUrl() }),
+      );
+      const withoutOption = generateAngularHeader(createHeaderParams());
+
+      expect(withoutOption).not.toContain('EXAMPLE_API_BASE_URL');
+      expect(withoutOption).not.toContain('baseUrl');
+      expect(withOption).not.toBe(withoutOption);
+    });
+
+    it('prefixes the route template with `${this.baseUrl}`', () => {
+      const output = outputWithBaseUrl();
+      const options = createGeneratorOptions({
+        route: '/api/pets/${petId}',
+        context: createContextSpec(output),
+        override: output.override,
+      });
+      const verbOption = createVerbOption();
+
+      const impl = generateHttpClientImplementation(verbOption, options);
+
+      expect(impl).toContain('`${this.baseUrl}/api/pets/${petId}`');
+    });
+
+    it('does not wrap the `this.baseUrl` prefix in encodeURIComponent when urlEncodeParameters is also set', () => {
+      const output = createOutput({
+        urlEncodeParameters: true,
+        override: {
+          ...createOutput().override,
+          angular: { ...angularOverride, baseUrl: { apiId: 'example-api' } },
+        },
+      });
+      const options = createGeneratorOptions({
+        route: '/api/pets/${petId}',
+        context: createContextSpec(output),
+        override: output.override,
+      });
+      const verbOption = createVerbOption();
+
+      const impl = generateHttpClientImplementation(verbOption, options);
+
+      expect(impl).toContain(
+        '`${this.baseUrl}/api/pets/${encodeURIComponent(String(petId))}`',
+      );
+      expect(impl).not.toContain('encodeURIComponent(String(this.baseUrl))');
+    });
+
+    it('composes the prefixed route into the mutator config', () => {
+      const output = outputWithBaseUrl();
+      const verbOption = createVerbOption({
+        mutator: {
+          name: 'customInstance',
+          path: './mutator',
+          default: true,
+          hasThirdArg: false,
+          hasSecondArg: false,
+        } as GeneratorVerbOptions['mutator'],
+      });
+      const options = createGeneratorOptions({
+        route: '/api/pets/${petId}',
+        context: createContextSpec(output),
+        override: output.override,
+      });
+
+      const impl = generateHttpClientImplementation(verbOption, options);
+
+      expect(impl).toContain('${this.baseUrl}/api/pets/${petId}');
+    });
+
+    it('adds the base-url token import in generateAngular', async () => {
+      const output = outputWithBaseUrl();
+      const verbOption = createVerbOption();
+      const options = createGeneratorOptions({
+        route: '/api/pets/${petId}',
+        context: createContextSpec(output),
+        override: output.override,
+      });
+
+      const { imports } = await generateAngular(
+        verbOption,
+        options,
+        'angular',
+        output,
+      );
+
+      expect(imports).toContainEqual(
+        expect.objectContaining({
+          name: 'EXAMPLE_API_BASE_URL',
+          values: true,
+          importPath: './pet.base-url',
+        }),
+      );
     });
   });
 });

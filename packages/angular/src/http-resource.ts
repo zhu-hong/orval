@@ -15,13 +15,15 @@ import {
   type GeneratorImport,
   type GeneratorVerbOptions,
   getAngularFilteredParamsHelperBody,
+  getAngularObjectParamStrategies,
   getFileInfo,
   getFullRoute,
   GetterPropType,
+  getOperationTagKey,
+  getTagKey,
   isObject,
   isSyntheticDefaultImportsAllow,
   jsDoc,
-  kebab,
   makeRouteSafe,
   type NormalizedOutputOptions,
   type OpenApiInfoObject,
@@ -33,6 +35,11 @@ import {
   getImportExtension,
 } from '@orval/core';
 
+import {
+  getAngularBaseUrlFilePath,
+  getAngularBaseUrlImportSpecifier,
+  getBaseUrlTokenName,
+} from './base-url';
 import {
   ANGULAR_HTTP_CLIENT_DEPENDENCIES,
   ANGULAR_HTTP_RESOURCE_DEPENDENCIES,
@@ -172,7 +179,7 @@ const getVerbOptionsRecord = (
   );
 
 const getPrimaryTag = (verbOption: GeneratorVerbOptions): string =>
-  kebab(verbOption.tags[0] ?? 'default');
+  getOperationTagKey(verbOption);
 
 const hasRetrievalOperations = (
   verbOptions: Record<string, GeneratorVerbOptions>,
@@ -348,9 +355,14 @@ const withSignal = (
   options: { readonly hasDefault?: boolean } = {},
 ): SignalProp => {
   const type = getTypeWithoutDefault(prop.definition);
+  // `prop.default` is `unknown`: for QUERY_PARAM/BODY/HEADER props (the only
+  // ones that reach this fallback — PARAM always supplies `options.hasDefault`
+  // explicitly) core always sets it to the sentinel `false`, never a real
+  // default value, so checking `!== undefined` is always (wrongly) true.
+  // Guard against the boolean sentinel so only a genuine default value counts.
   const derivedDefault =
     getDefaultValueFromImplementation(prop.implementation) !== undefined ||
-    prop.default !== undefined;
+    (typeof prop.default !== 'boolean' && prop.default !== undefined);
   const hasDefault = options.hasDefault ?? derivedDefault;
   const nameMatch = /^([^:]+):/.exec(prop.definition);
   const namePart = nameMatch ? nameMatch[1] : prop.name;
@@ -390,10 +402,18 @@ const buildSignalProps = (
       case GetterPropType.QUERY_PARAM:
       case GetterPropType.BODY:
       case GetterPropType.HEADER: {
+        // QUERY_PARAM / BODY / HEADER props never encode a real default
+        // value — `getProps()` hardcodes their `unknown`-typed `default`
+        // field to the boolean sentinel `false` (never a real default), so
+        // falling through to `withSignal`'s `prop.default !== undefined`
+        // derivation would treat every one of them as "has a default"
+        // (`false !== undefined` is always true) and silently render
+        // required props as optional Signals. Pass `false` explicitly so
+        // only PARAM derives a real default from `paramDefaults`.
         const hasDefault =
           prop.type === GetterPropType.PARAM
             ? (paramDefaults.get(prop.name) ?? false)
-            : undefined;
+            : false;
         const signalProp = withSignal(prop, { hasDefault });
         return {
           ...prop,
@@ -440,7 +460,26 @@ interface ResourceRequest {
   readonly bodyForm: string;
   readonly request: string;
   readonly isUrlOnly: boolean;
+  readonly bodyGuard?: string;
 }
+
+/**
+ * Whether a single operation has at least one gated object-serialization
+ * strategy (issue #3705) to apply. Used to decide whether the shared
+ * `filterParams` helper needs its object-serialization overload.
+ */
+const hasGatedObjectQueryParamStrategies = (
+  verbOption: GeneratorVerbOptions,
+): boolean =>
+  Object.keys(
+    getAngularObjectParamStrategies({
+      queryParams: verbOption.queryParams,
+      paramsSerializer: verbOption.paramsSerializer,
+      paramsFilter: verbOption.paramsFilter,
+      queryObjectSerialization:
+        verbOption.override.angular.queryObjectSerialization,
+    }),
+  ).length > 0;
 
 const buildResourceRequest = (
   {
@@ -455,6 +494,7 @@ const buildResourceRequest = (
     formUrlEncoded,
   }: GeneratorVerbOptions,
   route: string,
+  { supportsIdleGuard }: { readonly supportsIdleGuard: boolean },
 ): ResourceRequest => {
   const isFormData = !override.formData.disabled;
   const isFormUrlEncoded = override.formUrlEncoded !== false;
@@ -470,8 +510,24 @@ const buildResourceRequest = (
   const hasFormData = isFormData && body.formData;
   const hasFormUrlEncoded = isFormUrlEncoded && body.formUrlEncoded;
 
+  // An optional request body is exposed as an optional `Signal` parameter. When
+  // the caller omits it, the `httpResource` request factory must return
+  // `undefined` so the resource stays idle, rather than firing a request with an
+  // undefined body. This mirrors Angular's `undefined`-request contract (#3700).
+  //
+  // The guard is only emitted where the request is built lazily inside the
+  // factory (single response content-type). The multi-content path builds the
+  // request eagerly at the function-body level, where returning `undefined`
+  // would violate the function's `HttpResourceRef` return type — there we keep
+  // the optional-call (`?.()`) form, which is already runtime-safe.
+  const isDirectBody = !!body.definition && !hasFormData && !hasFormUrlEncoded;
+  const bodyGuard =
+    supportsIdleGuard && isDirectBody && body.isOptional
+      ? `if (!${body.implementation}) return undefined;`
+      : undefined;
+
   const bodyAccess = body.definition
-    ? body.isOptional
+    ? body.isOptional && !bodyGuard
       ? `${body.implementation}?.()`
       : `${body.implementation}()`
     : undefined;
@@ -483,6 +539,15 @@ const buildResourceRequest = (
 
   const paramsAccess = queryParams ? 'params?.()' : undefined;
   const headersAccess = headers ? 'headers?.()' : undefined;
+  // Object-typed query param serialization (issue #3705), gated for
+  // `override.angular.queryObjectSerialization`, `paramsFilter`, and
+  // `paramsSerializer`.
+  const objectParamStrategies = getAngularObjectParamStrategies({
+    queryParams,
+    paramsSerializer,
+    paramsFilter,
+    queryObjectSerialization: override.angular.queryObjectSerialization,
+  });
   const filteredParamsValue = paramsAccess
     ? buildAngularParamsFilterExpression({
         paramsExpression: `${paramsAccess} ?? {}`,
@@ -496,6 +561,7 @@ const buildResourceRequest = (
         nonPrimitiveKeys: paramsSerializer
           ? (queryParams?.nonPrimitiveKeys ?? [])
           : [],
+        objectParamStrategies,
         paramsFilter,
         useSharedHelper: true,
       })
@@ -526,6 +592,7 @@ const buildResourceRequest = (
     bodyForm,
     request,
     isUrlOnly,
+    bodyGuard,
   };
 };
 
@@ -542,25 +609,86 @@ const getHttpResourceResponseImports = (
   });
 };
 
+const getParseSchemaName = (
+  response: {
+    readonly imports: readonly { name: string; isZodSchema?: boolean }[];
+    readonly definition: { readonly success?: string };
+  },
+  factory: HttpResourceFactoryName,
+  output: NormalizedOutputOptions,
+  responseTypeOverride?: string,
+): string | undefined => {
+  if (factory !== 'httpResource') return undefined;
+
+  // Explicit isZodSchema flag on imports (forward-compatible)
+  const zodSchema = response.imports.find((imp) => imp.isZodSchema);
+  if (zodSchema) return zodSchema.name;
+
+  // Check if runtime validation is disabled
+  if (!output.override.angular.runtimeValidation) return undefined;
+
+  // Auto-detect: when schemas.type === 'zod', use the response type as the schema name
+  if (!isZodSchemaOutput(output)) return undefined;
+
+  const responseType = responseTypeOverride ?? response.definition.success;
+  if (!responseType) return undefined;
+  if (isPrimitiveType(responseType)) return undefined;
+
+  // Verify a matching import exists (the response type name resolves to a zod schema)
+  const hasMatchingImport = response.imports.some(
+    (imp) => imp.name === responseType,
+  );
+  if (!hasMatchingImport) return undefined;
+
+  return responseType;
+};
+
+const getHttpResourceZodParsedImportNames = (
+  response: GeneratorVerbOptions['response'],
+  output: NormalizedOutputOptions,
+): Set<string> => {
+  const names = new Set<string>();
+
+  for (const successType of response.types.success) {
+    const schemaName = getParseSchemaName(
+      response,
+      getHttpResourceFactory(
+        response,
+        successType.contentType,
+        successType.value,
+      ),
+      output,
+      successType.value,
+    );
+
+    if (schemaName) {
+      names.add(schemaName);
+    }
+  }
+
+  return names;
+};
+
 const getHttpResourceVerbImports = (
   verbOptions: GeneratorVerbOptions,
   output: NormalizedOutputOptions,
 ): GeneratorImport[] => {
   const { response, body, queryParams, props, headers, params } = verbOptions;
-  const responseImports = isZodSchemaOutput(output)
-    ? [
-        ...getHttpResourceResponseImports(response).map((imp) => ({
-          ...imp,
-          values: true,
-        })),
-        ...getHttpResourceResponseImports(response)
-          .filter((imp) => !isPrimitiveType(imp.name))
-          .map((imp) => ({ name: getSchemaOutputTypeRef(imp.name) })),
-      ]
-    : getHttpResourceResponseImports(response);
+  const responseImports = getHttpResourceResponseImports(response);
+  const parsedZodImportNames = isZodSchemaOutput(output)
+    ? getHttpResourceZodParsedImportNames(response, output)
+    : new Set<string>();
+  const parsedZodImports = responseImports.filter((imp) =>
+    parsedZodImportNames.has(imp.name),
+  );
 
   return [
-    ...responseImports,
+    ...responseImports.map((imp) =>
+      parsedZodImportNames.has(imp.name) ? { ...imp, values: true } : imp,
+    ),
+    ...parsedZodImports
+      .filter((imp) => !isPrimitiveType(imp.name))
+      .map((imp) => ({ name: getSchemaOutputTypeRef(imp.name) })),
     ...body.imports,
     ...props.flatMap((prop) =>
       prop.type === GetterPropType.NAMED_PATH_PARAMS
@@ -583,29 +711,14 @@ const getParseExpression = (
   output: NormalizedOutputOptions,
   responseTypeOverride?: string,
 ): string | undefined => {
-  if (factory !== 'httpResource') return undefined;
-
-  // Explicit isZodSchema flag on imports (forward-compatible)
-  const zodSchema = response.imports.find((imp) => imp.isZodSchema);
-  if (zodSchema) return `${zodSchema.name}.parse`;
-
-  // Check if runtime validation is disabled
-  if (!output.override.angular.runtimeValidation) return undefined;
-
-  // Auto-detect: when schemas.type === 'zod', use the response type as the schema name
-  if (!isZodSchemaOutput(output)) return undefined;
-
-  const responseType = responseTypeOverride ?? response.definition.success;
-  if (!responseType) return undefined;
-  if (isPrimitiveType(responseType)) return undefined;
-
-  // Verify a matching import exists (the response type name resolves to a zod schema)
-  const hasMatchingImport = response.imports.some(
-    (imp) => imp.name === responseType,
+  const schemaName = getParseSchemaName(
+    response,
+    factory,
+    output,
+    responseTypeOverride,
   );
-  if (!hasMatchingImport) return undefined;
 
-  return `${responseType}.parse`;
+  return schemaName ? `${schemaName}.parse` : undefined;
 };
 
 /**
@@ -760,7 +873,8 @@ const buildHttpResourceFunction = (
   route: string,
   output: NormalizedOutputOptions,
 ): string => {
-  const { operationName, response, props, params, mutator } = verbOption;
+  const { operationName, typeName, response, props, params, mutator } =
+    verbOption;
 
   const dataType = response.definition.success || 'unknown';
   const omitParse = isZodSchemaOutput(output);
@@ -795,7 +909,7 @@ const buildHttpResourceFunction = (
   resourceReturnTypesRegistry.set(
     operationName,
     `export type ${pascal(
-      operationName,
+      typeName,
     )}ResourceResult = NonNullable<${overallReturnType}>`,
   );
   const uniqueContentTypes = getUniqueContentTypes(successTypes);
@@ -819,21 +933,32 @@ const buildHttpResourceFunction = (
   // to rewrite it to its signal form (e.g. `${param()}`), so encoding first
   // would stop the substitution from matching. Wrapping the already-rewritten
   // form yields `${encodeURIComponent(String(param()))}`, which is correct.
-  const encodedRoute = output.urlEncodeParameters
+  let encodedRoute = output.urlEncodeParameters
     ? makeRouteSafe(signalRoute)
     : signalRoute;
+  // MUST run after the urlEncodeParameters/makeRouteSafe step above (see the
+  // comment on `encodedRoute` for why): prefixing before it would wrap
+  // `baseUrl` in `encodeURIComponent(String(...))`.
+  const baseUrlOption = output.override.angular.baseUrl;
+  if (baseUrlOption) {
+    encodedRoute = '${baseUrl}' + encodedRoute;
+  }
+  const baseUrlDeclaration = baseUrlOption
+    ? `const baseUrl = options?.injector ? options.injector.get(${getBaseUrlTokenName(baseUrlOption.apiId)}) : inject(${getBaseUrlTokenName(baseUrlOption.apiId)});\n  `
+    : '';
 
   const signalProps = buildSignalProps(props, params);
   const args = toObjectString(signalProps, 'implementation');
 
-  const { bodyForm, request, isUrlOnly } = buildResourceRequest(
+  const { bodyForm, request, isUrlOnly, bodyGuard } = buildResourceRequest(
     verbOption,
     encodedRoute,
+    { supportsIdleGuard: uniqueContentTypes.length <= 1 },
   );
 
   if (uniqueContentTypes.length > 1) {
     const defaultContentType = jsonContentType ?? defaultSuccess.contentType;
-    const acceptTypeName = getAcceptHelperName(operationName);
+    const acceptTypeName = getAcceptHelperName(typeName);
     const requiredProps = signalProps.filter(
       (_, index) => props[index]?.required && !props[index]?.default,
     );
@@ -976,82 +1101,57 @@ const buildHttpResourceFunction = (
         factory === 'httpResource'
           ? getBranchReturnType(type)
           : getHttpResourceRawType(factory);
-      return `return ${factory}<${returnType}>(() => ({
-      ...normalizedRequest,
-      headers,
-    }), ${getBranchOptions(type)});`;
+      return `return ${factory}<${returnType}>(buildRequest, ${getBranchOptions(type)});`;
     };
 
     const fallbackReturn = fallbackType
       ? buildFallbackReturn(fallbackType)
-      : `return httpResource<${parsedDataType}>(() => ({
-      ...normalizedRequest,
-      headers,
-    }), ${getBranchOptions()});`;
-
-    // Default-accept overload (when `accept` is omitted): narrow `options` to
-    // the branch the runtime falls back to, so callers that skip `accept`
-    // still get branch-specific typing instead of the broad options union.
-    const defaultOverloadOptionsType = fallbackType
-      ? buildBranchOptionsType(
-          getBranchReturnType(fallbackType),
-          getBranchRawType(fallbackType),
-          omitParse,
-        )
-      : implementationOptionsType;
-    const defaultOverloadReturnType = fallbackType
-      ? getBranchReturnType(fallbackType)
-      : unionReturnType;
-    const defaultOverloadArgs = [
-      requiredPart,
-      optionalPart,
-      `options?: ${defaultOverloadOptionsType}`,
-    ]
-      .filter(Boolean)
-      .join(',\n    ');
+      : `return httpResource<${parsedDataType}>(buildRequest, ${getBranchOptions()});`;
 
     const normalizeRequest = isUrlOnly
       ? `const normalizedRequest: HttpResourceRequest = { url: request };`
       : `const normalizedRequest: HttpResourceRequest = request;`;
 
     return `/**
- * @experimental httpResource is experimental (Angular v19.2+)
+ * @remarks httpResource is available in Angular 19.2 and later.
  */
 ${branchOverloads}
 export function ${resourceName}(
-    ${defaultOverloadArgs}
-  ): HttpResourceRef<${defaultOverloadReturnType} | undefined>;
-export function ${resourceName}(
     ${implementationArgsWithDefault}
 ): HttpResourceRef<${unionReturnType} | undefined> {
-  ${bodyForm ? `${bodyForm};` : ''}
-  const request = ${request};
-  ${normalizeRequest}
-  const headers = normalizedRequest.headers instanceof HttpHeaders
-    ? normalizedRequest.headers.set('Accept', accept)
-    : { ...(normalizedRequest.headers ?? {}), Accept: accept };
+  ${baseUrlDeclaration}const buildRequest = (): HttpResourceRequest => {
+    ${bodyForm ? `${bodyForm};` : ''}
+    const request = ${request};
+    ${normalizeRequest}
+    const extendedRequest = applyOrvalRequestExtension(normalizedRequest, options);
+    return {
+      ...extendedRequest,
+      headers: extendedRequest.headers instanceof HttpHeaders
+        ? extendedRequest.headers.set('Accept', accept)
+        : { ...(extendedRequest.headers ?? {}), Accept: accept },
+    };
+  };
 
   if (accept.includes('json') || accept.includes('+json')) {
-    return httpResource<${jsonType ? getBranchReturnType(jsonType) : parsedDataType}>(() => ({
-      ...normalizedRequest,
-      headers,
-    }), ${getBranchOptions(jsonType)});
+    return httpResource<${jsonType ? getBranchReturnType(jsonType) : parsedDataType}>(buildRequest, ${getBranchOptions(jsonType)});
   }
 
   if (accept.startsWith('text/') || accept.includes('xml')) {
-    return httpResource.text<string>(() => ({
-      ...normalizedRequest,
-      headers,
-    }), ${getBranchOptions(textType)});
+    return httpResource.text<string>(buildRequest, ${getBranchOptions(textType)});
   }
 
   ${
+    blobType
+      ? `if (accept.startsWith('image/') || accept.includes('blob')) {
+    return httpResource.blob<Blob>(buildRequest, ${getBranchOptions(blobType)});
+  }
+
+  `
+      : ''
+  }${
     arrayBufferType
       ? `if (accept.includes('octet-stream') || accept.includes('pdf')) {
-    return httpResource.arrayBuffer<ArrayBuffer>(() => ({
-      ...normalizedRequest,
-      headers,
-    }), ${getBranchOptions(arrayBufferType)});
+    return httpResource.arrayBuffer<ArrayBuffer>(buildRequest, ${getBranchOptions(arrayBufferType)});
   }
 
   `
@@ -1105,33 +1205,112 @@ export function ${resourceName}(
 
   if (isUrlOnly && !isResourceCompatibleMutator) {
     return `/**
- * @experimental httpResource is experimental (Angular v19.2+)
+ * @remarks httpResource is available in Angular 19.2 and later.
  */
 ${functionSignatures};
 export function ${resourceName}(${implementationArgs}): HttpResourceRef<${resourceValueType}> {
-  return ${resourceFactory}<${parsedDataType}>(() => ${request}${resourceCallOptions});
+  ${baseUrlDeclaration}return ${resourceFactory}<${parsedDataType}>(() => applyOrvalRequestExtension(${request}, options)${resourceCallOptions});
 }
 `;
   }
 
+  // Statements emitted at the top of the request factory, before the request
+  // object is assembled: the optional-body idle guard (when present) followed by
+  // any form-data/url-encoded body construction.
+  const factoryPrelude = [bodyGuard, bodyForm ? `${bodyForm};` : undefined]
+    .filter(Boolean)
+    .join('\n    ');
+
   return `/**
- * @experimental httpResource is experimental (Angular v19.2+)
+ * @remarks httpResource is available in Angular 19.2 and later.
  */
 ${functionSignatures};
 export function ${resourceName}(${implementationArgs}): HttpResourceRef<${resourceValueType}> {
-  return ${resourceFactory}<${parsedDataType}>(() => {
-    ${bodyForm ? `${bodyForm};` : ''}
+  ${baseUrlDeclaration}return ${resourceFactory}<${parsedDataType}>(() => {
+    ${factoryPrelude}
     const request = ${request};
-    return ${returnExpression};
+    return applyOrvalRequestExtension(${returnExpression}, options);
   }${resourceCallOptions});
 }
 `;
 };
 
 const buildHttpResourceOptionsUtilities = (omitParse: boolean): string => `
-export type ${HTTP_RESOURCE_OPTIONS_TYPE_NAME}<TValue, TRaw = unknown, TOmitParse extends boolean = ${omitParse}> = TOmitParse extends true
-  ? Omit<HttpResourceOptions<TValue, TRaw>, 'parse'>
-  : HttpResourceOptions<TValue, TRaw>;
+export interface OrvalHttpResourceRequestExtension {
+  /** Extra headers merged over generated headers. Pass a function to read signals reactively. */
+  headers?: HttpResourceRequest['headers'] | (() => HttpResourceRequest['headers']);
+  /** Angular HttpContext forwarded to the underlying request. Pass a function to derive it reactively. */
+  context?: HttpContext | (() => HttpContext);
+  /** Last-resort escape hatch: transform the final request descriptor. Runs inside the resource's reactive context. */
+  request?: (request: HttpResourceRequest) => HttpResourceRequest;
+}
+
+export type ${HTTP_RESOURCE_OPTIONS_TYPE_NAME}<TValue, TRaw = unknown, TOmitParse extends boolean = ${omitParse}> =
+  (TOmitParse extends true
+    ? Omit<HttpResourceOptions<TValue, TRaw>, 'parse'>
+    : HttpResourceOptions<TValue, TRaw>) &
+  OrvalHttpResourceRequestExtension;
+
+function mergeOrvalResourceHeaders(
+  base: HttpResourceRequest['headers'],
+  extra: HttpResourceRequest['headers'],
+): HttpResourceRequest['headers'] {
+  if (!base) return extra;
+  if (!extra) return base;
+  if (base instanceof HttpHeaders || extra instanceof HttpHeaders) {
+    const toHeaderValue = (
+      value: string | readonly string[],
+    ): string | string[] =>
+      Array.isArray(value) ? Array.from(value, String) : String(value);
+    let merged =
+      base instanceof HttpHeaders
+        ? base
+        : Object.entries(base).reduce(
+            (headers, [key, value]) => headers.set(key, toHeaderValue(value)),
+            new HttpHeaders(),
+          );
+    const extraRecord =
+      extra instanceof HttpHeaders
+        ? extra.keys().reduce<Record<string, string[]>>((record, key) => {
+            const values = extra.getAll(key);
+            if (values) record[key] = values;
+            return record;
+          }, {})
+        : extra;
+    for (const [key, value] of Object.entries(extraRecord)) {
+      merged = merged.set(key, toHeaderValue(value));
+    }
+    return merged;
+  }
+  return { ...base, ...extra };
+}
+
+export function applyOrvalRequestExtension(
+  request: string | HttpResourceRequest,
+  options?: OrvalHttpResourceRequestExtension,
+): HttpResourceRequest {
+  const base: HttpResourceRequest = typeof request === 'string' ? { url: request } : request;
+  if (
+    !options ||
+    (options.headers === undefined &&
+      options.context === undefined &&
+      options.request === undefined)
+  ) {
+    return base;
+  }
+  let next: HttpResourceRequest = { ...base };
+  const extraHeaders =
+    typeof options.headers === 'function' ? options.headers() : options.headers;
+  if (extraHeaders !== undefined) {
+    next = { ...next, headers: mergeOrvalResourceHeaders(next.headers, extraHeaders) };
+  }
+  const context =
+    typeof options.context === 'function' ? options.context() : options.context;
+  if (context !== undefined) {
+    next = { ...next, context };
+  }
+  return options.request ? options.request(next) : next;
+}
 `;
 
 const getContentTypeReturnType = (
@@ -1190,8 +1369,13 @@ export interface ResourceState<T> {
   readonly status: Signal<ResourceStatus>;
   readonly error: Signal<globalThis.Error | undefined>;
   readonly isLoading: Signal<boolean>;
-  readonly hasValue: () => boolean;
+  /** Guard reads of \`value()\` with this call: \`value()\` throws in the error state. */
+  readonly hasValue: () => this is ResolvedResourceState<T>;
   readonly reload: () => boolean;
+}
+
+export interface ResolvedResourceState<T> extends ResourceState<T> {
+  readonly value: Signal<Exclude<T, undefined>>;
 }
 
 /**
@@ -1204,7 +1388,9 @@ export function toResourceState<T>(ref: HttpResourceRef<T>): ResourceState<T> {
     status: ref.status,
     error: ref.error,
     isLoading: ref.isLoading,
-    hasValue: () => ref.hasValue(),
+    hasValue(this: ResourceState<T>): this is ResolvedResourceState<T> {
+      return ref.hasValue();
+    },
     reload: () => ref.reload(),
   };
 }
@@ -1253,9 +1439,6 @@ export const generateHttpResourceHeader: ClientHeaderBuilder = ({
   const hasBuiltInFilteredQueryParams = retrievals.some(
     (verbOption) => !!verbOption.queryParams && !verbOption.paramsFilter,
   );
-  const filterParamsHelper = hasBuiltInFilteredQueryParams
-    ? `\n${getAngularFilteredParamsHelperBody()}\n`
-    : '';
   const resources = retrievals
     .map((verbOption) => {
       const fullRoute = routeRegistry.get(
@@ -1286,6 +1469,15 @@ export const generateHttpResourceHeader: ClientHeaderBuilder = ({
   const hasMutationBuiltInFilteredQueryParams = mutations.some(
     (verbOption) => !!verbOption.queryParams && !verbOption.paramsFilter,
   );
+  // The single shared helper emitted below is used by both retrievals and
+  // mutations, so its object-serialization overload (issue #3705) must be
+  // gated across both groups.
+  const hasObjectParams = [...retrievals, ...mutations].some(
+    hasGatedObjectQueryParamStrategies,
+  );
+  const filterParamsHelper = hasBuiltInFilteredQueryParams
+    ? `\n${getAngularFilteredParamsHelperBody({ hasObjectParams })}\n`
+    : '';
 
   const mutationImplementation = mutations
     .map((verbOption) => {
@@ -1302,6 +1494,7 @@ export const generateHttpResourceHeader: ClientHeaderBuilder = ({
     })
     .join('\n');
 
+  const baseUrlOption = output.override.angular.baseUrl;
   const classImplementation = mutationImplementation
     ? `
 ${buildServiceClassOpen({
@@ -1312,6 +1505,10 @@ ${buildServiceClassOpen({
   provideIn,
   hasQueryParams:
     hasMutationBuiltInFilteredQueryParams && !hasBuiltInFilteredQueryParams,
+  baseUrlFieldInitializer: baseUrlOption
+    ? `private readonly baseUrl = inject(${getBaseUrlTokenName(baseUrlOption.apiId)});`
+    : undefined,
+  hasObjectParams: mutations.some(hasGatedObjectQueryParamStrategies),
 })}
 ${mutationImplementation}
 };
@@ -1353,10 +1550,21 @@ export const generateHttpResourceClient: ClientBuilder = (
   options,
 ) => {
   routeRegistry.set(verbOptions.operationName, options.route);
-  const imports = getHttpResourceVerbImports(
-    verbOptions,
-    options.context.output,
-  );
+  const baseUrlOption = options.context.output.override.angular.baseUrl;
+  const imports = [
+    ...getHttpResourceVerbImports(verbOptions, options.context.output),
+    ...(baseUrlOption
+      ? [
+          {
+            name: getBaseUrlTokenName(baseUrlOption.apiId),
+            values: true,
+            importPath: getAngularBaseUrlImportSpecifier(
+              options.context.output,
+            ),
+          },
+        ]
+      : []),
+  ];
 
   return { implementation: '\n', imports };
 };
@@ -1382,8 +1590,9 @@ const buildHttpResourceFile = (
   const hasBuiltInFilteredQueryParams = retrievals.some(
     (verbOption) => !!verbOption.queryParams && !verbOption.paramsFilter,
   );
+  const hasObjectParams = retrievals.some(hasGatedObjectQueryParamStrategies);
   const filterParamsHelper = hasBuiltInFilteredQueryParams
-    ? `\n${getAngularFilteredParamsHelperBody()}\n`
+    ? `\n${getAngularFilteredParamsHelperBody({ hasObjectParams })}\n`
     : '';
 
   const resources = retrievals
@@ -1473,11 +1682,11 @@ const getHttpResourceExtraFilePath = (
 
   switch (output.mode) {
     case OutputMode.TAGS: {
-      const normalizedTag = kebab(tag ?? 'default');
+      const normalizedTag = getTagKey(tag);
       return upath.joinSafe(dirname, `${normalizedTag}.resource${extension}`);
     }
     case OutputMode.TAGS_SPLIT: {
-      const normalizedTag = kebab(tag ?? 'default');
+      const normalizedTag = getTagKey(tag);
       return upath.joinSafe(
         dirname,
         normalizedTag,
@@ -1498,10 +1707,10 @@ const getHttpResourceRelativeSchemasPath = (
     typeof output.schemas === 'string' ? output.schemas : output.schemas?.path;
 
   if (schemasPath) {
-    return upath.getRelativeImportPath(
-      outputPath,
-      getFileInfo(schemasPath).dirname,
-    );
+    // Mirror the split-mode writers: resolve the import directly to the schemas
+    // directory (extension kept) so a dotted name like `*.schemas` is not
+    // collapsed to `./.` for the `both`-mode resource files (#3624).
+    return upath.getRelativeImportPath(outputPath, schemasPath, true);
   }
 
   const { dirname, filename, extension } = getFileInfo(output.target, {
@@ -1522,24 +1731,66 @@ const buildHttpResourceExtraFile = (
   header: string,
 ) => {
   const implementation = buildHttpResourceFile(verbOptions, output, context);
+  const verbImports = Object.values(verbOptions)
+    .filter((verbOption) =>
+      isRetrievalVerb(
+        verbOption.verb,
+        verbOption.operationName,
+        getClientOverride(verbOption),
+      ),
+    )
+    .flatMap((verbOption) => getHttpResourceVerbImports(verbOption, output));
+
+  // Imports that declare an explicit `importPath` (e.g. rxjs's `map`
+  // operator, pulled in by `getHttpResourceVerbImports`) come from an
+  // external package, not the generated schemas module.
+  // `buildSchemaImportDependencies` has no concept of `importPath` and would
+  // otherwise bucket every import — including these — under the schemas
+  // dependency alongside real model types. Route them through the standard
+  // dependency merge instead, which resolves each import from its own path.
+  const schemaVerbImports = verbImports.filter((imp) => !imp.importPath);
+  const externalVerbImports = mergeDependencies(
+    verbImports
+      .filter(
+        (imp): imp is GeneratorImport & { importPath: string } =>
+          !!imp.importPath,
+      )
+      .map((imp) => ({ exports: [imp], dependency: imp.importPath })),
+  );
+
   const schemaImports = buildSchemaImportDependencies(
     output,
-    Object.values(verbOptions)
-      .filter((verbOption) =>
-        isRetrievalVerb(
-          verbOption.verb,
-          verbOption.operationName,
-          getClientOverride(verbOption),
-        ),
-      )
-      .flatMap((verbOption) => getHttpResourceVerbImports(verbOption, output)),
+    schemaVerbImports,
     getHttpResourceRelativeSchemasPath(output, outputPath),
   );
 
   const dependencies = getAngularHttpResourceOnlyDependencies(false, false);
+  const baseUrlOption = output.override.angular.baseUrl;
+  const baseUrlDependency = baseUrlOption
+    ? [
+        {
+          exports: [
+            { name: getBaseUrlTokenName(baseUrlOption.apiId), values: true },
+          ],
+          // Only include a literal extension for non-`.ts` output (mirrors
+          // `getHttpResourceRelativeSchemasPath` above): TS5097 forbids a
+          // `.ts` import specifier unless `allowImportingTsExtensions` is set.
+          dependency: upath.getRelativeImportPath(
+            outputPath,
+            getAngularBaseUrlFilePath(output),
+            output.fileExtension !== '.ts',
+          ),
+        },
+      ]
+    : [];
   const importImplementation = generateDependencyImports(
     implementation,
-    [...schemaImports, ...dependencies],
+    [
+      ...schemaImports,
+      ...externalVerbImports,
+      ...dependencies,
+      ...baseUrlDependency,
+    ],
     context.projectName,
     !!output.schemas,
     isSyntheticDefaultImportsAllow(output.tsconfig),

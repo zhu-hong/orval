@@ -1,8 +1,15 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vite-plus/test';
 
 const { logWarningSpy } = vi.hoisted(() => ({
   logWarningSpy: vi.fn(),
@@ -19,10 +26,315 @@ vi.mock('@orval/core', async (importOriginal) => {
 import { normalizeOptions } from './options';
 
 const createTempWorkspace = async () => {
-  return mkdtemp(path.join(os.tmpdir(), 'orval-options-'));
+  return realpath(await mkdtemp(path.join(os.tmpdir(), 'orval-options-')));
 };
 
 describe('normalizeOptions', () => {
+  it('keeps package mutator specifiers as imports', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const packageDir = path.join(
+        workspace,
+        'node_modules',
+        '@acme',
+        'orval-mutator',
+      );
+      const validSpecPath = path.join(workspace, 'petstore.yaml');
+      const mutatorPath = path.join(packageDir, 'fetch.js');
+
+      await mkdir(packageDir, { recursive: true });
+      await writeFile(
+        path.join(packageDir, 'package.json'),
+        JSON.stringify({
+          name: '@acme/orval-mutator',
+          exports: {
+            './fetch': './fetch.js',
+          },
+        }),
+      );
+      await writeFile(
+        mutatorPath,
+        'export const customInstance = (config) => config;\n',
+      );
+      await writeFile(
+        validSpecPath,
+        'openapi: 3.1.0\ninfo:\n  title: Test\n  version: 1.0.0\npaths: {}\n',
+      );
+
+      const normalized = await normalizeOptions(
+        {
+          input: { target: validSpecPath },
+          output: {
+            target: './generated.ts',
+            override: {
+              mutator: {
+                path: '@acme/orval-mutator/fetch',
+                name: 'customInstance',
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      expect(normalized.output.override.mutator?.path).toBe(
+        '@acme/orval-mutator/fetch',
+      );
+      expect(normalized.output.override.mutator?.resolvedPath).toBe(
+        mutatorPath,
+      );
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps ESM-only package mutator specifiers as imports', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const packageDir = path.join(
+        workspace,
+        'node_modules',
+        '@acme',
+        'esm-mutator',
+      );
+      const validSpecPath = path.join(workspace, 'petstore.yaml');
+
+      await mkdir(packageDir, { recursive: true });
+      await writeFile(
+        path.join(packageDir, 'package.json'),
+        JSON.stringify({
+          name: '@acme/esm-mutator',
+          type: 'module',
+          exports: {
+            './fetch': {
+              import: './fetch.js',
+            },
+          },
+        }),
+      );
+      await writeFile(
+        path.join(packageDir, 'fetch.js'),
+        'export const customInstance = (config) => config;\n',
+      );
+      await writeFile(
+        validSpecPath,
+        'openapi: 3.1.0\ninfo:\n  title: Test\n  version: 1.0.0\npaths: {}\n',
+      );
+
+      const normalized = await normalizeOptions(
+        {
+          input: { target: validSpecPath },
+          output: {
+            target: './generated.ts',
+            override: {
+              mutator: {
+                path: '@acme/esm-mutator/fetch',
+                name: 'customInstance',
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      expect(normalized.output.override.mutator).toMatchObject({
+        path: '@acme/esm-mutator/fetch',
+      });
+      expect(normalized.output.override.mutator?.resolvedPath).toBeUndefined();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps ESM-only unscoped package subpath mutator specifiers as imports', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const packageDir = path.join(workspace, 'node_modules', 'orval-mutator');
+      const validSpecPath = path.join(workspace, 'petstore.yaml');
+
+      await mkdir(packageDir, { recursive: true });
+      await writeFile(
+        path.join(packageDir, 'package.json'),
+        JSON.stringify({
+          name: 'orval-mutator',
+          type: 'module',
+          exports: {
+            './fetch': {
+              import: './fetch.js',
+            },
+          },
+        }),
+      );
+      await writeFile(
+        path.join(packageDir, 'fetch.js'),
+        'export const customInstance = (config) => config;\n',
+      );
+      await writeFile(
+        validSpecPath,
+        'openapi: 3.1.0\ninfo:\n  title: Test\n  version: 1.0.0\npaths: {}\n',
+      );
+
+      const normalized = await normalizeOptions(
+        {
+          input: { target: validSpecPath },
+          output: {
+            target: './generated.ts',
+            override: {
+              mutator: {
+                path: 'orval-mutator/fetch',
+                name: 'customInstance',
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      expect(normalized.output.override.mutator).toMatchObject({
+        path: 'orval-mutator/fetch',
+      });
+      expect(normalized.output.override.mutator?.resolvedPath).toBeUndefined();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps package subpath mutator specifiers when node_modules is above the workspace', async () => {
+    const repoRoot = await createTempWorkspace();
+
+    try {
+      const workspace = path.join(repoRoot, 'apps', 'api');
+      const packageDir = path.join(repoRoot, 'node_modules', 'orval-mutator');
+      const validSpecPath = path.join(workspace, 'petstore.yaml');
+
+      await mkdir(packageDir, { recursive: true });
+      await mkdir(workspace, { recursive: true });
+      await writeFile(
+        path.join(packageDir, 'package.json'),
+        JSON.stringify({
+          name: 'orval-mutator',
+          type: 'module',
+          exports: {
+            './fetch': {
+              import: './fetch.js',
+            },
+          },
+        }),
+      );
+      await writeFile(
+        path.join(packageDir, 'fetch.js'),
+        'export const customInstance = (config) => config;\n',
+      );
+      await writeFile(
+        validSpecPath,
+        'openapi: 3.1.0\ninfo:\n  title: Test\n  version: 1.0.0\npaths: {}\n',
+      );
+
+      const normalized = await normalizeOptions(
+        {
+          input: { target: validSpecPath },
+          output: {
+            workspace,
+            target: './generated.ts',
+            override: {
+              mutator: {
+                path: 'orval-mutator/fetch',
+                name: 'customInstance',
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      expect(normalized.output.override.mutator).toMatchObject({
+        path: 'orval-mutator/fetch',
+      });
+      expect(normalized.output.override.mutator?.resolvedPath).toBeUndefined();
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps exact root-level local mutator files as local paths', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const validSpecPath = path.join(workspace, 'petstore.yaml');
+      const mutatorPath = path.join(workspace, 'mutator.ts');
+
+      await writeFile(
+        validSpecPath,
+        'openapi: 3.1.0\ninfo:\n  title: Test\n  version: 1.0.0\npaths: {}\n',
+      );
+      await writeFile(
+        mutatorPath,
+        'export const customInstance = (config) => config;\n',
+      );
+
+      const normalized = await normalizeOptions(
+        {
+          input: { target: validSpecPath },
+          output: {
+            target: './generated.ts',
+            override: {
+              mutator: {
+                path: 'mutator.ts',
+                name: 'customInstance',
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      expect(normalized.output.override.mutator).toMatchObject({
+        path: mutatorPath,
+      });
+      expect(normalized.output.override.mutator?.resolvedPath).toBeUndefined();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps unresolved non-relative mutator paths as local workspace paths', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const validSpecPath = path.join(workspace, 'petstore.yaml');
+      await writeFile(
+        validSpecPath,
+        'openapi: 3.1.0\ninfo:\n  title: Test\n  version: 1.0.0\npaths: {}\n',
+      );
+
+      const normalized = await normalizeOptions(
+        {
+          input: { target: validSpecPath },
+          output: {
+            target: './generated.ts',
+            override: {
+              mutator: {
+                path: 'src/mutator',
+                name: 'customInstance',
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      expect(normalized.output.override.mutator).toMatchObject({
+        path: path.join(workspace, 'src', 'mutator'),
+      });
+      expect(normalized.output.override.mutator?.resolvedPath).toBeUndefined();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('resolves the first existing input target from an input target array', async () => {
     const workspace = await createTempWorkspace();
 
@@ -288,6 +600,383 @@ describe('normalizeOptions', () => {
     }
   });
 
+  describe('override.angular.baseUrl', () => {
+    it('normalizes a valid apiId through', async () => {
+      const workspace = await createTempWorkspace();
+
+      try {
+        const normalized = await normalizeOptions(
+          {
+            input: {
+              target: {
+                openapi: '3.1.0',
+                info: { title: 'Test', version: '1.0.0' },
+                paths: {},
+              },
+            },
+            output: {
+              target: './generated.ts',
+              client: 'angular',
+              override: {
+                angular: {
+                  baseUrl: { apiId: 'example-api' },
+                },
+              },
+            },
+          },
+          workspace,
+        );
+
+        expect(normalized.output.override.angular.baseUrl).toEqual({
+          apiId: 'example-api',
+        });
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+
+    it('carries through index and variables', async () => {
+      const workspace = await createTempWorkspace();
+
+      try {
+        const normalized = await normalizeOptions(
+          {
+            input: {
+              target: {
+                openapi: '3.1.0',
+                info: { title: 'Test', version: '1.0.0' },
+                paths: {},
+              },
+            },
+            output: {
+              target: './generated.ts',
+              client: 'angular',
+              override: {
+                angular: {
+                  baseUrl: {
+                    apiId: 'example-api',
+                    index: 1,
+                    variables: { port: '8080' },
+                  },
+                },
+              },
+            },
+          },
+          workspace,
+        );
+
+        expect(normalized.output.override.angular.baseUrl).toEqual({
+          apiId: 'example-api',
+          index: 1,
+          variables: { port: '8080' },
+        });
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+
+    it('throws for an invalid apiId', async () => {
+      const workspace = await createTempWorkspace();
+
+      try {
+        await expect(
+          normalizeOptions(
+            {
+              input: {
+                target: {
+                  openapi: '3.1.0',
+                  info: { title: 'Test', version: '1.0.0' },
+                  paths: {},
+                },
+              },
+              output: {
+                target: './generated.ts',
+                client: 'angular',
+                override: {
+                  angular: {
+                    baseUrl: { apiId: '1-not-valid' },
+                  },
+                },
+              },
+            },
+            workspace,
+          ),
+        ).rejects.toThrow(/apiId/);
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+
+    it('throws when combined with the top-level output.baseUrl', async () => {
+      const workspace = await createTempWorkspace();
+
+      try {
+        await expect(
+          normalizeOptions(
+            {
+              input: {
+                target: {
+                  openapi: '3.1.0',
+                  info: { title: 'Test', version: '1.0.0' },
+                  paths: {},
+                },
+              },
+              output: {
+                target: './generated.ts',
+                client: 'angular',
+                baseUrl: 'https://example.com',
+                override: {
+                  angular: {
+                    baseUrl: { apiId: 'example-api' },
+                  },
+                },
+              },
+            },
+            workspace,
+          ),
+        ).rejects.toThrow(/output\.baseUrl/);
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+
+    it('throws when combined with an empty-string output.baseUrl', async () => {
+      const workspace = await createTempWorkspace();
+
+      try {
+        await expect(
+          normalizeOptions(
+            {
+              input: {
+                target: {
+                  openapi: '3.1.0',
+                  info: { title: 'Test', version: '1.0.0' },
+                  paths: {},
+                },
+              },
+              output: {
+                target: './generated.ts',
+                client: 'angular',
+                baseUrl: '',
+                override: {
+                  angular: {
+                    baseUrl: { apiId: 'example-api' },
+                  },
+                },
+              },
+            },
+            workspace,
+          ),
+        ).rejects.toThrow(/output\.baseUrl/);
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+
+    it('warns when configured for a non-Angular client', async () => {
+      const workspace = await createTempWorkspace();
+      logWarningSpy.mockClear();
+
+      try {
+        await normalizeOptions(
+          {
+            input: {
+              target: {
+                openapi: '3.1.0',
+                info: { title: 'Test', version: '1.0.0' },
+                paths: {},
+              },
+            },
+            output: {
+              target: './generated.ts',
+              client: 'axios',
+              override: {
+                angular: {
+                  baseUrl: { apiId: 'example-api' },
+                },
+              },
+            },
+          },
+          workspace,
+        );
+
+        expect(logWarningSpy).toHaveBeenCalled();
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+
+    it('warns and drops a per-operation angular.baseUrl override', async () => {
+      const workspace = await createTempWorkspace();
+      logWarningSpy.mockClear();
+
+      try {
+        const normalized = await normalizeOptions(
+          {
+            input: {
+              target: {
+                openapi: '3.1.0',
+                info: { title: 'Test', version: '1.0.0' },
+                paths: {},
+              },
+            },
+            output: {
+              target: './generated.ts',
+              client: 'angular',
+              override: {
+                angular: { baseUrl: { apiId: 'example-api' } },
+                operations: {
+                  searchPets: {
+                    angular: { baseUrl: { apiId: 'other-api' } } as never,
+                  },
+                },
+              },
+            },
+          },
+          workspace,
+        );
+
+        expect(logWarningSpy).toHaveBeenCalled();
+        expect(
+          normalized.output.override.operations.searchPets?.angular,
+        ).not.toHaveProperty('baseUrl');
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('defaults angular queryObjectSerialization to spec (issue #3705)', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const normalized = await normalizeOptions(
+        {
+          input: {
+            target: {
+              openapi: '3.1.0',
+              info: { title: 'Test', version: '1.0.0' },
+              paths: {},
+            },
+          },
+          output: {
+            target: './generated.ts',
+          },
+        },
+        workspace,
+      );
+
+      expect(normalized.output.override.angular.queryObjectSerialization).toBe(
+        'spec',
+      );
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes an explicit angular queryObjectSerialization: legacy override', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const normalized = await normalizeOptions(
+        {
+          input: {
+            target: {
+              openapi: '3.1.0',
+              info: { title: 'Test', version: '1.0.0' },
+              paths: {},
+            },
+          },
+          output: {
+            target: './generated.ts',
+            override: {
+              angular: {
+                queryObjectSerialization: 'legacy',
+              },
+              operations: {
+                searchPets: {
+                  angular: {
+                    queryObjectSerialization: 'legacy',
+                  },
+                },
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      expect(normalized.output.override.angular.queryObjectSerialization).toBe(
+        'legacy',
+      );
+      expect(
+        normalized.output.override.operations.searchPets?.angular
+          ?.queryObjectSerialization,
+      ).toBe('legacy');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  // KNOWN LIMITATION (shared with `retrievalClient`/`runtimeValidation`,
+  // pre-existing before #3705): setting ANY per-operation `angular` field
+  // re-defaults the other angular fields to their global fallbacks at the
+  // `override.operations[op].angular` normalization step below, rather than
+  // inheriting the global value. The deep-merge that later combines this
+  // normalized per-operation block with the global `override.angular` (in
+  // `@orval/core`'s `generators/verbs-options.ts`) therefore overwrites a
+  // global non-default `client`/`queryObjectSerialization` with this
+  // re-defaulted value for that one operation. This test documents the
+  // current (unfixed) behavior at the normalization boundary this package
+  // owns — see plan risks for issue #3705.
+  it('re-defaults sibling angular fields to their global fallback when only one per-operation angular field is set', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const normalized = await normalizeOptions(
+        {
+          input: {
+            target: {
+              openapi: '3.1.0',
+              info: { title: 'Test', version: '1.0.0' },
+              paths: {},
+            },
+          },
+          output: {
+            target: './generated.ts',
+            override: {
+              angular: {
+                retrievalClient: 'httpResource',
+              },
+              operations: {
+                searchPets: {
+                  angular: {
+                    queryObjectSerialization: 'legacy',
+                  },
+                },
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      expect(normalized.output.override.angular.client).toBe('httpResource');
+      expect(
+        normalized.output.override.operations.searchPets?.angular
+          ?.queryObjectSerialization,
+      ).toBe('legacy');
+      // Documents the limitation: the per-operation block re-defaults
+      // `client` to `'httpClient'` instead of inheriting the global
+      // `'httpResource'`.
+      expect(
+        normalized.output.override.operations.searchPets?.angular?.client,
+      ).toBe('httpClient');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('normalizes schemas: false to undefined', async () => {
     const workspace = await createTempWorkspace();
 
@@ -344,7 +1033,47 @@ describe('normalizeOptions', () => {
         path: expect.any(String) as string,
         type: 'typescript',
         importPath: '@acme/models',
+        splitByTags: false,
       });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes zod/effect exactOptional (default false, opt-in true)', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const input = {
+        target: {
+          openapi: '3.1.0',
+          info: { title: 'Test', version: '1.0.0' },
+          paths: {},
+        },
+      };
+
+      const defaults = await normalizeOptions(
+        { input, output: { target: './generated.ts' } },
+        workspace,
+      );
+      expect(defaults.output.override.zod.exactOptional).toBe(false);
+      expect(defaults.output.override.effect.exactOptional).toBe(false);
+
+      const enabled = await normalizeOptions(
+        {
+          input,
+          output: {
+            target: './generated.ts',
+            override: {
+              zod: { exactOptional: true },
+              effect: { exactOptional: true },
+            },
+          },
+        },
+        workspace,
+      );
+      expect(enabled.output.override.zod.exactOptional).toBe(true);
+      expect(enabled.output.override.effect.exactOptional).toBe(true);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -378,6 +1107,7 @@ describe('normalizeOptions', () => {
         path: expect.any(String) as string,
         type: 'typescript',
         importPath: '@acme/models',
+        splitByTags: false,
       });
     } finally {
       await rm(workspace, { recursive: true, force: true });
@@ -980,6 +1710,55 @@ describe('normalizeOptions', () => {
     }
   });
 
+  it('defaults zod variant to classic and preserves mini when configured output-wide', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const classic = await normalizeOptions(
+        {
+          input: {
+            target: {
+              openapi: '3.1.0',
+              info: { title: 'Test', version: '1.0.0' },
+              paths: {},
+            },
+          },
+          output: {
+            target: './classic.ts',
+            client: 'zod',
+          },
+        },
+        workspace,
+      );
+      const mini = await normalizeOptions(
+        {
+          input: {
+            target: {
+              openapi: '3.1.0',
+              info: { title: 'Test', version: '1.0.0' },
+              paths: {},
+            },
+          },
+          output: {
+            target: './mini.ts',
+            client: 'zod',
+            override: {
+              zod: {
+                variant: 'mini',
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      expect(classic.output.override.zod.variant).toBe('classic');
+      expect(mini.output.override.zod.variant).toBe('mini');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('resolves global zod mutators relative to the output workspace', async () => {
     const workspace = await createTempWorkspace();
 
@@ -1027,6 +1806,121 @@ describe('normalizeOptions', () => {
       );
     } finally {
       await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('warns and strips output-only zod fields from operation and tag overrides', async () => {
+    const workspace = await createTempWorkspace();
+    logWarningSpy.mockClear();
+
+    try {
+      const normalized = await normalizeOptions(
+        {
+          input: {
+            target: {
+              openapi: '3.1.0',
+              info: { title: 'Test', version: '1.0.0' },
+              paths: {},
+            },
+          },
+          output: {
+            target: './generated.ts',
+            client: 'zod',
+            override: {
+              operations: {
+                listPets: {
+                  zod: {
+                    strict: { body: true },
+                    version: 3,
+                    variant: 'mini',
+                  } as never,
+                },
+              },
+              tags: {
+                Pets: {
+                  zod: {
+                    generate: { response: false },
+                    generateMeta: true,
+                  } as never,
+                },
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      expect(logWarningSpy).toHaveBeenCalledWith(
+        expect.stringContaining('override.operations.listPets.zod'),
+      );
+      expect(logWarningSpy).toHaveBeenCalledWith(
+        expect.stringContaining('override.tags.Pets.zod'),
+      );
+      expect(
+        'version' in
+          (normalized.output.override.operations.listPets?.zod ?? {}),
+      ).toBe(false);
+      expect(
+        'variant' in
+          (normalized.output.override.operations.listPets?.zod ?? {}),
+      ).toBe(false);
+      expect(
+        'generateMeta' in (normalized.output.override.tags.Pets?.zod ?? {}),
+      ).toBe(false);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      logWarningSpy.mockClear();
+    }
+  });
+
+  it('emits no zod object for operation/tag overrides that only carry unsupported fields', async () => {
+    const workspace = await createTempWorkspace();
+    logWarningSpy.mockClear();
+
+    try {
+      const normalized = await normalizeOptions(
+        {
+          input: {
+            target: {
+              openapi: '3.1.0',
+              info: { title: 'Test', version: '1.0.0' },
+              paths: {},
+            },
+          },
+          output: {
+            target: './generated.ts',
+            client: 'zod',
+            override: {
+              operations: {
+                listPets: {
+                  zod: {
+                    version: 3,
+                  } as never,
+                },
+              },
+              tags: {
+                Pets: {
+                  zod: {
+                    generateMeta: true,
+                  } as never,
+                },
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      // An unsupported-only entry must be a true no-op: no normalized zod
+      // object is emitted, so default strict/generate/coerce values can't leak
+      // in and override global `override.zod.*` during downstream merges.
+      expect(
+        normalized.output.override.operations.listPets?.zod,
+      ).toBeUndefined();
+      expect(normalized.output.override.tags.Pets?.zod).toBeUndefined();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      logWarningSpy.mockClear();
     }
   });
 
@@ -1198,6 +2092,43 @@ describe('normalizeOptions', () => {
     }
   });
 
+  it('keeps fetch boolean defaults when the user passes them as undefined', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const normalized = await normalizeOptions(
+        {
+          input: {
+            target: {
+              openapi: '3.1.0',
+              info: { title: 'Test', version: '1.0.0' },
+              paths: {},
+            },
+          },
+          output: {
+            target: './generated.ts',
+            override: {
+              fetch: {
+                serializeResponseHeaders: undefined,
+                includeHttpResponseReturnType: undefined,
+                forceSuccessResponse: undefined,
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      expect(normalized.output.override.fetch).toMatchObject({
+        serializeResponseHeaders: false,
+        includeHttpResponseReturnType: true,
+        forceSuccessResponse: false,
+      });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   describe('optionsParamRequired with fetch httpClient', () => {
     const fetchOptionsRequiredWarningPattern =
       /httpClient: 'fetch'.*optionsParamRequired.*cannot make.*options.*required/s;
@@ -1361,5 +2292,57 @@ describe('normalizeOptions', () => {
         await rm(workspace, { recursive: true, force: true });
       }
     });
+  });
+
+  it('useDatesTransform implies useDates', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const validSpecPath = path.join(workspace, 'petstore.yaml');
+      await writeFile(
+        validSpecPath,
+        'openapi: 3.1.0\ninfo:\n  title: Test\n  version: 1.0.0\npaths: {}\n',
+      );
+
+      const options = await normalizeOptions(
+        {
+          input: { target: validSpecPath },
+          output: {
+            target: 'gen.ts',
+            override: { useDatesTransform: true },
+          },
+        },
+        workspace,
+      );
+
+      expect(options.output.override.useDatesTransform).toBe(true);
+      expect(options.output.override.useDates).toBe(true);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('useDatesTransform defaults to false', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const validSpecPath = path.join(workspace, 'petstore.yaml');
+      await writeFile(
+        validSpecPath,
+        'openapi: 3.1.0\ninfo:\n  title: Test\n  version: 1.0.0\npaths: {}\n',
+      );
+
+      const options = await normalizeOptions(
+        {
+          input: { target: validSpecPath },
+          output: { target: 'gen.ts' },
+        },
+        workspace,
+      );
+
+      expect(options.output.override.useDatesTransform).toBe(false);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 });

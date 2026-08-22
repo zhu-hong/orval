@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 
 import { camel, pascal } from './case';
 import { kebab } from './case';
@@ -70,4 +70,40 @@ describe('kebab-case a few examples', () => {
       expect(kebab(input)).toBe(expected);
     });
   }
+});
+
+describe('property names inherited from Object.prototype', () => {
+  // A schema is free to name a property `toString` or `constructor`. The
+  // pascal cache is keyed by that name, so on an object literal the lookup
+  // read the inherited member back instead of a cached string.
+  for (const name of [
+    'toString',
+    'valueOf',
+    'constructor',
+    'hasOwnProperty',
+    'isPrototypeOf',
+    'toLocaleString',
+    'propertyIsEnumerable',
+  ]) {
+    it(`pascal('${name}') returns a string`, () => {
+      const result = pascal(name);
+      expect(typeof result).toBe('string');
+      expect(result).toBe(name.charAt(0).toUpperCase() + name.slice(1));
+    });
+
+    it(`camel('${name}') returns a string`, () => {
+      expect(camel(name)).toBe(name);
+    });
+  }
+
+  it('shapes __proto__ by the same word rules as any other name', () => {
+    expect(pascal('__proto__')).toBe('_Proto');
+    expect(camel('__proto__')).toBe('_proto');
+  });
+
+  it('returns the same value on a second call', () => {
+    expect(pascal('toString')).toBe(pascal('toString'));
+    expect(pascal('petTag')).toBe('PetTag');
+    expect(pascal('petTag')).toBe('PetTag');
+  });
 });

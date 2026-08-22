@@ -1,8 +1,11 @@
+import { existsSync } from 'node:fs';
 import { access } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import nodePath from 'node:path';
 import { styleText } from 'node:util';
 
 import {
+  type AngularBaseUrlOptions,
   type ConfigExternal,
   type EffectOptions,
   FormDataArrayHandling,
@@ -119,12 +122,22 @@ function normalizeSchemasOption(
     return normalizePath(schemas, workspace);
   }
 
+  if (!isString(schemas.path) || schemas.path.trim() === '') {
+    throw new Error(
+      styleText(
+        'red',
+        `\`schemas.path\` is required when \`schemas\` is an object (e.g. \`schemas: { path: './model', type: 'zod' }\`). To generate schemas alongside the target instead, omit \`schemas\` or set \`schemas: false\`.`,
+      ),
+    );
+  }
+
   validatePackageSpecifier(schemas.importPath, 'schemas.importPath');
 
   return {
     path: normalizePath(schemas.path, workspace),
     type: schemas.type ?? 'typescript',
     importPath: schemas.importPath,
+    splitByTags: schemas.splitByTags ?? false,
   };
 }
 
@@ -177,6 +190,66 @@ function validatePackageSpecifier(
   }
 }
 
+function looksLikePackageSpecifier(value: string): boolean {
+  return (
+    !!value &&
+    value.trim() === value &&
+    !value.startsWith('.') &&
+    !nodePath.isAbsolute(value) &&
+    !/^[A-Za-z]:[\\/]/.test(value) &&
+    !value.startsWith('\\\\')
+  );
+}
+
+function resolvePackageSpecifier(
+  workspace: string,
+  value: string,
+): string | undefined {
+  try {
+    return createRequire(nodePath.join(workspace, 'package.json')).resolve(
+      value,
+    );
+  } catch {
+    return;
+  }
+}
+
+function isPackageSpecifierCandidate(
+  workspace: string,
+  value: string,
+): boolean {
+  if (!looksLikePackageSpecifier(value)) {
+    return false;
+  }
+
+  if (existsSync(nodePath.resolve(workspace, value))) {
+    return false;
+  }
+
+  if (value.startsWith('@')) {
+    return true;
+  }
+
+  const [packageName] = value.split('/');
+
+  if (!value.includes('/')) {
+    return true;
+  }
+
+  for (let dir = workspace; ;) {
+    if (existsSync(nodePath.join(dir, 'node_modules', packageName))) {
+      return true;
+    }
+
+    const parent = nodePath.dirname(dir);
+    if (parent === dir) {
+      return false;
+    }
+
+    dir = parent;
+  }
+}
+
 function normalizeEffectOptions(
   effect?: EffectOptions,
 ): NormalizedEffectOptions {
@@ -197,6 +270,56 @@ function normalizeEffectOptions(
     },
     generateEachHttpStatus: effect?.generateEachHttpStatus ?? false,
     useBrandedTypes: effect?.useBrandedTypes ?? false,
+    exactOptional: effect?.exactOptional ?? false,
+  };
+}
+
+const ANGULAR_BASE_URL_API_ID_REGEX = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+/**
+ * Normalizes and validates `override.angular.baseUrl` (opt-in Angular DI
+ * base-URL composition, see `AngularBaseUrlOptions`).
+ *
+ * - `apiId` must be an explicit, stable identifier (`/^[A-Za-z][A-Za-z0-9_-]*$/`).
+ * - Mutually exclusive with the top-level `output.baseUrl`, which bakes a
+ *   static prefix into every generated route for ALL clients — combining
+ *   both would double-prefix (or conflict with) every URL.
+ * - Only meaningful for the `angular` client; warns (without dropping the
+ *   option) when configured for any other client.
+ */
+function normalizeAngularBaseUrl(
+  baseUrl: AngularBaseUrlOptions,
+  outputClient: unknown,
+  outputBaseUrl: unknown,
+): AngularBaseUrlOptions {
+  if (!baseUrl.apiId || !ANGULAR_BASE_URL_API_ID_REGEX.test(baseUrl.apiId)) {
+    throw new Error(
+      styleText(
+        'red',
+        `\`override.angular.baseUrl.apiId\` must be a non-empty string matching /^[A-Za-z][A-Za-z0-9_-]*$/ (got: ${JSON.stringify(baseUrl.apiId)}).`,
+      ),
+    );
+  }
+
+  if (outputBaseUrl !== undefined) {
+    throw new Error(
+      styleText(
+        'red',
+        "`override.angular.baseUrl` cannot be combined with the top-level `output.baseUrl`. Remove `output.baseUrl` — the base-URL token's server-URL fallback is resolved from the specification's `servers` field, or provide a custom resolver via the generated `provide<Api>BaseUrlResolver` helper.",
+      ),
+    );
+  }
+
+  if (outputClient !== OutputClient.ANGULAR) {
+    logWarning(
+      `⚠️  \`override.angular.baseUrl\` is only supported by the \`angular\` client. It has no effect for other clients.`,
+    );
+  }
+
+  return {
+    apiId: baseUrl.apiId,
+    ...(baseUrl.index !== undefined ? { index: baseUrl.index } : {}),
+    ...(baseUrl.variables ? { variables: baseUrl.variables } : {}),
   };
 }
 
@@ -430,6 +553,8 @@ export async function normalizeOptions(
       unionAddMissingProperties:
         outputOptions.unionAddMissingProperties ?? false,
       factoryMethods,
+      tagsSplitDeduplication: outputOptions.tagsSplitDeduplication ?? false,
+      commonTypesFileName: outputOptions.commonTypesFileName ?? 'common-types',
       override: {
         ...outputOptions.override,
         mock: {
@@ -446,6 +571,7 @@ export async function normalizeOptions(
           {
             query: globalQueryOptions,
           },
+          'operations',
         ),
         tags: normalizeOperationsAndTags(
           outputOptions.override?.tags ?? {},
@@ -453,6 +579,7 @@ export async function normalizeOptions(
           {
             query: globalQueryOptions,
           },
+          'tags',
         ),
         mutator: normalizeMutator(
           outputWorkspace,
@@ -581,6 +708,8 @@ export async function normalizeOptions(
                 ),
               }
             : {}),
+          variant: outputOptions.override?.zod?.variant ?? 'classic',
+          version: outputOptions.override?.zod?.version ?? 'auto',
           generateEachHttpStatus:
             outputOptions.override?.zod?.generateEachHttpStatus ?? false,
           useBrandedTypes:
@@ -588,6 +717,9 @@ export async function normalizeOptions(
           generateReusableSchemas:
             outputOptions.override?.zod?.generateReusableSchemas ?? false,
           generateMeta: outputOptions.override?.zod?.generateMeta ?? false,
+          generateDiscriminatedUnion:
+            outputOptions.override?.zod?.generateDiscriminatedUnion ?? false,
+          exactOptional: outputOptions.override?.zod?.exactOptional ?? false,
           dateTimeOptions: outputOptions.override?.zod?.dateTimeOptions ?? {
             offset: true,
           },
@@ -606,21 +738,38 @@ export async function normalizeOptions(
             'httpClient',
           runtimeValidation:
             outputOptions.override?.angular?.runtimeValidation ?? false,
+          queryObjectSerialization:
+            outputOptions.override?.angular?.queryObjectSerialization ?? 'spec',
           ...(outputOptions.override?.angular?.httpResource
             ? { httpResource: outputOptions.override.angular.httpResource }
             : {}),
+          ...(outputOptions.override?.angular?.baseUrl
+            ? {
+                baseUrl: normalizeAngularBaseUrl(
+                  outputOptions.override.angular.baseUrl,
+                  outputOptions.client ?? client,
+                  outputOptions.baseUrl,
+                ),
+              }
+            : {}),
         },
         fetch: {
+          // Spread first so an explicit `undefined` cannot erase a default below.
+          ...outputOptions.override?.fetch,
           includeHttpResponseReturnType:
             outputOptions.override?.fetch?.includeHttpResponseReturnType ??
             true,
           forceSuccessResponse:
             outputOptions.override?.fetch?.forceSuccessResponse ?? false,
+          serializeResponseHeaders:
+            outputOptions.override?.fetch?.serializeResponseHeaders ?? false,
           runtimeValidation:
             outputOptions.override?.fetch?.runtimeValidation ?? false,
           useRuntimeFetcher:
             outputOptions.override?.fetch?.useRuntimeFetcher ?? false,
-          ...outputOptions.override?.fetch,
+          ...(outputOptions.override?.fetch?.arrayFormat
+            ? { arrayFormat: outputOptions.override.fetch.arrayFormat }
+            : {}),
           ...(outputOptions.override?.fetch?.jsonReviver
             ? {
                 jsonReviver: normalizeMutator(
@@ -630,7 +779,10 @@ export async function normalizeOptions(
               }
             : {}),
         },
-        useDates: outputOptions.override?.useDates ?? false,
+        useDates:
+          (outputOptions.override?.useDates ?? false) ||
+          (outputOptions.override?.useDatesTransform ?? false),
+        useDatesTransform: outputOptions.override?.useDatesTransform ?? false,
         useDeprecatedOperations:
           outputOptions.override?.useDeprecatedOperations ?? true,
         enumGenerationType:
@@ -762,8 +914,15 @@ function normalizeMutator(
       throw new Error(styleText('red', `Mutator requires a path.`));
     }
 
+    const resolvedPath = looksLikePackageSpecifier(m.path)
+      ? resolvePackageSpecifier(workspace, m.path)
+      : undefined;
+    const isPackageSpecifier =
+      !!resolvedPath || isPackageSpecifierCandidate(workspace, m.path);
+
     return {
-      path: nodePath.resolve(workspace, m.path),
+      path: isPackageSpecifier ? m.path : nodePath.resolve(workspace, m.path),
+      ...(resolvedPath ? { resolvedPath } : {}),
       name: m.name,
       default: m.default ?? !m.name,
       alias: m.alias,
@@ -773,8 +932,15 @@ function normalizeMutator(
   }
 
   if (isString(mutator)) {
+    const resolvedPath = looksLikePackageSpecifier(mutator)
+      ? resolvePackageSpecifier(workspace, mutator)
+      : undefined;
+    const isPackageSpecifier =
+      !!resolvedPath || isPackageSpecifierCandidate(workspace, mutator);
+
     return {
-      path: nodePath.resolve(workspace, mutator),
+      path: isPackageSpecifier ? mutator : nodePath.resolve(workspace, mutator),
+      ...(resolvedPath ? { resolvedPath } : {}),
       default: true,
     };
   }
@@ -835,7 +1001,7 @@ async function resolveFirstValidTarget(
   );
 }
 
-function getHeadersForUrl(
+export function getHeadersForUrl(
   url: string,
   headersConfig?: NonNullable<InputOptions['parserOptions']>['headers'],
 ): Record<string, string> {
@@ -897,7 +1063,19 @@ function normalizeOperationsAndTags(
   global: {
     query: NormalizedQueryOptions;
   },
+  source: 'operations' | 'tags',
 ): Record<string, NormalizedOperationOptions> {
+  const unsupportedZodKeys = [
+    'version',
+    'variant',
+    'dateTimeOptions',
+    'timeOptions',
+    'generateEachHttpStatus',
+    'generateReusableSchemas',
+    'generateMeta',
+    'generateDiscriminatedUnion',
+  ] as const;
+
   return Object.fromEntries(
     Object.entries(operationsOrTags).map(
       ([
@@ -916,6 +1094,45 @@ function normalizeOperationsAndTags(
           ...rest
         },
       ]) => {
+        const unsupportedOperationZodKeys =
+          zod &&
+          unsupportedZodKeys.filter(
+            (unsupportedKey) =>
+              (zod as Record<string, unknown>)[unsupportedKey] !== undefined,
+          );
+
+        if (unsupportedOperationZodKeys && unsupportedOperationZodKeys.length) {
+          const fieldLabel =
+            unsupportedOperationZodKeys.length === 1 ? 'field' : 'fields';
+          const unsupportedFields = unsupportedOperationZodKeys
+            .map((unsupportedKey) => `zod.${unsupportedKey}`)
+            .join(', ');
+
+          logWarning(
+            `⚠️  override.${source}.${key}.zod only supports strict, generate, coerce, preprocess, params, and useBrandedTypes. Ignoring unsupported ${fieldLabel}: ${unsupportedFields}.`,
+          );
+        }
+
+        // Only emit a normalized zod object when the entry actually carries a
+        // supported operation-level field. Otherwise an unsupported-only entry
+        // (e.g. `{ version: 3 }`) would inject default strict/generate/coerce
+        // values that override global `override.zod.*` during downstream merges,
+        // contradicting the "ignored" warning above.
+        const hasSupportedOperationZodConfig =
+          !!zod &&
+          (zod.strict !== undefined ||
+            zod.generate !== undefined ||
+            zod.coerce !== undefined ||
+            zod.preprocess !== undefined ||
+            zod.params !== undefined ||
+            zod.useBrandedTypes !== undefined);
+
+        if (angular?.baseUrl) {
+          logWarning(
+            `⚠️  override.${source}.${key}.angular.baseUrl is not supported — \`baseUrl\` is an output-level concern and is configured via \`override.angular.baseUrl\`. Ignoring.`,
+          );
+        }
+
         return [
           key,
           {
@@ -927,6 +1144,8 @@ function normalizeOperationsAndTags(
                     client:
                       angular.retrievalClient ?? angular.client ?? 'httpClient',
                     runtimeValidation: angular.runtimeValidation ?? false,
+                    queryObjectSerialization:
+                      angular.queryObjectSerialization ?? 'spec',
                     ...(angular.httpResource
                       ? { httpResource: angular.httpResource }
                       : {}),
@@ -938,7 +1157,7 @@ function normalizeOperationsAndTags(
                   query: normalizeQueryOptions(query, workspace, global.query),
                 }
               : {}),
-            ...(zod
+            ...(hasSupportedOperationZodConfig && zod
               ? {
                   zod: {
                     strict: {
@@ -1009,13 +1228,7 @@ function normalizeOperationsAndTags(
                           params: normalizeMutator(workspace, zod.params),
                         }
                       : {}),
-                    generateEachHttpStatus: zod.generateEachHttpStatus ?? false,
                     useBrandedTypes: zod.useBrandedTypes ?? false,
-                    generateReusableSchemas:
-                      zod.generateReusableSchemas ?? false,
-                    generateMeta: zod.generateMeta ?? false,
-                    dateTimeOptions: zod.dateTimeOptions ?? { offset: true },
-                    timeOptions: zod.timeOptions ?? {},
                   },
                 }
               : {}),
@@ -1302,7 +1515,7 @@ function normalizeQueryOptions(
   };
 }
 
-export function getDefaultFilesHeader({
+function getDefaultFilesHeader({
   title,
   description,
   version,
@@ -1312,7 +1525,7 @@ export function getDefaultFilesHeader({
   version?: string;
 } = {}) {
   return [
-    `Generated by ${pkg.name} v${pkg.version} 🍺`,
+    `Generated by ${pkg.name} 🍺`,
     `Do not edit manually.`,
     ...(title ? [title] : []),
     ...(description ? [description] : []),

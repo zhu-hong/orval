@@ -1,15 +1,21 @@
 import {
   DefaultTag,
-  type GeneratorMockOutput,
   type GeneratorMockOutputFull,
   type GeneratorOperation,
-  type GeneratorTarget,
   type GeneratorTargetFull,
   type NormalizedOutputOptions,
   OutputClient,
   type WriteSpecBuilder,
 } from '../types';
-import { compareVersions, kebab, pascal } from '../utils';
+import {
+  escapeRegExp,
+  getOperationTagKey,
+  isOperationInTagBucket,
+  pascal,
+} from '../utils';
+import { flattenMockOutput } from './mock-outputs';
+import type { GeneratorTargetWithFull } from './target';
+import { hasTypeScriptAwaitedType } from './typescript-version';
 
 /**
  * Ensures every operation has at least one tag by falling back to the
@@ -34,13 +40,54 @@ function emptyMockOutputFull(
   };
 }
 
-function flattenMockOutput(full: GeneratorMockOutputFull): GeneratorMockOutput {
+function aliasConflictingSchemaFactory(
+  mockOutput: GeneratorMockOutputFull,
+  localMockName: string,
+): GeneratorMockOutputFull {
+  if (!mockOutput.implementation.handlerName) {
+    return mockOutput;
+  }
+
+  const hasCollision = mockOutput.imports.some(
+    (imp) => imp.schemaFactory && (imp.alias ?? imp.name) === localMockName,
+  );
+  if (!hasCollision) {
+    return mockOutput;
+  }
+
+  const implementation = Object.values(mockOutput.implementation).join('\n');
+  const usedBindings = new Set(
+    mockOutput.imports.map((imp) => imp.alias ?? imp.name),
+  );
+  let alias = `${localMockName}SchemaFactory`;
+  let suffix = 2;
+  while (
+    usedBindings.has(alias) ||
+    new RegExp(String.raw`\b${escapeRegExp(alias)}\b`).test(implementation)
+  ) {
+    alias = `${localMockName}SchemaFactory${suffix}`;
+    suffix += 1;
+  }
+
+  const bindingPattern = new RegExp(
+    String.raw`\b${escapeRegExp(localMockName)}\b`,
+    'g',
+  );
+  const replaceBinding = (value: string) =>
+    value.replaceAll(bindingPattern, alias);
+
   return {
-    type: full.type,
-    implementation: full.implementation.function + full.implementation.handler,
-    imports: full.imports,
-    strictMockSchemaTypeNames: full.strictMockSchemaTypeNames,
-    strictMockSchemaKinds: full.strictMockSchemaKinds,
+    ...mockOutput,
+    implementation: {
+      function: replaceBinding(mockOutput.implementation.function),
+      handler: replaceBinding(mockOutput.implementation.handler),
+      handlerName: replaceBinding(mockOutput.implementation.handlerName),
+    },
+    imports: mockOutput.imports.map((imp) =>
+      imp.schemaFactory && (imp.alias ?? imp.name) === localMockName
+        ? { ...imp, alias }
+        : imp,
+    ),
   };
 }
 
@@ -118,7 +165,7 @@ function generateTargetTags(
   currentAcc: Record<string, GeneratorTargetFull>,
   operation: GeneratorOperation,
 ): Record<string, GeneratorTargetFull> {
-  const tag = kebab(operation.tags[0]);
+  const tag = getOperationTagKey(operation);
 
   if (!(tag in currentAcc)) {
     currentAcc[tag] = {
@@ -199,22 +246,15 @@ export function generateTargetForTags(
         const isMutator = !!target.mutators?.some((mutator) =>
           isAngularClient ? mutator.hasThirdArg : mutator.hasSecondArg,
         );
-        const operationNames = Object.values(builder.operations)
-          // Operations can have multiple tags, but they are grouped by the first
-          // tag, therefore we only want to handle the case where the tag
-          // is the first in the list of tags.
-          .filter(
-            ({ tags }) =>
-              tags.map((tag) => kebab(tag)).indexOf(kebab(tag)) === 0,
-          )
-          .map(({ operationName }) => operationName);
+        const operationNames = operations
+          // Operations can have multiple tags, but they are grouped by their
+          // primary (first) tag. Filtering through the canonical
+          // `isOperationInTagBucket` keeps this in lockstep with how the
+          // buckets above were built, including untagged operations that were
+          // routed into the implicit `default` bucket by `addDefaultTagIfEmpty`.
+          .filter((operation) => isOperationInTagBucket(operation, tag));
 
-        const typescriptVersion =
-          options.packageJson?.dependencies?.typescript ??
-          options.packageJson?.devDependencies?.typescript ??
-          '4.4.0';
-
-        const hasAwaitedType = compareVersions(typescriptVersion, '4.5.0');
+        const hasAwaitedType = hasTypeScriptAwaitedType(options.packageJson);
 
         const titles = builder.title({
           outputClient: options.client,
@@ -225,7 +265,10 @@ export function generateTargetForTags(
 
         const footer = builder.footer({
           outputClient: options.client,
-          operationNames,
+          operationNames: operationNames.map(
+            ({ operationName }) => operationName,
+          ),
+          operations: operationNames,
           hasMutator: !!target.mutators?.length,
           hasAwaitedType,
           titles,
@@ -251,29 +294,44 @@ export function generateTargetForTags(
           clientImplementation: target.implementation,
         });
 
+        const sharedTypes = header.sharedTypes;
+        const deduplicationActive =
+          options.tagsSplitDeduplication && !options.workspace;
+        const inlinedSharedTypes =
+          !deduplicationActive && sharedTypes && sharedTypes.length > 0
+            ? sharedTypes
+                .map((t) => `${t.exported ? 'export ' : ''}${t.code}`)
+                .join('\n') + '\n\n'
+            : '';
+
         // Apply the per-tag header/footer wrap to each mock output that has
         // accumulated handler entries. Mock outputs without a handler (faker
         // only) skip the wrap.
         const wrappedMockOutputs: GeneratorMockOutputFull[] =
-          target.mockOutputs.map((m) => ({
-            type: m.type,
-            implementation: {
-              function: m.implementation.function,
-              handler: m.implementation.handlerName
-                ? m.implementation.handler +
-                  header.implementationMock +
-                  m.implementation.handlerName +
-                  footer.implementationMock
-                : m.implementation.handler,
-              handlerName: m.implementation.handlerName,
-            },
-            imports: m.imports,
-            strictMockSchemaTypeNames: m.strictMockSchemaTypeNames,
-            strictMockSchemaKinds: m.strictMockSchemaKinds,
-          }));
+          target.mockOutputs.map((mockOutput) => {
+            const collisionSafeMockOutput = aliasConflictingSchemaFactory(
+              mockOutput,
+              titles.implementationMock,
+            );
+
+            return {
+              ...collisionSafeMockOutput,
+              implementation: {
+                function: collisionSafeMockOutput.implementation.function,
+                handler: collisionSafeMockOutput.implementation.handlerName
+                  ? collisionSafeMockOutput.implementation.handler +
+                    header.implementationMock +
+                    collisionSafeMockOutput.implementation.handlerName +
+                    footer.implementationMock
+                  : collisionSafeMockOutput.implementation.handler,
+                handlerName: collisionSafeMockOutput.implementation.handlerName,
+              },
+            };
+          });
 
         transformed[tag] = {
           implementation:
+            inlinedSharedTypes +
             header.implementation +
             target.implementation +
             footer.implementation,
@@ -286,17 +344,19 @@ export function generateTargetForTags(
           paramsSerializer: target.paramsSerializer,
           paramsFilter: target.paramsFilter,
           fetchReviver: target.fetchReviver,
+          sharedTypes: deduplicationActive ? sharedTypes : undefined,
         };
       }
       allTargetTags = transformed;
     }
   }
 
-  const result: Record<string, GeneratorTarget> = {};
+  const result: Record<string, GeneratorTargetWithFull> = {};
   for (const [tag, target] of Object.entries(allTargetTags)) {
     result[tag] = {
       ...target,
       mockOutputs: target.mockOutputs.map((m) => flattenMockOutput(m)),
+      mockOutputsFull: target.mockOutputs,
     };
   }
   return result;

@@ -1,7 +1,13 @@
 import path from 'node:path';
 
 import { generateModelsInline, generateMutatorImports } from '../generators';
-import { OutputClient, OutputMockType, type WriteModeProps } from '../types';
+import {
+  type MswMockOptions,
+  OutputClient,
+  OutputMockType,
+  type SharedTypeDeclaration,
+  type WriteModeProps,
+} from '../types';
 import {
   conventionName,
   getFileInfo,
@@ -24,6 +30,12 @@ import {
   collectRecoveredSchemaFactoryImports,
   mergeGeneratorImports,
 } from './mock-imports';
+import {
+  buildCrossFileFakerImports,
+  buildFakerReexportStatement,
+  collapseMswFakerFullOutputs,
+  flattenMockOutput,
+} from './mock-outputs';
 import { getMockDir, resolveMockSchemasPath } from './mock-utils';
 import { generateTargetForTags } from './target-tags';
 import { getOrvalGeneratedTypes, getTypedResponse } from './types';
@@ -35,6 +47,7 @@ export async function writeSplitTagsMode({
   header,
   needSchema,
   generateSchemasInline,
+  schemaTagMap,
 }: WriteModeProps): Promise<string[]> {
   const { filename, dirname, extension } = getFileInfo(output.target, {
     backupFilename: conventionName(
@@ -59,10 +72,15 @@ export async function writeSplitTagsMode({
   const seenMockIndexKeys = new Set<string>();
 
   const schemasTarget = output.schemas
-    ? getFileInfo(
-        isString(output.schemas) ? output.schemas : output.schemas.path,
-        { extension: output.fileExtension },
-      ).dirname
+    ? // `output.schemas(.path)` already *is* the schemas directory. Use it
+      // directly rather than `getFileInfo(...).dirname`, which collapses to the
+      // parent directory when the name contains a dot, e.g. `*.schemas` (#3624)
+      // — that broke the mock files' schema imports derived from `schemasTarget`
+      // via `resolveMockSchemasPath`. For a dot-free name `getFileInfo(...)
+      // .dirname` returns the same directory, so existing output is unchanged.
+      isString(output.schemas)
+      ? output.schemas
+      : output.schemas.path
     : path.join(
         dirname,
         filename + '.schemas' + getImportExtension(extension, output.tsconfig),
@@ -72,13 +90,40 @@ export async function writeSplitTagsMode({
     a.localeCompare(b),
   );
 
+  const deduplicationEnabled =
+    output.tagsSplitDeduplication && !output.workspace;
+
+  const collectedSharedTypes: SharedTypeDeclaration[] = [];
+  const seenSharedTypeNames = new Set<string>();
+  for (const [, target] of tagEntries) {
+    if (!target.sharedTypes) continue;
+    for (const t of target.sharedTypes) {
+      if (!seenSharedTypeNames.has(t.name)) {
+        seenSharedTypeNames.add(t.name);
+        collectedSharedTypes.push(t);
+      }
+    }
+  }
+
+  const commonTypesImportExtension = getImportExtension(
+    extension,
+    output.tsconfig,
+  );
+  const commonTypesBasename = output.commonTypesFileName;
+  const commonTypesPath = path.join(dirname, commonTypesBasename + extension);
+  const commonTypesRelativeImport =
+    '..' +
+    '/' +
+    commonTypesBasename +
+    (deduplicationEnabled ? commonTypesImportExtension : '');
+
   const generatedFilePathsArray = await Promise.all(
     tagEntries.map(async ([tag, target]) => {
       try {
         const {
           imports,
           implementation,
-          mockOutputs,
+          mockOutputsFull,
           mutators,
           clientMutators,
           formData,
@@ -88,18 +133,40 @@ export async function writeSplitTagsMode({
           paramsFilter,
         } = target;
 
+        const mswGeneratorEntry = output.mock.generators.find(
+          (g): g is MswMockOptions =>
+            !isFunction(g) && g.type === OutputMockType.MSW,
+        );
+        const collapsedFull = collapseMswFakerFullOutputs(mockOutputsFull, {
+          mswOperationResponses: mswGeneratorEntry?.operationResponses,
+        });
+        const mockOutputs = collapsedFull.map((m) => flattenMockOutput(m));
+
         let implementationData = header;
+
+        if (
+          deduplicationEnabled &&
+          target.sharedTypes &&
+          target.sharedTypes.length > 0
+        ) {
+          const typeNames = target.sharedTypes.map((t) => t.name).join(', ');
+          implementationData += `import type { ${typeNames} } from '${commonTypesRelativeImport}';\n`;
+        }
 
         const importerPath = path.join(dirname, tag, tag + extension);
         const schemaCustomImportPath = getSchemasImportPath(output.schemas);
         const relativeSchemasPath = output.schemas
           ? (schemaCustomImportPath ??
+            // `output.schemas(.path)` is a directory. Resolve the relative
+            // import to it directly (with the file extension kept) so the path
+            // stays correct even when the directory does not exist on disk yet
+            // and when its name contains a dot, e.g. `*.schemas` (#3624).
+            // Deriving it from `getFileInfo(...).dirname` collapsed to `../.`
+            // in those cases.
             upath.getRelativeImportPath(
               importerPath,
-              getFileInfo(
-                isString(output.schemas) ? output.schemas : output.schemas.path,
-                { extension: output.fileExtension },
-              ).dirname,
+              isString(output.schemas) ? output.schemas : output.schemas.path,
+              true,
             ))
           : '../' +
             filename +
@@ -138,6 +205,7 @@ export async function writeSplitTagsMode({
           output,
           adjustedImports,
           relativeSchemasPath,
+          schemaTagMap,
         );
 
         implementationData += builder.imports({
@@ -242,6 +310,38 @@ export async function writeSplitTagsMode({
 
         const mockPaths: string[] = [];
 
+        const hasFaker = mockOutputs.some(
+          (m) => m.type === OutputMockType.FAKER,
+        );
+        // Only import from the faker file when the collapse actually moved
+        // the factories there, importing names that are still declared
+        // locally would clash.
+        const mswFactoriesMoved =
+          hasFaker &&
+          collapsedFull.some(
+            (m) =>
+              m.type === OutputMockType.MSW &&
+              m.implementation.function.trim().length === 0,
+          );
+        const fakerImplementation =
+          mockOutputs.find((m) => m.type === OutputMockType.FAKER)
+            ?.implementation ?? '';
+        const fakerEntry = output.mock.generators.find(
+          (g) => !isFunction(g) && g.type === OutputMockType.FAKER,
+        );
+        const fakerDir = fakerEntry
+          ? (getMockDir(fakerEntry, output.mock) ?? dirname)
+          : dirname;
+        const fakerFilePath = path.join(
+          fakerDir,
+          tag,
+          tag + '.faker' + extension,
+        );
+        const fakerImportExtension = getImportExtension(
+          extension,
+          output.tsconfig,
+        );
+
         for (const mockOutput of mockOutputs) {
           const rawEntry = output.mock.generators.find((g) => {
             if (isFunction(g)) return mockOutput.type === OutputMockType.MSW;
@@ -288,16 +388,29 @@ export async function writeSplitTagsMode({
                 )
               : [];
 
+          const crossFileFakerImports =
+            mswFactoriesMoved && mockOutput.type === OutputMockType.MSW
+              ? buildCrossFileFakerImports(
+                  mockFilePath,
+                  fakerFilePath,
+                  mockOutput.implementation,
+                  fakerImplementation,
+                  fakerImportExtension,
+                )
+              : [];
+
           const importsMockForBuilder = generateImportsForBuilder(
             output,
             filterLocalStrictMockTypeImports(
               mergeGeneratorImports(
                 mockOutput.imports,
                 recoveredSchemaFactoryImports,
+                crossFileFakerImports,
               ),
               finalizeMockOptions.strictSchemaTypeNames,
             ),
             mockRelativeSchemasPath,
+            schemaTagMap,
           );
 
           let mockData = header;
@@ -309,6 +422,9 @@ export async function writeSplitTagsMode({
             isAllowSyntheticDefaultImports,
             options: isFunction(rawEntry) ? undefined : rawEntry,
           });
+          // Re-export the factories so importing them from the msw file keeps
+          // working.
+          mockData += buildFakerReexportStatement(crossFileFakerImports);
           mockData += `\n${finalizedMockImplementation}`;
 
           await writeGeneratedFile(mockFilePath, mockData);
@@ -363,6 +479,48 @@ export async function writeSplitTagsMode({
     }
   }
 
+  let commonTypesFilePath: string | undefined;
+  if (deduplicationEnabled && collectedSharedTypes.length > 0) {
+    const commonTypesContent =
+      collectedSharedTypes.map((t) => `export ${t.code}`).join('\n') + '\n';
+    commonTypesFilePath = commonTypesPath;
+    await writeGeneratedFile(commonTypesPath, commonTypesContent);
+  }
+
+  let indexFilePath: string | undefined;
+  if (output.indexFiles && deduplicationEnabled && tagEntries.length > 0) {
+    const importExtension = getImportExtension(
+      output.fileExtension,
+      output.tsconfig,
+    );
+    const serviceSuffix =
+      OutputClient.ANGULAR === output.client ? '.service' : '';
+
+    const publicSharedTypeNames = collectedSharedTypes
+      .filter((t) => t.exported)
+      .map((t) => t.name);
+
+    const namedReExports =
+      publicSharedTypeNames.length > 0
+        ? `export type { ${publicSharedTypeNames.join(', ')} } from './${commonTypesBasename}${importExtension}';\n`
+        : '';
+
+    const tagReExports = tagEntries
+      .map(([tag]) => {
+        const tagFile = upath.joinSafe(
+          './',
+          tag,
+          tag + serviceSuffix + importExtension,
+        );
+        return `export * from '${tagFile}';\n`;
+      })
+      .join('');
+
+    const indexContent = namedReExports + tagReExports;
+    indexFilePath = path.join(dirname, `index${extension}`);
+    await writeGeneratedFile(indexFilePath, indexContent);
+  }
+
   return [
     ...new Set([
       ...(output.mock.indexMockFiles
@@ -370,6 +528,8 @@ export async function writeSplitTagsMode({
             path.join(mockDir, `index.${ext}${extension}`),
           )
         : []),
+      ...(commonTypesFilePath ? [commonTypesFilePath] : []),
+      ...(indexFilePath ? [indexFilePath] : []),
       ...generatedFilePathsArray.flat(),
     ]),
   ];

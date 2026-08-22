@@ -1,6 +1,7 @@
 /* eslint-disable unicorn/no-null */
 import type { ContextSpec, OpenApiSchemaObjectType } from '@orval/core';
-import { describe, expect, it } from 'vitest';
+import { EnumGeneration } from '@orval/core';
+import { describe, expect, it } from 'vite-plus/test';
 
 import { createTestContextSpec } from '../../../../core/src/test-utils/context';
 import { getMockScalar } from './scalar';
@@ -1068,6 +1069,164 @@ describe('getMockScalar (enum value escaping #3505)', () => {
 
     expect(result.value).toBe(
       "faker.helpers.arrayElement(['Asia/Tokyo','America/New_York'] as const)",
+    );
+  });
+});
+
+describe('getMockScalar (schema-scoped overrides)', () => {
+  const baseArg = {
+    imports: [],
+    operationId: 'test-operation',
+    tags: [],
+    existingReferencedProperties: [],
+    splitMockImplementations: [],
+  };
+
+  const colorItem = (parentName: string) => ({
+    type: 'string' as OpenApiSchemaObjectType,
+    name: 'color',
+    parentName,
+  });
+
+  it('applies a schema-scoped override only inside the matching schema', () => {
+    const mockOptions = {
+      schemas: {
+        Apple: { properties: { color: "'red'" } },
+        Car: { properties: { color: "'midnight black'" } },
+      },
+    };
+
+    const apple = getMockScalar({
+      ...baseArg,
+      item: colorItem('Apple'),
+      mockOptions,
+      context: scalarContext(),
+    });
+    expect(apple.value).toBe("'red'");
+    expect(apple.overrided).toBe(true);
+
+    const car = getMockScalar({
+      ...baseArg,
+      item: colorItem('Car'),
+      mockOptions,
+      context: scalarContext(),
+    });
+    expect(car.value).toBe("'midnight black'");
+  });
+
+  it('falls through to the default mock when the schema name does not match', () => {
+    const result = getMockScalar({
+      ...baseArg,
+      item: colorItem('Banana'),
+      mockOptions: { schemas: { Apple: { properties: { color: "'red'" } } } },
+      context: scalarContext(),
+    });
+
+    expect(result.value).not.toBe("'red'");
+    expect(result.value).toContain('faker.string.alpha');
+  });
+
+  it('does not apply a schema-scoped override when the item has no parentName', () => {
+    const result = getMockScalar({
+      ...baseArg,
+      item: { type: 'string' as OpenApiSchemaObjectType, name: 'color' },
+      mockOptions: { schemas: { Apple: { properties: { color: "'red'" } } } },
+      context: scalarContext(),
+    });
+
+    expect(result.value).toContain('faker.string.alpha');
+  });
+
+  it('prefers an operation-scoped override over a schema-scoped one', () => {
+    const result = getMockScalar({
+      ...baseArg,
+      item: colorItem('Apple'),
+      mockOptions: {
+        operations: {
+          'test-operation': { properties: { color: "'op-color'" } },
+        },
+        schemas: { Apple: { properties: { color: "'red'" } } },
+      },
+      context: scalarContext(),
+    });
+
+    expect(result.value).toBe("'op-color'");
+  });
+
+  it('prefers a schema-scoped override over a global property override', () => {
+    const result = getMockScalar({
+      ...baseArg,
+      item: colorItem('Apple'),
+      mockOptions: {
+        properties: { color: "'global-color'" },
+        schemas: { Apple: { properties: { color: "'red'" } } },
+      },
+      context: scalarContext(),
+    });
+
+    expect(result.value).toBe("'red'");
+  });
+});
+
+describe('getMockScalar (referenced string enum by enumGenerationType #3690)', () => {
+  const baseArg = {
+    imports: [],
+    operationId: 'test-operation',
+    tags: [],
+    existingReferencedProperties: [],
+    splitMockImplementations: [],
+  };
+
+  const enumRefItem = {
+    type: 'string' as OpenApiSchemaObjectType,
+    enum: ['ONE', 'TWO', 'THREE'],
+    name: 'MyEnum',
+    isRef: true,
+  };
+
+  it('inlines the enum values for `union` (a union type has no runtime value)', () => {
+    const result = getMockScalar({
+      ...baseArg,
+      item: { ...enumRefItem },
+      context: scalarContext({ enumGenerationType: EnumGeneration.UNION }),
+    });
+
+    expect(result.value).toBe(
+      "faker.helpers.arrayElement(['ONE','TWO','THREE'] as const)",
+    );
+    // No value import: the union type must not be referenced as a value.
+    expect(result.imports).not.toContainEqual(
+      expect.objectContaining({ name: 'MyEnum', values: true }),
+    );
+  });
+
+  it('uses Object.values for `enum` (a native enum is a runtime object)', () => {
+    const result = getMockScalar({
+      ...baseArg,
+      item: { ...enumRefItem },
+      context: scalarContext({ enumGenerationType: EnumGeneration.ENUM }),
+    });
+
+    expect(result.value).toBe(
+      'faker.helpers.arrayElement(Object.values(MyEnum))',
+    );
+    expect(result.imports).toContainEqual(
+      expect.objectContaining({ name: 'MyEnum', values: true }),
+    );
+  });
+
+  it('uses Object.values for `const` (a const object is a runtime value)', () => {
+    const result = getMockScalar({
+      ...baseArg,
+      item: { ...enumRefItem },
+      context: scalarContext({ enumGenerationType: EnumGeneration.CONST }),
+    });
+
+    expect(result.value).toBe(
+      'faker.helpers.arrayElement(Object.values(MyEnum))',
+    );
+    expect(result.imports).toContainEqual(
+      expect.objectContaining({ name: 'MyEnum', values: true }),
     );
   });
 });

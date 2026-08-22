@@ -9,17 +9,20 @@ import {
   type GeneratorDependency,
   type GeneratorOptions,
   type GeneratorVerbOptions,
+  type GeneratorMutator,
   GetterPropType,
-  isBinaryContentType,
   isObject,
   makeRouteSafe,
+  type OpenApiOperationObject,
   type OpenApiParameterObject,
   type OpenApiReferenceObject,
   type OpenApiSchemaObject,
   pascal,
   resolveRef,
+  type SharedTypeDeclaration,
   stringify,
   toObjectString,
+  type Verbs,
 } from '@orval/core';
 
 const WILDCARD_STATUS_CODE_REGEX = /^[1-5]XX$/i;
@@ -52,16 +55,34 @@ const FETCH_DEPENDENCIES: GeneratorDependency[] = [
   },
 ];
 
+/** Returns the list of generator dependencies required by the fetch client (e.g. zod). */
 export const getFetchDependencies = () => FETCH_DEPENDENCIES;
 
 const isRawRequestBodyContentType = (contentType: string) =>
-  contentType === 'text/plain' || isBinaryContentType(contentType);
+  contentType === 'text/plain';
 
+const getRequestOptionsType = (mutator?: GeneratorMutator) => {
+  if (!mutator || !mutator.hasSecondArg) {
+    return 'options?: RequestInit';
+  }
+
+  return mutator.isHook
+    ? `options?: Parameters<ReturnType<typeof ${mutator.name}>>[1]`
+    : `options?: Parameters<typeof ${mutator.name}>[1]`;
+};
+
+/**
+ * Generates the URL helper function and the fetch request function for a single
+ * OpenAPI operation. Handles query-param serialization (explode, arrayFormat,
+ * paramsSerializer), request body encoding, response parsing, and optional
+ * runtime Zod validation.
+ */
 export const generateRequestFunction = (
   {
     queryParams,
     headers,
     operationName,
+    typeName,
     response,
     mutator,
     body,
@@ -72,6 +93,7 @@ export const generateRequestFunction = (
     formUrlEncoded,
     override,
     doc,
+    paramsSerializer,
   }: GeneratorVerbOptions,
   { route: _route, context, pathRoute }: GeneratorOptions,
 ) => {
@@ -85,6 +107,14 @@ export const generateRequestFunction = (
   const isFormData = !override.formData.disabled;
   const isFormUrlEncoded = override.formUrlEncoded !== false;
 
+  const GET_HEADERS_HELPER = `  const getHeaders = (h?: HeadersInit | Headers): Record<string, string> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Array.isArray(h)) return Object.fromEntries(h);
+    return h;
+  };
+`;
+
   const getUrlFnName = camel(`get-${operationName}-url`);
   const getUrlFnProps = toObjectString(
     props.filter(
@@ -96,24 +126,24 @@ export const generateRequestFunction = (
     'implementation',
   );
 
-  const spec = context.spec.paths?.[pathRoute];
+  const spec = context.spec.paths?.[pathRoute] as
+    | Partial<Record<Verbs, OpenApiOperationObject>>
+    | undefined;
   const parameters = spec?.[verb]?.parameters ?? [];
   const parameterObjects = parameters.map((parameter) => {
     const { schema } = resolveRef(parameter, context);
     return schema as OpenApiParameterObject;
   });
 
-  const explodeParameters = parameterObjects.filter((parameterObject) => {
-    if (!parameterObject.schema) {
-      return false;
-    }
+  const arrayFormat = override.fetch.arrayFormat;
 
+  const isArrayLikeParam = (parameterObject: OpenApiParameterObject) => {
+    if (!parameterObject.schema) return false;
     const { schema: schemaObject } = resolveSchemaRef(
       parameterObject.schema,
       context,
     );
-
-    const isArrayLike =
+    return (
       schemaObject.type === 'array' ||
       (
         (schemaObject.oneOf as
@@ -129,19 +159,53 @@ export const generateRequestFunction = (
         (schemaObject.allOf as
           | (OpenApiSchemaObject | OpenApiReferenceObject)[]
           | undefined) ?? []
-      ).some((s) => resolveSchemaRef(s, context).schema.type === 'array');
-
-    return (
-      parameterObject.in === 'query' && isArrayLike && parameterObject.explode
+      ).some((s) => resolveSchemaRef(s, context).schema.type === 'array')
     );
-  });
+  };
+
+  const explodeParameters = parameterObjects.filter(
+    (parameterObject) =>
+      parameterObject.in === 'query' &&
+      isArrayLikeParam(parameterObject) &&
+      (parameterObject.style ?? 'form') === 'form' &&
+      // Respect the OpenAPI default `explode: true` for form-style array query
+      // params, but defer params without an explicit `explode` to arrayFormat
+      // when an `arrayFormat` override is set.
+      (parameterObject.explode ?? true) &&
+      !(arrayFormat && parameterObject.explode === undefined),
+  );
+
+  // Array params where the spec does not explicitly set explode — arrayFormat applies here.
+  const arrayFormatParameters = arrayFormat
+    ? parameterObjects.filter(
+        (parameterObject) =>
+          parameterObject.in === 'query' &&
+          isArrayLikeParam(parameterObject) &&
+          parameterObject.explode === undefined,
+      )
+    : [];
 
   const explodeParametersNames = explodeParameters.map(
     (parameter) => parameter.name,
   );
+  const arrayFormatParametersNames = arrayFormatParameters.map(
+    (parameter) => parameter.name,
+  );
+
   const hasExplodedDateParams =
     context.output.override.useDates &&
     explodeParameters.some((parameter) => {
+      if (!parameter.schema) {
+        return false;
+      }
+
+      const { schema } = resolveSchemaRef(parameter.schema, context);
+      return schema.format === 'date-time';
+    });
+
+  const hasArrayFormatDateParams =
+    context.output.override.useDates &&
+    arrayFormatParameters.some((parameter) => {
       if (!parameter.schema) {
         return false;
       }
@@ -163,8 +227,26 @@ export const generateRequestFunction = (
       `
       : '';
 
+  const arrayFormatImplementation =
+    arrayFormatParameters.length > 0
+      ? `const arrayFormatParameters = ${JSON.stringify(arrayFormatParametersNames)};
+
+    if (Array.isArray(value) && arrayFormatParameters.includes(key)) {
+      ${
+        arrayFormat === 'repeat'
+          ? `value.forEach((v) => { normalizedParams.append(key, v === null ? 'null' : ${hasArrayFormatDateParams ? 'v instanceof Date ? v.toISOString() : ' : ''}String(v)); });`
+          : arrayFormat === 'brackets'
+            ? `value.forEach((v) => { normalizedParams.append(key + '[]', v === null ? 'null' : ${hasArrayFormatDateParams ? 'v instanceof Date ? v.toISOString() : ' : ''}String(v)); });`
+            : `normalizedParams.append(key, value.map((v) => v === null ? 'null' : ${hasArrayFormatDateParams ? 'v instanceof Date ? v.toISOString() : ' : ''}String(v)).join(','));`
+      }
+      return;
+    }
+      `
+      : '';
+
   const isExplodeParametersOnly =
-    explodeParameters.length === parameters.length;
+    explodeParameters.length + arrayFormatParameters.length ===
+    parameterObjects.filter((p) => p.in === 'query').length;
 
   const hasDateParams =
     context.output.override.useDates &&
@@ -181,13 +263,27 @@ export const generateRequestFunction = (
       normalizedParams.append(key, value === null ? 'null' : ${hasDateParams ? 'value instanceof Date ? value.toISOString() : ' : ''}String(value))
     }`;
 
-  const getUrlFnImplementation = `export const ${getUrlFnName} = (${getUrlFnProps}) => {
+  const getUrlFnImplementation = paramsSerializer
+    ? `export const ${getUrlFnName} = (${getUrlFnProps}) => {
+${
+  queryParams
+    ? `  const stringifiedParams = ${paramsSerializer.name}(params);`
+    : ''
+}
+
+  ${
+    queryParams
+      ? `return stringifiedParams.length > 0 ? \`${route}?\${stringifiedParams}\` : \`${route}\``
+      : `return \`${route}\``
+  }
+}\n`
+    : `export const ${getUrlFnName} = (${getUrlFnProps}) => {
 ${
   queryParams
     ? `  const normalizedParams = new URLSearchParams();
 
   Object.entries(params || {}).forEach(([key, value]) => {
-    ${explodeArrayImplementation}
+    ${explodeArrayImplementation}${arrayFormatImplementation}
     ${isExplodeParametersOnly ? '' : normalParamsImplementation}
   });`
     : ''
@@ -252,7 +348,7 @@ ${
   const responseTypeName = fetchResponseTypeName(
     override.fetch.includeHttpResponseReturnType,
     isNdJson ? 'Response' : response.definition.success,
-    operationName,
+    typeName,
   );
 
   const responseType = response.definition.success;
@@ -323,6 +419,9 @@ ${
   const hasSuccess = responseDataTypes.some((r) => r.success);
   const hasError = responseDataTypes.some((r) => !r.success);
 
+  const responseHeadersType = override.fetch.serializeResponseHeaders
+    ? 'Record<string, string>'
+    : 'Headers';
   const responseTypeImplementation = override.fetch
     .includeHttpResponseReturnType
     ? `${responseDataTypes.map((r) => r.value).join('\n\n')}
@@ -333,7 +432,7 @@ ${
         .filter((r) => r.success)
         .map((r) => r.name)
         .join(' | ')}) & {
-  headers: Headers;
+  headers: ${responseHeadersType};
 }`
     : ''
 };
@@ -343,7 +442,7 @@ ${
         .filter((r) => !r.success)
         .map((r) => r.name)
         .join(' | ')}) & {
-  headers: Headers;
+  headers: ${responseHeadersType};
 }`
     : ''
 };
@@ -370,7 +469,7 @@ ${override.fetch.forceSuccessResponse && hasSuccess ? '' : `export type ${respon
     useRuntimeFetcher && isRequestOptions && !mutator
       ? ', fetchFn?: typeof globalThis.fetch'
       : '';
-  const args = `${toObjectString(props, 'implementation')} ${isRequestOptions ? `options?: RequestInit` : ''}${fetchFnParam}`;
+  const args = `${toObjectString(props, 'implementation')} ${isRequestOptions ? getRequestOptionsType(mutator) : ''}${fetchFnParam}`;
   const returnType =
     override.fetch.forceSuccessResponse && hasSuccess
       ? `Promise<${successName}>`
@@ -421,7 +520,7 @@ ${override.fetch.forceSuccessResponse && hasSuccess ? '' : `export type ${respon
   }
   const fetchHeadersOption =
     headersToAdd.length > 0
-      ? `headers: { ${headersToAdd.join(',')}, ...options?.headers }`
+      ? `headers: { ${headersToAdd.join(',')}, ...getHeaders(options?.headers) }`
       : '';
   const requestBodyParams = generateBodyOptions(
     body,
@@ -431,6 +530,7 @@ ${override.fetch.forceSuccessResponse && hasSuccess ? '' : `export type ${respon
   const fetchBodyOption = requestBodyParams
     ? (isFormData && body.formData) ||
       (isFormUrlEncoded && body.formUrlEncoded) ||
+      body.isBlob ||
       isRawRequestBodyContentType(body.contentType)
       ? `body: ${requestBodyParams}`
       : `body: JSON.stringify(${requestBodyParams})`
@@ -500,6 +600,11 @@ ${override.fetch.forceSuccessResponse && hasSuccess ? '' : `export type ${respon
   }`;
   const fetchFnCall =
     useRuntimeFetcher && isRequestOptions ? '(fetchFn ?? fetch)' : 'fetch';
+  // Drop `set-cookie`: a dehydrated cache reaches the client. Names are lowercased.
+  const responseHeadersValue = (responseVarName: string) =>
+    override.fetch.serializeResponseHeaders
+      ? `Object.fromEntries([...${responseVarName}.headers.entries()].filter(([name]) => name !== 'set-cookie'))`
+      : `${responseVarName}.headers`;
   const blobFetchResponseImplementation = `const res = await ${fetchFnCall}(${fetchFnOptions})
 
   ${override.fetch.forceSuccessResponse ? throwOnErrorImplementation : ''}
@@ -507,7 +612,7 @@ ${override.fetch.forceSuccessResponse && hasSuccess ? '' : `export type ${respon
   const data: ${fetchResponseType}${override.fetch.includeHttpResponseReturnType ? `['data']` : ''} = body as ${fetchResponseType}${override.fetch.includeHttpResponseReturnType ? `['data']` : ''}
   ${
     override.fetch.includeHttpResponseReturnType
-      ? `return { data, status: res.status, headers: res.headers } as ${fetchResponseType}`
+      ? `return { data, status: res.status, headers: ${responseHeadersValue('res')} } as ${fetchResponseType}`
       : 'return data'
   }
 `;
@@ -516,7 +621,7 @@ ${override.fetch.forceSuccessResponse && hasSuccess ? '' : `export type ${respon
   ${override.fetch.forceSuccessResponse ? throwOnErrorImplementation : ''}
   ${
     override.fetch.includeHttpResponseReturnType
-      ? `return { status: stream.status, stream, headers: stream.headers } as ${fetchResponseType}`
+      ? `return { status: stream.status, stream, headers: ${responseHeadersValue('stream')} } as ${fetchResponseType}`
       : `return stream`
   }
   `
@@ -545,7 +650,7 @@ ${override.fetch.forceSuccessResponse && hasSuccess ? '' : `export type ${respon
   }
   ${
     override.fetch.includeHttpResponseReturnType
-      ? `return { data, status: res.status, headers: res.headers } as ${fetchResponseType}`
+      ? `return { data, status: res.status, headers: ${responseHeadersValue('res')} } as ${fetchResponseType}`
       : 'return data'
   }
 `;
@@ -582,11 +687,11 @@ ${override.fetch.forceSuccessResponse && hasSuccess ? '' : `export type ${respon
 
   let fetchImplementation = `export const ${operationName} = async (${args}): ${returnType} => {
   ${bodyForm ? `  ${bodyForm}` : ''}
-  ${fetchImplementationBody}}
+  ${fetchHeadersOption ? GET_HEADERS_HELPER : ''}${fetchImplementationBody}}
   `;
   if (mutator?.isHook) {
     fetchImplementation = `export const use${pascal(operationName)}Hook = (): (${args}) => ${returnType} => {
-    ${fetchImplementationBody}}
+    ${fetchHeadersOption ? GET_HEADERS_HELPER : ''}${fetchImplementationBody}}
   `;
   }
 
@@ -597,16 +702,22 @@ ${override.fetch.forceSuccessResponse && hasSuccess ? '' : `export type ${respon
   );
 };
 
+/**
+ * Derives the TypeScript response type name for a fetch operation.
+ * Returns the operation-scoped name when `includeHttpResponseReturnType` is
+ * enabled, otherwise falls back to the success response definition name.
+ */
 export const fetchResponseTypeName = (
   includeHttpResponseReturnType: boolean | undefined,
   definitionSuccessResponse: string,
-  operationName: string,
+  typeName: string,
 ) => {
   return includeHttpResponseReturnType
-    ? `${operationName}Response`
+    ? `${typeName}Response`
     : definitionSuccessResponse;
 };
 
+/** Builds the full fetch client output (imports + implementation) for one verb. */
 export const generateClient: ClientBuilder = (verbOptions, options) => {
   const isZodOutput =
     typeof options.context.output.schemas === 'object' &&
@@ -650,23 +761,52 @@ export const generateClient: ClientBuilder = (verbOptions, options) => {
   };
 };
 
-const getHTTPStatusCodes = () => `
-export type HTTPStatusCode1xx = 100 | 101 | 102 | 103;
-export type HTTPStatusCode2xx = 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207;
-export type HTTPStatusCode3xx = 300 | 301 | 302 | 303 | 304 | 305 | 307 | 308;
-export type HTTPStatusCode4xx = 400 | 401 | 402 | 403 | 404 | 405 | 406 | 407 | 408 | 409 | 410 | 411 | 412 | 413 | 414 | 415 | 416 | 417 | 418 | 419 | 420 | 421 | 422 | 423 | 424 | 426 | 428 | 429 | 431 | 451;
-export type HTTPStatusCode5xx = 500 | 501 | 502 | 503 | 504 | 505 | 507 | 511;
-export type HTTPStatusCodes = HTTPStatusCode1xx | HTTPStatusCode2xx | HTTPStatusCode3xx | HTTPStatusCode4xx | HTTPStatusCode5xx;
+const HTTP_STATUS_CODE_SHARED_TYPES: SharedTypeDeclaration[] = [
+  {
+    name: 'HTTPStatusCode1xx',
+    exported: true,
+    code: 'type HTTPStatusCode1xx = 100 | 101 | 102 | 103;',
+  },
+  {
+    name: 'HTTPStatusCode2xx',
+    exported: true,
+    code: 'type HTTPStatusCode2xx = 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207;',
+  },
+  {
+    name: 'HTTPStatusCode3xx',
+    exported: true,
+    code: 'type HTTPStatusCode3xx = 300 | 301 | 302 | 303 | 304 | 305 | 307 | 308;',
+  },
+  {
+    name: 'HTTPStatusCode4xx',
+    exported: true,
+    code: 'type HTTPStatusCode4xx = 400 | 401 | 402 | 403 | 404 | 405 | 406 | 407 | 408 | 409 | 410 | 411 | 412 | 413 | 414 | 415 | 416 | 417 | 418 | 419 | 420 | 421 | 422 | 423 | 424 | 426 | 428 | 429 | 431 | 451;',
+  },
+  {
+    name: 'HTTPStatusCode5xx',
+    exported: true,
+    code: 'type HTTPStatusCode5xx = 500 | 501 | 502 | 503 | 504 | 505 | 507 | 511;',
+  },
+  {
+    name: 'HTTPStatusCodes',
+    exported: true,
+    code: 'type HTTPStatusCodes = HTTPStatusCode1xx | HTTPStatusCode2xx | HTTPStatusCode3xx | HTTPStatusCode4xx | HTTPStatusCode5xx;',
+  },
+];
 
-`;
-
+/** Emits HTTP status-code union types at the top of the generated file when they are needed. */
 export const generateFetchHeader: ClientHeaderBuilder = ({
   clientImplementation,
 }) => {
   const needsStatusCodeTypes = /HTTPStatusCode[1-5]xx|<HTTPStatusCodes,/.test(
     clientImplementation,
   );
-  return needsStatusCodeTypes ? getHTTPStatusCodes() : '';
+  if (!needsStatusCodeTypes) return '';
+
+  return {
+    implementation: '',
+    sharedTypes: HTTP_STATUS_CODE_SHARED_TYPES,
+  };
 };
 
 const fetchClientBuilder: ClientGeneratorsBuilder = {
@@ -675,6 +815,7 @@ const fetchClientBuilder: ClientGeneratorsBuilder = {
   dependencies: getFetchDependencies,
 };
 
+/** Returns the fetch client builder factory used by orval's plugin system. */
 export const builder = () => () => fetchClientBuilder;
 
 export default builder;

@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { expect, test } from 'vitest';
+import { expect, test } from 'vite-plus/test';
 
 import { describeApiGenerationSnapshots } from '../test-utils/snapshot-testing';
 
@@ -22,6 +22,8 @@ await describeApiGenerationSnapshots({
     generated('mock'),
     generated('multi-files'),
     generated('react-query'),
+    generated('solid-query'),
+    generated('solid-start'),
     generated('svelte-query'),
     generated('swr'),
     generated('vue-query'),
@@ -55,8 +57,21 @@ test('mock issue-3574 strict mock types in tags-split MSW+faker output', async (
     expect(content).toMatch(/export type KeysWithNull/);
   }
 
-  expect(mswContent).toMatch(/export const getPetMock|import \{ getPetMock \}/);
-  expect(fakerContent).toMatch(/export const getPetMock|import \{ getPetMock \}/);
+  // The factories live in the faker file, the msw file imports them instead
+  // of re-declaring them and no longer references `getPetMock` itself.
+  expect(fakerContent).toMatch(
+    /export const getPetMock|import \{ getPetMock \}/,
+  );
+  expect(fakerContent).toContain('export const getGetPetsResponseMock');
+  expect(mswContent).toMatch(
+    /import \{[\s\S]*?getGetPetsResponseMock[\s\S]*?\} from '\.\/pets\.faker'/,
+  );
+  expect(mswContent).not.toContain('export const getGetPetsResponseMock');
+  expect(mswContent).not.toContain('getPetMock');
+  // Re-exported so importing the factories from pets.msw still works.
+  expect(mswContent).toMatch(
+    /export \{[\s\S]*?getGetPetsResponseMock[\s\S]*?\} from '\.\/pets\.faker'/,
+  );
 });
 
 test('mock issue-3574 accumulates strict mock types across operations per tag', async () => {
@@ -132,6 +147,132 @@ test('angular issue-3326 paramsFilter replaces the built-in filter', async () =>
   // The user mutator is imported and called; the built-in helper is gone.
   expect(content).toContain('flattenParamsFilter');
   expect(content).not.toContain('function filterParams(');
+});
+
+test('angular issue-3713 multi-content resources read signals inside the httpResource factory', async () => {
+  // Multi-content-type httpResource resources used to build the request
+  // object (including param/path signal reads) eagerly, before httpResource()
+  // was called — Angular only tracks signals read during factory execution,
+  // so these resources never refetched when inputs changed. See #3713.
+  const file = generated('angular', 'http-resource-multi-content', 'endpoints.ts');
+  const content = await readFile(file, 'utf8');
+  // listItemsResource is emitted as two narrow overloads followed by the
+  // implementation signature; only the implementation has a body, so anchor
+  // on its *last* occurrence.
+  const start = content.lastIndexOf('export function listItemsResource(');
+  const end = content.indexOf('export function', start + 1);
+  const impl = content.slice(start, end === -1 ? undefined : end);
+
+  const buildRequestIdx = impl.indexOf('const buildRequest');
+  expect(buildRequestIdx).toBeGreaterThan(-1);
+  expect(impl.indexOf('params?.()')).toBeGreaterThan(buildRequestIdx);
+  // Prettier may wrap the call across lines (`httpResource<Items>(\n
+  // buildRequest,`), so allow whitespace between the callee and the arg.
+  expect(impl).toMatch(/httpResource<Items>\(\s*buildRequest/);
+  expect(impl).toMatch(/httpResource\.text<string>\(\s*buildRequest/);
+  expect(impl).not.toMatch(/\(\)\s*=>\s*\(\{\s*\.\.\.normalizedRequest/);
+});
+
+test('angular http-resource-headers exposes request descriptor extension (#3710)', async () => {
+  const file = generated('angular', 'http-resource-headers', 'endpoints.ts');
+  const content = await readFile(file, 'utf8');
+
+  // Emitted extension surface: headers/context/request escape hatch.
+  expect(content).toContain(
+    'export interface OrvalHttpResourceRequestExtension',
+  );
+  expect(content).toContain(
+    "context?: HttpContext | (() => HttpContext);",
+  );
+  expect(content).toContain(
+    'request?: (request: HttpResourceRequest) => HttpResourceRequest;',
+  );
+  expect(content).toContain('export function applyOrvalRequestExtension(');
+
+  // The extension is applied INSIDE the reactive httpResource factory so
+  // signal reads inside `options.headers()`/`options.context()` stay tracked.
+  expect(content).toMatch(/\(\)\s*=>\s*applyOrvalRequestExtension\(/);
+
+  // The already-supported OpenAPI `in: header` forwarding (top-level
+  // `output.headers: true`) still works alongside the new extension.
+  expect(content).toContain('headers: headers?.()');
+  expect(content).toMatch(/headers[?]?:\s*Signal<[A-Za-z]+Headers>/);
+});
+
+test('angular issue-3712 sends required nullable params as empty string without a serializer', async () => {
+  // A query param the spec declares required+nullable must still reach the
+  // wire when its runtime value is null, or the request violates the
+  // OpenAPI contract. Without a paramsSerializer, `null` is emitted as an
+  // empty string (`''`) instead of being dropped. See #3712.
+  const file = generated('angular', 'issue-3712', 'endpoints.ts');
+  const content = await readFile(file, 'utf8');
+
+  expect(content).toContain("new Set<string>(['cursor'])");
+  expect(content).toContain(
+    "filteredParams[key] = preserveRequiredNullables ? null : '';",
+  );
+  expect(content).not.toMatch(/new Set<string>\(\['cursor'\]\),\s*true/);
+});
+
+test('angular issue-3712 httpResource has the same empty-string fallback', async () => {
+  const file = generated('angular', 'issue-3712-http-resource', 'endpoints.ts');
+  const content = await readFile(file, 'utf8');
+
+  expect(content).toContain("new Set<string>(['cursor'])");
+  expect(content).toContain(
+    "filteredParams[key] = preserveRequiredNullables ? null : '';",
+  );
+  expect(content).toContain('params: filterParams(params?.() ?? {}');
+});
+
+test('angular issue-3712 still passes literal null to a configured paramsSerializer', async () => {
+  // With a paramsSerializer configured, the literal `null` is preserved for
+  // the serializer to encode instead of being converted to an empty string.
+  const file = generated('angular', 'issue-3712-serializer', 'endpoints.ts');
+  const content = await readFile(file, 'utf8');
+
+  expect(content).toMatch(/new Set<string>\(\['cursor'\]\),\s*true,/);
+  expect(content).toContain('customParamsSerializer(');
+});
+
+test('fetch arrayFormat repeat serializes arrays as repeated keys', async () => {
+  const content = await readFile(
+    generated('fetch', 'array-format-repeat', 'endpoints.ts'),
+    'utf8',
+  );
+  expect(content).toContain('normalizedParams.append(key,');
+  expect(content).not.toContain("key + '[]'");
+  expect(content).not.toContain('.join(');
+});
+
+test('fetch arrayFormat brackets serializes arrays with [] suffix', async () => {
+  const content = await readFile(
+    generated('fetch', 'array-format-brackets', 'endpoints.ts'),
+    'utf8',
+  );
+  expect(content).toContain("key + '[]'");
+  expect(content).not.toContain('.join(');
+});
+
+test('fetch arrayFormat comma serializes arrays as comma-joined values', async () => {
+  const content = await readFile(
+    generated('fetch', 'array-format-comma', 'endpoints.ts'),
+    'utf8',
+  );
+  expect(content).toContain('.join(\',\')');
+  expect(content).not.toContain("key + '[]'");
+});
+
+test('fetch paramsSerializer delegates URL building to a custom serializer', async () => {
+  // When override.paramsSerializer is set for a fetch client, the generated
+  // getXxxUrl helper must call the serializer instead of building a
+  // URLSearchParams inline. See #3326.
+  const file = generated('fetch', 'params-serializer', 'endpoints.ts');
+  const content = await readFile(file, 'utf8');
+
+  expect(content).toContain('customParamsSerializer(params)');
+  expect(content).not.toContain('new URLSearchParams()');
+  expect(content).toContain("import { customParamsSerializer }");
 });
 
 test('react-query issue-708 isolates the infinite query key from the regular one', async () => {
@@ -232,10 +373,11 @@ test('default issue-873 does not duplicate multi-tag operations across tag files
 
 test('vue-query issue-1026 keeps header params out of the query key getter', async () => {
   // Regression for #1026: with `headers: true` the Vue Query key getter used to
-  // emit `headers = unref(headers);` even though `headers` is not one of its
+  // emit `headers = toValue(headers);` even though `headers` is not one of its
   // parameters, throwing `ReferenceError: headers is not defined` at runtime.
-  // The getter must never unref params (that would also break key reactivity);
-  // `headers` is only unref'd inside the HTTP function where it is a parameter.
+  // The getter must never resolve params (that would also break key reactivity);
+  // `headers` is only resolved inside the HTTP function where it is a parameter.
+  // (Vue Query v5 targets Vue 3.3+, so params resolve via `toValue`.)
   // Keep this focused assertion alongside the snapshot so #1026 fails with a
   // targeted message instead of a full-file snapshot diff.
   const content = await readFile(
@@ -252,15 +394,15 @@ test('vue-query issue-1026 keeps header params out of the query key getter', asy
   const queryKeyFn = content.slice(start, end);
 
   // The getter must not reference `headers` as an identifier: that was the
-  // #1026 bug (`headers = unref(headers);`) and unref-ing a param would also
+  // #1026 bug (`headers = toValue(headers);`) and resolving a param would also
   // break query-key reactivity. A word-boundary regex keeps the intent precise
   // rather than matching `headers` as a loose substring.
   expect(queryKeyFn).not.toMatch(/\bheaders\b/);
 
-  // Sanity check: the HTTP function still receives and unrefs `headers`, so the
-  // assertion above is not passing simply because headers support is missing.
-  expect(content).toContain('headers?: MaybeRef<GetSomeEndpointHeaders>');
-  expect(content).toContain('headers = unref(headers);');
+  // Sanity check: the HTTP function still receives and resolves `headers`, so
+  // the assertion above is not passing simply because headers support is missing.
+  expect(content).toContain('headers?: MaybeRefOrGetter<GetSomeEndpointHeaders>');
+  expect(content).toContain('headers = toValue(headers);');
 });
 
 test('fetch useDates with only date-time query params coerces via String(value)', async () => {
@@ -302,9 +444,11 @@ test('fetch binary request bodies are sent without JSON.stringify', async () => 
   expect(content).not.toContain('JSON.stringify(replaceLotteryLogoBody)');
 });
 
-test('vue-query custom fetch infinite queries unref non-pagination params', async () => {
+test('vue-query custom fetch infinite queries resolve non-pagination params', async () => {
   // Regression for #3385:
-  // functions accept plain values, while Vue query hooks expose MaybeRef<T>.
+  // functions accept plain values, while Vue query hooks expose
+  // MaybeRefOrGetter<T> (Vue Query v5 targets Vue 3.3+, so `toValue` resolves
+  // refs, plain values and getters alike).
   // The infinite query path already unwraps `params` to merge the page param,
   // but must also unwrap the remaining props before calling the request
   // function or the generated output fails TypeScript compilation.
@@ -315,8 +459,8 @@ test('vue-query custom fetch infinite queries unref non-pagination params', asyn
 
   expect(content).toContain(
     `getUsersUserIdOrders(
-      unref(userId),
-      { ...unref(params), limit: pageParam ?? unref(params)?.['limit'] },
+      toValue(userId),
+      { ...toValue(params), limit: pageParam ?? toValue(params)?.['limit'] },
       { signal, ...requestOptions },
     );`,
   );
@@ -489,6 +633,52 @@ test('react-query issue-2039 keeps path params out of mutationOptions metadata U
   expect(content).not.toContain(
     '    { url: `/api/v${version}/entity/{entityId}` },',
   );
+});
+
+test('react-query issue-607 avoids options operation shadowing hook options', async () => {
+  // Regression for #607: operationId "options" generates an operation
+  // function named `options`; the React Query hook also receives an `options`
+  // parameter. The mutationFn must call the operation function, not the
+  // user-facing hook/options object from the outer scope.
+  const content = await readFile(
+    generated('react-query', 'issue-607', 'endpoints.ts'),
+    'utf8',
+  );
+
+  expect(content).toContain('export const options = async (');
+  expect(content).toContain('const optionsRequestFn = options;');
+  expect(content).toContain('ReturnType<typeof optionsRequestFn>');
+  expect(content).toContain('return optionsRequestFn(petId, fetchOptions)');
+  expect(content).not.toContain('return options(petId, fetchOptions)');
+
+  expect(content).toContain('export const petId = async (');
+  expect(content).toContain('const petIdRequestFn2 = petId;');
+  expect(content).toContain('ReturnType<typeof petIdRequestFn2>');
+  expect(content).toContain(
+    'return petIdRequestFn2(petId, petIdRequestFn, fetchOptions)',
+  );
+  expect(content).not.toContain('return petId(petId, fetchOptions)');
+});
+
+test('react-query renames a body parameter that matches the operation name', async () => {
+  const content = await readFile(
+    generated(
+      'react-query',
+      'body-schema-name-matches-operation-id',
+      'items',
+      'items.ts',
+    ),
+    'utf8',
+  );
+
+  expect(content).toContain('createItemBody: CreateItem');
+  expect(content).toContain('createItem(createItemBody, { signal');
+  expect(content).not.toContain('createItem: CreateItem');
+  expect(content).not.toContain('createItem(createItem,');
+
+  expect(content).toContain('uploadItemBody: UploadItem');
+  expect(content).toContain('formData.append(`name`, uploadItemBody.name)');
+  expect(content).not.toContain('uploadItem.name');
 });
 
 test('react-query issue-3153 passes operationId and operationName to the queryOptions mutator', async () => {
@@ -754,6 +944,57 @@ test('mock issue-2327 base handler uses 200 content-type when sibling status has
   expect(handler).not.toMatch(/['"]content-type['"]\s*:\s*['"]text\/plain\b/i);
 });
 
+test('mock problem+json error response preserves the vendor Content-Type (RFC 9457)', async () => {
+  // Regression: MSW's HttpResponse.json() defaults the Content-Type to
+  // application/json, so an OpenAPI response declaring application/problem+json
+  // (RFC 9457 Problem Details for HTTP APIs) was served as application/json by
+  // the generated mock. Applications that validate the Content-Type of error
+  // responses on the client side could not exercise that path against an Orval
+  // mock. The generator now emits an explicit Content-Type header whenever the
+  // resolved media type differs from the MSW helper default.
+  const content = await readFile(
+    generated('mock', 'msw-problem-details-content-type', 'endpoints.ts'),
+    'utf8',
+  );
+
+  // The 404 handler must serve application/problem+json verbatim.
+  const handler404Start = content.indexOf('getGetPetMockHandler404');
+  expect(handler404Start, '404 handler should be generated').toBeGreaterThan(
+    -1,
+  );
+  const handler404End = content.indexOf(
+    'export const get',
+    handler404Start + 1,
+  );
+  const handler404 = content.slice(
+    handler404Start,
+    handler404End === -1 ? content.length : handler404End,
+  );
+  expect(handler404).toContain(
+    "'Content-Type': 'application/problem+json'",
+  );
+
+  // The 200 status-specific handler (application/json) must NOT carry an
+  // explicit Content-Type header — application/json is the MSW default and is
+  // left implicit to keep the generated output minimal. Asserting against the
+  // status-specific *200 handler avoids the aggregate base handler, whose
+  // Content-Type is derived from operation-wide content types (see CodeRabbit
+  // review on PR #3779).
+  const handler200Start = content.indexOf('getGetPetMockHandler200');
+  expect(handler200Start, '200 handler should be generated').toBeGreaterThan(
+    -1,
+  );
+  const handler200End = content.indexOf(
+    'export const get',
+    handler200Start + 1,
+  );
+  const handler200 = content.slice(
+    handler200Start,
+    handler200End === -1 ? content.length : handler200End,
+  );
+  expect(handler200).not.toMatch(/Content-Type/i);
+});
+
 test('react-query issue-2999 emits exactly one v5 overload block per NestJS-style hook', async () => {
   // Regression for #2999: the report described `useXxxFindAll` / `useXxxFindOne`
   // hooks "duplicated" in the generated output. Reproducing with the OP's
@@ -1005,7 +1246,7 @@ test('zod issue-3171 applies required from a sibling allOf member to $ref base p
   const content = await readFile(file, 'utf8');
 
   // User: only `id` is required; name/email stay optional.
-  expect(content).toContain('id: zod.string().uuid(),');
+  expect(content).toContain('id: zod.uuid(),');
   expect(content).toContain('name: zod.string().optional(),');
   expect(content).toContain('email: zod.string().optional(),');
 
@@ -1013,14 +1254,105 @@ test('zod issue-3171 applies required from a sibling allOf member to $ref base p
   const start = content.indexOf('export const GetUserResponse');
   expect(start, 'GetUserResponse should be generated').toBeGreaterThan(-1);
   const userFull = content.slice(start);
-  expect(userFull).toContain('id: zod.string().uuid(),');
+  expect(userFull).toContain('id: zod.uuid(),');
   expect(userFull).toContain('name: zod.string(),');
   expect(userFull).toContain('email: zod.string(),');
   expect(userFull).not.toContain('name: zod.string().optional()');
   expect(userFull).not.toContain('email: zod.string().optional()');
 
   // The open-object sibling is preserved (additional properties allowed).
-  expect(content).toContain('.and(zod.object({}).passthrough())');
+  expect(content).toContain('.and(zod.looseObject({}))');
+});
+
+test('fetch issue-3663 combines required from a constraint-only allOf overlay', async () => {
+  // The sparse-fieldset pattern: `fooPartial` holds all (optional) properties
+  // and a separate overlay lists only `required`. The composed model must mark
+  // those fields required even though `required` lives in a sibling member —
+  // whether the overlay is a `$ref` (Foo) or an inline object without
+  // `type: object` (BarInline). See #3663.
+  const file = generated('fetch', 'issue-3663', 'endpoints.ts');
+  const content = await readFile(file, 'utf8');
+
+  // Base stays fully optional.
+  expect(content).toContain('name?: string;');
+
+  // $ref overlay: id/name promoted to required via Required<Pick>. Scope the
+  // match to Foo's own declaration (up to its terminating `;`) so a broken
+  // promotion here can't be masked by BarInline's declaration below.
+  const fooType = content.match(/export type Foo =[\s\S]*?;/)?.[0] ?? '';
+  expect(fooType).toMatch(/Required<Pick<[\s\S]*?'id' \| 'name'/);
+
+  // Inline overlay without `type: object`: same promotion, scoped to BarInline.
+  const barInlineType =
+    content.match(/export type BarInline =[\s\S]*?;/)?.[0] ?? '';
+  expect(barInlineType).toMatch(/Required<Pick<[\s\S]*?'id' \| 'name'/);
+});
+
+test('fetch issue-3695 does not import zod for a path parameter named `z`', async () => {
+  // A path parameter named exactly `z` must not be mistaken for a zod usage and
+  // pull the (otherwise unused) zod import into the client. See #3695.
+  const content = await readFile(
+    generated('fetch', 'issue-3695', 'endpoints.ts'),
+    'utf8',
+  );
+
+  expect(content).not.toContain("from 'zod'");
+  // The parameter itself is still generated as a normal string argument.
+  expect(content).toContain('z: string');
+});
+
+test('hono handler filenames follow namingConvention', async () => {
+  // Handler files are the only hono output named after an operation, so they have
+  // to honor `namingConvention` like every other generated file does.
+  const endpoints = await readFile(
+    generated('hono', 'petstore-split-with-handlers-kebab', 'endpoints.ts'),
+    'utf8',
+  );
+
+  // The route file must import from the kebab-cased path, not the operation name.
+  expect(endpoints).toContain("from './src/handlers/list-pets'");
+  expect(endpoints).not.toContain("from './src/handlers/listPets'");
+
+  // And that file must exist under the same name.
+  const handler = await readFile(
+    generated(
+      'hono',
+      'petstore-split-with-handlers-kebab',
+      'src',
+      'handlers',
+      'list-pets.ts',
+    ),
+    'utf8',
+  );
+  expect(handler).toContain('listPetsHandlers');
+});
+
+test('zod override.zod.version pins the output target independently of the installed zod', async () => {
+  // `tests` installs Zod 4, so installed-version detection would emit Zod 4 for
+  // both. These two clients generate from the SAME petstore spec but pin
+  // `override.zod.version` to 3 and 4 respectively, proving the explicit target
+  // wins over detection (deterministic generation — issue #3111).
+  const v3 = await readFile(
+    generated('zod', 'force-version-3', 'force-version-3.ts'),
+    'utf8',
+  );
+  const v4 = await readFile(
+    generated('zod', 'force-version-4', 'force-version-4.ts'),
+    'utf8',
+  );
+
+  // version: 3 -> Zod 3 syntax, even though Zod 4 is installed. These remain
+  // valid (deprecated) under Zod 4, so the output still type-checks.
+  expect(v3).toContain('.strict()');
+  expect(v3).toContain('zod.string().email()');
+  expect(v3).not.toContain('zod.strictObject(');
+  expect(v3).not.toContain('zod.email(');
+
+  // version: 4 -> Zod 4 syntax.
+  expect(v4).toContain('zod.strictObject(');
+  expect(v4).toContain('zod.email()');
+  expect(v4).not.toContain('.strict()');
+  expect(v4).not.toContain('zod.string().email()');
 });
 
 test('default index-mock-file-split emits dedicated mock barrels in split mode (#3318)', async () => {
@@ -1212,6 +1544,232 @@ test('default issue-3583 param default values with backslashes are JS-escaped', 
   expect(endpoints).not.toContain('\\/');
 });
 
+test('default issue-3722 avoids invalid Required<Pick> for ghost keys', async () => {
+  const petTagInfo = await readFile(
+    generated('default', 'issue-3722', 'model', 'petTagInfo.ts'),
+    'utf8',
+  );
+
+  expect(petTagInfo).toContain('tagMetadata:');
+  expect(petTagInfo).toContain('TagMetadataItem');
+  expect(petTagInfo).not.toMatch(/Required<Pick<TagMetadataItem, 'tagId'>>/);
+  expect(petTagInfo).not.toMatch(/^\s+tagId:/m);
+});
+
+test('default issue-3748 keeps plain Required<Pick> for keys behind a nested allOf $ref', async () => {
+  const itemDetail = await readFile(
+    generated('default', 'issue-3748', 'model', 'itemDetail.ts'),
+    'utf8',
+  );
+
+  // Keys resolved two $ref hops away (ItemDetail -> ItemBase -> Contents) must
+  // not fall into the Extract guard: the additionalProperties index signature
+  // collapses `Extract<keyof T, ...>` to `never`, silently dropping the
+  // required override.
+  expect(itemDetail).toMatch(/'id' \| 'name'/);
+  expect(itemDetail).toContain('Required<');
+  expect(itemDetail).not.toContain('Extract<');
+});
+
+test('default issue-3750 keeps plain Required<Pick> for parent properties', async () => {
+  const itemDetail = await readFile(
+    generated('default', 'issue-3750', 'model', 'itemDetail.ts'),
+    'utf8',
+  );
+  const nullableItemDetail = await readFile(
+    generated('default', 'issue-3750', 'model', 'nullableItemDetail.ts'),
+    'utf8',
+  );
+  const nestedNullableItemDetail = await readFile(
+    generated('default', 'issue-3750', 'model', 'nestedNullableItemDetail.ts'),
+    'utf8',
+  );
+  const refNullableItemDetail = await readFile(
+    generated('default', 'issue-3750', 'model', 'refNullableItemDetail.ts'),
+    'utf8',
+  );
+
+  // Parent properties are part of the emitted intersection and are therefore
+  // safe Pick keys even when required comes from a constraint-only member.
+  expect(itemDetail).toMatch(/'id' \| 'name'/);
+  expect(itemDetail).toContain('Required<');
+  expect(itemDetail).not.toContain('Extract<');
+
+  // The allOf object removes the nullable parent's null branch, making its own
+  // property safe to Pick without the index-signature-breaking Extract guard.
+  expect(nullableItemDetail).toContain("'id'");
+  expect(nullableItemDetail).toContain('Required<');
+  expect(nullableItemDetail).not.toContain('Extract<');
+
+  // The same guarantee must survive a nested allOf component ref and the
+  // inline-allOf normalization pass.
+  expect(nestedNullableItemDetail).toContain("'id'");
+  expect(nestedNullableItemDetail).toContain('Required<');
+  expect(nestedNullableItemDetail).not.toContain('Extract<');
+
+  // A nullable component target propagates null outside its nested allOf, so
+  // the required key must stay guarded to avoid Pick<T, 'id'> violating a
+  // `keyof T = never` constraint.
+  expect(refNullableItemDetail).toMatch(
+    /Required<\s*Pick<[\s\S]*Extract<\s*keyof \(/,
+  );
+});
+
+test('default regressions collect only guaranteed keys through nested allOf refs', async () => {
+  const unionItem = await readFile(
+    generated('default', 'regressions', 'model', 'unionItem.ts'),
+    'utf8',
+  );
+  const scalarItem = await readFile(
+    generated('default', 'regressions', 'model', 'scalarItem.ts'),
+    'utf8',
+  );
+  const nestedUnionItem = await readFile(
+    generated('default', 'regressions', 'model', 'nestedUnionItem.ts'),
+    'utf8',
+  );
+  const nestedComposedUnionItem = await readFile(
+    generated(
+      'default',
+      'regressions',
+      'model',
+      'nestedComposedUnionItem.ts',
+    ),
+    'utf8',
+  );
+  const directScalarUnionItem = await readFile(
+    generated('default', 'regressions', 'model', 'directScalarUnionItem.ts'),
+    'utf8',
+  );
+  const refMemberUnionItem = await readFile(
+    generated('default', 'regressions', 'model', 'refMemberUnionItem.ts'),
+    'utf8',
+  );
+  const enumUnionItem = await readFile(
+    generated('default', 'regressions', 'model', 'enumUnionItem.ts'),
+    'utf8',
+  );
+  const siblingEnumItem = await readFile(
+    generated('default', 'regressions', 'model', 'siblingEnumItem.ts'),
+    'utf8',
+  );
+  const canonicalNullableOneOfItem = await readFile(
+    generated(
+      'default',
+      'regressions-oas31',
+      'model',
+      'canonicalNullableOneOfItem.ts',
+    ),
+    'utf8',
+  );
+  const canonicalNullableOneOfSiblingItem = await readFile(
+    generated(
+      'default',
+      'regressions-oas31',
+      'model',
+      'canonicalNullableOneOfSiblingItem.ts',
+    ),
+    'utf8',
+  );
+  const inlineNullableAnyOfItem = await readFile(
+    generated(
+      'default',
+      'regressions-oas31',
+      'model',
+      'inlineNullableAnyOfItem.ts',
+    ),
+    'utf8',
+  );
+  const allEnumSiblingItem = await readFile(
+    generated('default', 'regressions', 'model', 'allEnumSiblingItem.ts'),
+    'utf8',
+  );
+  const nullableAllOfMemberItem = await readFile(
+    generated(
+      'default',
+      'regressions',
+      'model',
+      'nullableAllOfMemberItem.ts',
+    ),
+    'utf8',
+  );
+  const nullableParentItem = await readFile(
+    generated('default', 'regressions', 'model', 'nullableParentItem.ts'),
+    'utf8',
+  );
+
+  expect(unionItem).toContain("'id'");
+  expect(unionItem).toContain('Required<');
+  expect(unionItem).not.toContain('Extract<');
+
+  expect(scalarItem).toContain("Extract<keyof ScalarWrapper, 'id'>");
+  expect(scalarItem).not.toContain("Pick<ScalarWrapper, 'id'>");
+
+  expect(nestedUnionItem).toContain(
+    "Extract<keyof NestedUnionWrapper, 'id'>",
+  );
+  expect(nestedUnionItem).not.toContain(
+    "Pick<NestedUnionWrapper, 'id'>",
+  );
+
+  expect(nestedComposedUnionItem).toContain(
+    "Pick<NestedComposedUnionWrapper, 'id'>",
+  );
+  expect(nestedComposedUnionItem).not.toContain('Extract<');
+
+  expect(directScalarUnionItem).toContain(
+    "Pick<DirectScalarUnionWrapper, 'id'>",
+  );
+  expect(directScalarUnionItem).not.toContain('Extract<');
+
+  expect(refMemberUnionItem).toContain(
+    "Pick<RefMemberUnionWrapper, 'id'>",
+  );
+  expect(refMemberUnionItem).not.toContain('Extract<');
+
+  expect(enumUnionItem).toContain(
+    "Extract<keyof EnumUnionWrapper, 'id'>",
+  );
+  expect(enumUnionItem).not.toContain("Pick<EnumUnionWrapper, 'id'>");
+
+  expect(siblingEnumItem).toContain(
+    "Extract<keyof SiblingEnumWrapper, 'id'>",
+  );
+  expect(siblingEnumItem).not.toContain("Pick<SiblingEnumWrapper, 'id'>");
+
+  expect(canonicalNullableOneOfItem).toContain(
+    "Extract<keyof CanonicalNullableOneOfWrapper, 'id'>",
+  );
+  expect(canonicalNullableOneOfItem).not.toContain(
+    "Pick<CanonicalNullableOneOfWrapper, 'id'>",
+  );
+
+  expect(canonicalNullableOneOfSiblingItem).toContain(
+    "Pick<CanonicalNullableOneOfSiblingWrapper, 'id'>",
+  );
+  expect(canonicalNullableOneOfSiblingItem).not.toContain('Extract<');
+
+  expect(inlineNullableAnyOfItem).toContain(
+    "Pick<InlineNullableAnyOfWrapper, 'id'>",
+  );
+  expect(inlineNullableAnyOfItem).not.toContain('Extract<');
+
+  expect(allEnumSiblingItem).toContain(
+    "Pick<AllEnumSiblingWrapper, 'id'>",
+  );
+  expect(allEnumSiblingItem).not.toContain('Extract<');
+
+  expect(nullableAllOfMemberItem).toContain(
+    "Pick<NullableAllOfMemberWrapper, 'id'>",
+  );
+  expect(nullableAllOfMemberItem).not.toContain('Extract<');
+
+  expect(nullableParentItem).toContain(
+    "Pick<NullableParentWrapper, 'id'>",
+  );
+  expect(nullableParentItem).not.toContain('Extract<');
+});
+
 test('zod issue-3505 enum values with backslashes are JS-escaped', async () => {
   const content = await readFile(
     generated('zod', 'issue-3505', 'issue-3505.ts'),
@@ -1374,4 +1932,335 @@ test('axios tags-split workspace barrel keeps a multi-part fileExtension single 
   );
   // No doubled prefix may appear.
   expect(barrel).not.toContain('.generated.generated');
+});
+
+test('axios tags-split + schemas.splitByTags separates per-tag schemas from cross-tag shared schemas (#3592)', async () => {
+  // Regression for the layout half of #3592: with `output.mode: 'tags-split'`
+  // and `schemas.splitByTags: true`, schema files are organized into per-tag
+  // subdirectories under `schemas.path`, while schemas referenced by more than
+  // one tag stay at the root of `schemas.path`. The root `index.ts` barrel
+  // re-exports both the shared files and each per-tag barrel.
+  //
+  // `tags-split-shared.yaml` is the canonical fixture: the `pets` and `stores`
+  // tags each own a distinct set of schemas, while `Error`, `SortOrder`, and
+  // `Pagination` are referenced by both tags. `Pagination` is the interesting
+  // case — it is only referenced indirectly via `PetList` and `StoreList`, but
+  // because both of those are tag-scoped, `Pagination` itself is shared.
+  const root = generated('axios', 'tags-split-shared-models', 'model');
+
+  // Per-tag schemas live under `<tag>/` with their own barrel.
+  const petsBarrel = await readFile(path.join(root, 'pets', 'index.ts'), 'utf8');
+  expect(petsBarrel).toContain("export * from './pet';");
+  expect(petsBarrel).toContain("export * from './petList';");
+  expect(petsBarrel).toContain("export * from './createPetBody';");
+  // Schemas owned by another tag must not leak into the wrong subdir.
+  expect(petsBarrel).not.toContain('store');
+
+  const storesBarrel = await readFile(
+    path.join(root, 'stores', 'index.ts'),
+    'utf8',
+  );
+  expect(storesBarrel).toContain("export * from './store';");
+  expect(storesBarrel).toContain("export * from './storeList';");
+  expect(storesBarrel).toContain("export * from './createStoreBody';");
+  expect(storesBarrel).not.toContain('pet');
+
+  // Shared schemas referenced by both tags stay at the root, not in any tag
+  // subdir. `Pagination` is shared even though it is only reached via
+  // `PetList`/`StoreList` — both tag-scoped wrappers reference it.
+  await expect(readFile(path.join(root, 'error.ts'), 'utf8')).resolves.toBeDefined();
+  await expect(readFile(path.join(root, 'sortOrder.ts'), 'utf8')).resolves.toBeDefined();
+  await expect(readFile(path.join(root, 'pagination.ts'), 'utf8')).resolves.toBeDefined();
+  // No tag owns a schema named after the other tag.
+  await expect(
+    readFile(path.join(root, 'pets', 'store.ts'), 'utf8'),
+  ).rejects.toThrow();
+  await expect(
+    readFile(path.join(root, 'stores', 'pet.ts'), 'utf8'),
+  ).rejects.toThrow();
+
+  // The root barrel re-exports every shared file and each per-tag barrel, so
+  // consumers can still import any schema from the model root.
+  const rootBarrel = await readFile(path.join(root, 'index.ts'), 'utf8');
+  expect(rootBarrel).toContain("export * from './sortOrder';");
+  expect(rootBarrel).toContain("export * from './error';");
+  expect(rootBarrel).toContain("export * from './pagination';");
+  expect(rootBarrel).toContain("export * from './pets';");
+  expect(rootBarrel).toContain("export * from './stores';");
+});
+
+test('axios tags-split + schemas.splitByTags imports schemas via the model barrel in endpoints and faker files (#3592)', async () => {
+  // Regression for the import half of #3592: with `output.mode: 'tags-split'`
+  // and `schemas.splitByTags: true`, operation files (and their co-located
+  // faker mocks) must import schemas from the model root barrel (`'../model'`)
+  // rather than from a per-tag subdir. This is what lets a tag file transparently
+  // pull in a schema that lives in another tag's subdir or at the shared root.
+  const pets = await readFile(
+    generated('axios', 'tags-split-shared-models', 'pets', 'pets.ts'),
+    'utf8',
+  );
+  expect(pets).toContain(
+    "import type { CreatePetBody, ListPetsParams, Pet, PetList } from '../model';",
+  );
+  // The operation file must not reach into a specific tag subdir; that would
+  // couple tags to each other's internal layout.
+  expect(pets).not.toMatch(/from '\.\.\/model\/(pets|stores|_shared)/);
+
+  const petsFaker = await readFile(
+    generated('axios', 'tags-split-shared-models', 'pets', 'pets.faker.ts'),
+    'utf8',
+  );
+  expect(petsFaker).toContain("import type { Pet, PetList } from '../model';");
+});
+
+test('axios split mode + schemas.splitByTags produces the same per-tag schema layout (#3592)', async () => {
+  // Regression for the `mode: 'split'` combination: #3592 is not specific to
+  // `tags-split`. In `split` mode the endpoint files collapse into a single
+  // `endpoints.ts`, but `schemas.splitByTags` still organizes schema files
+  // into per-tag subdirectories with shared schemas at the root. The combined
+  // `endpoints.ts` imports every referenced schema from the `'./model'` barrel.
+  const root = generated('axios', 'split-mode-split-schemas', 'model');
+
+  // Same per-tag layout as the tags-split case above.
+  const petsBarrel = await readFile(path.join(root, 'pets', 'index.ts'), 'utf8');
+  expect(petsBarrel).toContain("export * from './pet';");
+  expect(petsBarrel).toContain("export * from './petList';");
+
+  const storesBarrel = await readFile(
+    path.join(root, 'stores', 'index.ts'),
+    'utf8',
+  );
+  expect(storesBarrel).toContain("export * from './store';");
+  expect(storesBarrel).toContain("export * from './storeList';");
+
+  // Shared schemas still live at the root.
+  await expect(readFile(path.join(root, 'pagination.ts'), 'utf8')).resolves;
+  await expect(readFile(path.join(root, 'sortOrder.ts'), 'utf8')).resolves;
+  await expect(readFile(path.join(root, 'error.ts'), 'utf8')).resolves;
+
+  // The combined `endpoints.ts` pulls every referenced schema, across both
+  // tags, from the single `'./model'` barrel.
+  const endpoints = await readFile(
+    generated('axios', 'split-mode-split-schemas', 'endpoints.ts'),
+    'utf8',
+  );
+  expect(endpoints).toContain("} from './model';");
+  expect(endpoints).not.toMatch(/from '\.\/model\/(pets|stores|_shared)/);
+});
+
+test('axios splitByTags + indexFiles:false routes per-tag schema imports into tag subdirectories (#3592)', async () => {
+  // Regression for the `indexFiles: false` combination that was previously
+  // rejected: when schemas are split by tag and no root barrel exists, each
+  // operation file must import its schemas from the actual per-tag path
+  // (`../model/pets/pet`) or the shared root (`../model/error`), never from
+  // a non-existent root barrel (`../model/pet` or `.`).
+  const pets = await readFile(
+    generated(
+      'axios',
+      'split-by-tags-faker-schemas-no-index',
+      'pets',
+      'pets.ts',
+    ),
+    'utf8',
+  );
+  // Per-tag schemas resolve into the tag subdirectory.
+  expect(pets).toContain("import type { Pet } from '../model/pets/pet';");
+  expect(pets).toContain(
+    "import type { CreatePetBody } from '../model/pets/createPetBody';",
+  );
+  expect(pets).toContain(
+    "import type { PetList } from '../model/pets/petList';",
+  );
+  // No flat-layout import paths may remain.
+  expect(pets).not.toContain("from '../model/pet';");
+  expect(pets).not.toContain("from '../model/petList';");
+  expect(pets).not.toContain("from '../model';");
+
+  // Symmetry check on the second tag: stores schemas route to the stores
+  // subdir, and pets-only schemas are not referenced from the stores file.
+  const stores = await readFile(
+    generated(
+      'axios',
+      'split-by-tags-faker-schemas-no-index',
+      'stores',
+      'stores.ts',
+    ),
+    'utf8',
+  );
+  expect(stores).toContain(
+    "import type { Store } from '../model/stores/store';",
+  );
+  expect(stores).toContain(
+    "import type { StoreList } from '../model/stores/storeList';",
+  );
+  // No cross-tag leak.
+  expect(stores).not.toContain("from '../model/pets/");
+  expect(stores).not.toContain("from '../model/pet';");
+});
+
+test('axios splitByTags + indexFiles:false + faker schemas:true routes faker factory imports into tag subdirectories (#3592)', async () => {
+  // Regression for the consolidated `<schemas>/index.faker.ts` file under
+  // the same combination: with no root barrel, factory imports must resolve
+  // to each schema's actual on-disk location. Shared schemas import from
+  // `./<file>` at the schemas root; tag-scoped schemas from `./<tag>/<file>`.
+  const fakerFile = await readFile(
+    generated(
+      'axios',
+      'split-by-tags-faker-schemas-no-index',
+      'model',
+      'index.faker.ts',
+    ),
+    'utf8',
+  );
+  // Shared schemas (referenced by 2+ tags) stay at the root.
+  expect(fakerFile).toContain("import type { Error } from './error';");
+  expect(fakerFile).toContain("import type { SortOrder } from './sortOrder';");
+  expect(fakerFile).toContain(
+    "import type { Pagination } from './pagination';",
+  );
+  // Tag-scoped schemas route into their tag subdirectory.
+  expect(fakerFile).toContain(
+    "import type { Pet } from './pets/pet';",
+  );
+  expect(fakerFile).toContain(
+    "import type { Store } from './stores/store';",
+  );
+  // No flat-layout or extensionless root-barrel imports may remain.
+  expect(fakerFile).not.toContain("from '.'");
+  expect(fakerFile).not.toMatch(/from '\.\/(pet|store)';/);
+});
+
+test('axios workspace barrel does not re-export itself when target is index.ts (#3675)', async () => {
+  // Regression for #3675: when `output.target` is `index.ts` and
+  // `output.workspace` is set, the workspace barrel `index.ts` was
+  // appending `export * from './index.ts'` (or `'./index'`), creating
+  // a circular self-import.
+  const barrel = await readFile(
+    generated('axios', 'issue-3675-index-target', 'index.ts'),
+    'utf8',
+  );
+
+  // The barrel must NOT contain a self-referencing re-export.
+  expect(barrel).not.toContain("export * from './index.ts'");
+  expect(barrel).not.toContain("export * from './index'");
+});
+
+test('axios workspace barrel re-exports implementation when target is not index.ts (#3675)', async () => {
+  // When `output.target` has a different name (e.g. `endpoints.ts`), the
+  // workspace `index.ts` barrel must re-export the implementation file.
+  const barrel = await readFile(
+    generated('axios', 'issue-3675-non-index-target', 'index.ts'),
+    'utf8',
+  );
+
+  // The barrel must re-export the implementation and generated schemas.
+  expect(barrel).toContain("export * from './endpoints'");
+  expect(barrel).toContain("export * from './endpoints.schemas'");
+});
+
+test('mock issue-3656 oneOf branch MSW mock imports the enum as a value', async () => {
+  const content = await readFile(
+    generated('mock', 'issue-3656', 'endpoints.ts'),
+    'utf8',
+  );
+
+  // The split oneOf branch helper references the enum as a runtime value...
+  expect(content).toContain('Object.values(ReasonEnum)');
+  // ...so ReasonEnum must be imported as a value, not only as a type.
+  expect(content).toMatch(
+    /import \{[^}]*\bReasonEnum\b[^}]*\} from '\.\/model'/,
+  );
+});
+
+test('mock issue-3691 tuple prefixItems mock values match the generated tuple type', async () => {
+  const content = await readFile(
+    generated('mock', 'issue-3691', 'endpoints.ts'),
+    'utf8',
+  );
+
+  // Each `prefixItems` position must be mocked so the literal is assignable to
+  // the generated tuple type — the old behaviour emitted an empty `[]`.
+  expect(content).not.toContain('plainPoint: []');
+  expect(content).not.toContain('objTuple: []');
+  expect(content).toMatch(
+    /plainPoint: \[\s*faker\.number\.float\([^)]*\),\s*faker\.string\.alpha/,
+  );
+  // Object element keeps its object shape (combine wrapping must not misfire).
+  expect(content).toMatch(/objTuple: \[\s*\{\s*id:/);
+  // `prefixItems` + `items` (tuple-with-rest) emits the fixed positions as a
+  // tuple literal rather than falling through to the `Array.from(...)` path.
+  expect(content).toMatch(
+    /restTuple: \[\s*faker\.string\.alpha\([^)]*\),\s*faker\.number\.float/,
+  );
+  // An empty-schema (`{}`) element must emit a real value (`{}`), never an
+  // empty slot that would produce invalid `[, ...]` output.
+  expect(content).not.toMatch(/emptyElemTuple: \[\s*,/);
+  expect(content).toMatch(/emptyElemTuple: \[\s*faker\.string\.alpha/);
+  // The nullable tuple (`anyOf: [tuple, null]`) is the issue's exact shape and
+  // must not regress to the original empty `[]`.
+  expect(content).not.toContain('point: []');
+});
+
+// `set-cookie` must be filtered out, so the response carries no session
+// credential across the serialization boundary.
+const serializedHeaders = (responseVar: string) =>
+  `[...${responseVar}.headers.entries()].filter(([name]) => name !== 'set-cookie')`;
+
+test('fetch serializeResponseHeaders stores headers as a plain object', async () => {
+  const content = await readFile(
+    generated('fetch', 'serialize-response-headers', 'endpoints.ts'),
+    'utf8',
+  );
+
+  expect(content).toContain('headers: Record<string, string>');
+  expect(content).not.toContain('headers: Headers');
+  expect(content).toContain(serializedHeaders('res'));
+  expect(content).not.toContain('headers: res.headers');
+});
+
+test.each([
+  ['serialize-response-headers-stream', 'stream'],
+  ['serialize-response-headers-blob', 'res'],
+])(
+  'fetch serializeResponseHeaders converts headers in the %s response branch',
+  async (folder, responseVar) => {
+    const content = await readFile(
+      generated('fetch', folder, 'endpoints.ts'),
+      'utf8',
+    );
+
+    expect(content).toContain('headers: Record<string, string>');
+    expect(content).not.toContain('headers: Headers');
+    expect(content).toContain(serializedHeaders(responseVar));
+    expect(content).not.toContain(`headers: ${responseVar}.headers`);
+  },
+);
+
+test('fetch serializeResponseHeaders leaves the conversion to a custom mutator', async () => {
+  const content = await readFile(
+    generated('fetch', 'serialize-response-headers-mutator', 'endpoints.ts'),
+    'utf8',
+  );
+
+  // The mutator owns the request, so the option only declares the shape it has
+  // to return — there is no generated code left to do the conversion.
+  expect(content).toContain('headers: Record<string, string>');
+  expect(content).not.toContain('headers: Headers');
+  expect(content).toMatch(/return customFetch<\w+Response>\(/);
+  expect(content).not.toContain(serializedHeaders('res'));
+});
+
+// Runtime behaviour lives in serialize-response-headers.spec.ts; these only
+// inspect the generated source.
+test('react-query prefetch output declares serialized headers', async () => {
+  const content = await readFile(
+    generated('react-query', 'prefetch-serializable-headers', 'endpoints.ts'),
+    'utf8',
+  );
+
+  expect(content).toMatch(/export const prefetchListPetsQuery = async </);
+  expect(content).toContain('headers: Record<string, string>');
+  expect(content).not.toContain('headers: Headers');
+  expect(content).toContain(serializedHeaders('res'));
+  expect(content).not.toContain('headers: res.headers');
 });

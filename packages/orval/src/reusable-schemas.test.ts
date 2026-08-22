@@ -1,5 +1,5 @@
 import type { OpenAPIV3_1 } from '@scalar/openapi-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 
 import { createTestContextSpec } from '../../core/src/test-utils/context';
 import {
@@ -199,7 +199,7 @@ describe('generateReusableSchemaSet', () => {
       `zodParams({"operationId":"","location":"schema","schemaName":"Pet","fieldPath":["name"],"validator":"string"})`,
     );
     expect(entry.zod).toContain(
-      `zodParams({"operationId":"","location":"schema","schemaName":"Pet","fieldPath":["age"],"validator":"number"})`,
+      `zod.number(zodParams({"operationId":"","location":"schema","schemaName":"Pet","fieldPath":["age"],"validator":"number"})).int(zodParams({"operationId":"","location":"schema","schemaName":"Pet","fieldPath":["age"],"validator":"int"}))`,
     );
   });
 
@@ -225,6 +225,41 @@ describe('generateReusableSchemaSet', () => {
     );
 
     expect(entry.zod).not.toContain('zodParams(');
+  });
+
+  it('emits .exactOptional() for optional properties when exactOptional is enabled (zod v4)', () => {
+    const context = createTestContextSpec({
+      spec: {
+        components: {
+          schemas: {
+            Pet: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                nickname: { type: 'string' },
+              },
+              required: ['name'],
+            },
+          },
+        },
+      },
+    });
+
+    const [withExact] = generateReusableSchemaSet(
+      ['#/components/schemas/Pet'],
+      context,
+      { strict: false, isZodV4: true, exactOptional: true },
+    );
+    expect(withExact.zod).toContain('"nickname": zod.string().exactOptional()');
+    expect(withExact.zod).not.toContain('.optional()');
+
+    const [withoutExact] = generateReusableSchemaSet(
+      ['#/components/schemas/Pet'],
+      context,
+      { strict: false, isZodV4: true },
+    );
+    expect(withoutExact.zod).toContain('"nickname": zod.string().optional()');
+    expect(withoutExact.zod).not.toContain('.exactOptional()');
   });
 
   it('expands to the transitive closure of component-schema refs', () => {
@@ -374,6 +409,23 @@ describe('rewriteReusableSchemas', () => {
     expect(result[0].zod).toBe('zod.object({ child: zod.lazy(() => node) })');
     // Self-loop ⇒ recursive; the writer annotates `const node: zod.ZodType<node>`.
     expect(result[0].isRecursive).toBe(true);
+  });
+
+  it('adds pure comments to zod mini lazy self-loops', () => {
+    const entries = [
+      {
+        ref: '#/components/schemas/Node',
+        name: 'node',
+        zod: 'zod.object({ child: __REF_node__ })',
+        consts: '',
+        usedRefs: new Set(['node']),
+        variant: 'mini' as const,
+      },
+    ];
+    const result = rewriteReusableSchemas(entries);
+    expect(result[0].zod).toBe(
+      'zod.object({ child: /*#__PURE__*/ zod.lazy(() => node) })',
+    );
   });
 });
 

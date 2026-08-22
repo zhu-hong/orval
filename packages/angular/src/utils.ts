@@ -1,11 +1,10 @@
 import {
-  camel,
-  DefaultTag,
   type GeneratorVerbOptions,
   getAngularFilteredParamsHelperBody,
   getDefaultContentType,
   isBoolean,
   isObject,
+  isOperationInTagBucket,
   type NormalizedOutputOptions,
   pascal,
   type ResReqTypesValue,
@@ -85,6 +84,8 @@ export const buildServiceClassOpen = ({
   isGlobalMutator,
   provideIn,
   hasQueryParams,
+  baseUrlFieldInitializer,
+  hasObjectParams = false,
 }: {
   title: string;
   isRequestOptions: boolean;
@@ -92,6 +93,17 @@ export const buildServiceClassOpen = ({
   isGlobalMutator: boolean;
   provideIn: string | boolean | undefined;
   hasQueryParams: boolean;
+  /**
+   * When set, injected as an additional `private readonly baseUrl = ...;`
+   * class field — used by `httpResource`-mode mutation-service classes to
+   * pick up the same base-URL DI token as their sibling `HttpClient` output.
+   */
+  baseUrlFieldInitializer?: string;
+  /**
+   * Whether the emitted helper needs the object-serialization overload
+   * (issue #3705). Only meaningful when `hasQueryParams` is `true`.
+   */
+  hasObjectParams?: boolean;
 }): string => {
   const provideInValue = provideIn
     ? `{ providedIn: '${isBoolean(provideIn) ? 'root' : provideIn}' }`
@@ -104,7 +116,7 @@ ${
 
 ${HTTP_CLIENT_OBSERVE_OPTIONS_TEMPLATE}
 
-${hasQueryParams ? getAngularFilteredParamsHelperBody() : ''}`
+${hasQueryParams ? getAngularFilteredParamsHelperBody({ hasObjectParams }) : ''}`
     : ''
 }
 
@@ -113,7 +125,7 @@ ${isRequestOptions && isMutator ? THIRD_PARAMETER_TEMPLATE : ''}
 @Injectable(${provideInValue})
 export class ${title} {
   private readonly http = inject(HttpClient);
-`;
+${baseUrlFieldInitializer ? `  ${baseUrlFieldInitializer}\n` : ''}`;
 };
 
 /**
@@ -143,28 +155,23 @@ export const createRouteRegistry = () => {
 /**
  * Returns only the operations that belong to the current tag output.
  *
- * In `tags` / `tags-split` mode the writer may route untagged operations into
- * the implicit `default` bucket. When a generated tag file targets that bucket
- * we also include operations whose original tag list was empty; a literal
- * user-defined `default` tag is treated like any other tag unless untagged
- * operations are present in the same output.
+ * Tag matching is delegated to {@link isOperationInTagBucket}, the single source
+ * of truth for tag-bucket identity. Untagged operations resolve to the implicit
+ * `default` bucket, matching how the core writer routes them in
+ * `tags` / `tags-split` mode.
  */
 export const getRelevantVerbOptionsForTag = (
   verbOptions: Record<string, GeneratorVerbOptions>,
   tag?: string,
 ): GeneratorVerbOptions[] => {
   const allVerbOptions = Object.values(verbOptions);
-  if (!tag) return allVerbOptions;
+  // Only an absent tag means "no filter"; an empty/whitespace tag is a real
+  // bucket key that `isOperationInTagBucket` normalises to `default`, matching
+  // the core writer instead of silently matching every operation.
+  if (tag == null) return allVerbOptions;
 
-  const camelTag = camel(tag);
-  const includeUntaggedOperations =
-    tag === DefaultTag &&
-    allVerbOptions.some((verbOption) => verbOption.tags.length === 0);
-
-  return allVerbOptions.filter(
-    (verbOption) =>
-      verbOption.tags.some((currentTag) => camel(currentTag) === camelTag) ||
-      (includeUntaggedOperations && verbOption.tags.length === 0),
+  return allVerbOptions.filter((verbOption) =>
+    isOperationInTagBucket(verbOption, tag),
   );
 };
 
@@ -225,8 +232,8 @@ export function isRetrievalVerb(
   if (clientOverride === 'httpResource') return true;
   if (clientOverride === 'httpClient') return false;
 
-  // Absent a per-operation override, GET is treated as a retrieval
-  if (verb === 'get') return true;
+  // Absent a per-operation override, safe retrieval verbs stay in httpResource.
+  if (verb === 'get' || verb === 'query') return true;
 
   // POST with a retrieval-like operation name
   if (verb === 'post' && operationName) {

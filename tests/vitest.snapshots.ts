@@ -1,11 +1,16 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig } from 'vite-plus';
 
 import pkg from './package.json' with { type: 'json' };
 
 export default defineConfig({
   test: {
     name: { label: pkg.name },
-    include: ['api-generation.spec.ts', 'handler-preservation.spec.ts'],
+    include: [
+      'api-generation.spec.ts',
+      'handler-preservation.spec.ts',
+      'query-key-mutator.spec.ts',
+      'serialize-response-headers.spec.ts',
+    ],
     silent: 'passed-only',
   },
 });

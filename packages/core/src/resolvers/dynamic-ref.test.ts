@@ -1,9 +1,14 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 
 import { createTestContextSpec } from '../test-utils/context';
 import type { OpenApiDocument } from '../types';
-import { buildDynamicScope, resolveDynamicRef } from './ref';
+import {
+  buildDynamicScope,
+  buildInlineDynamicScope,
+  getDynamicAnchorIndex,
+  resolveDynamicRef,
+} from './ref';
 
 function createContext(spec: OpenApiDocument) {
   return createTestContextSpec({
@@ -765,6 +770,111 @@ describe('resolveDynamicRef — $dynamicAnchor fallback', () => {
   });
 });
 
+describe('resolveDynamicRef — $dynamicAnchor index caching', () => {
+  it('builds the index once and reuses it on subsequent calls', () => {
+    const spec = {
+      openapi: '3.1.0',
+      components: {
+        schemas: {
+          Pet: {
+            $dynamicAnchor: 'Pet',
+            type: 'object',
+            properties: { name: { type: 'string' } },
+          },
+        },
+      },
+    } as OpenApiDocument;
+    const context = { ...createContext(spec), dynamicScope: {} };
+
+    resolveDynamicRef('Pet', context);
+
+    // The first fallback miss memoizes the index on the context.
+    expect(context.dynamicAnchorIndex).toBeInstanceOf(Map);
+    const cached = context.dynamicAnchorIndex;
+    expect(cached?.get('Pet')?.exactName).toBe('Pet');
+
+    // Mutating the spec AFTER the index is built must not affect resolution:
+    // proves the scan does not re-run per call.
+    ((spec.components as { schemas: Record<string, unknown> }).schemas[
+      'LateArrival'
+    ] as unknown) = { $dynamicAnchor: 'LateArrival', type: 'object' };
+    resolveDynamicRef('LateArrival', context);
+
+    // The stale index is still in place (no rebuild), and the late schema is
+    // absent from it — i.e. the cache is authoritative once built.
+    expect(context.dynamicAnchorIndex).toBe(cached);
+    expect(cached?.has('LateArrival')).toBe(false);
+  });
+
+  it('does not populate the index when dynamicScope already resolves the anchor', () => {
+    const spec = {
+      openapi: '3.1.0',
+      components: {
+        schemas: {
+          Pet: { $dynamicAnchor: 'Pet', type: 'object' },
+        },
+      },
+    } as OpenApiDocument;
+    const context = {
+      ...createContext(spec),
+      dynamicScope: { Pet: { name: 'LocalPet', schemaName: 'Pet' } },
+    };
+
+    const result = resolveDynamicRef('Pet', context);
+
+    expect(result.resolvedTypeName).toBe('LocalPet');
+    expect(context.dynamicAnchorIndex).toBeUndefined();
+  });
+
+  it('still resolves to the exact-name schema even when it follows ambiguous non-exact matches', () => {
+    // Regression guard for the literal "bail when count === 2" short-circuit
+    // proposed in #3479: two non-exact matches arrive first, then the
+    // exact-name schema. Resolution must still pick the exact name.
+    const spec = {
+      openapi: '3.1.0',
+      components: {
+        schemas: {
+          AliasA: { $dynamicAnchor: 'node', type: 'object' },
+          AliasB: { $dynamicAnchor: 'node', type: 'object' },
+          node: {
+            $dynamicAnchor: 'node',
+            type: 'object',
+            properties: { id: { type: 'string' } },
+          },
+        },
+      },
+    } as OpenApiDocument;
+    const context = { ...createContext(spec), dynamicScope: {} };
+
+    const result = resolveDynamicRef('node', context);
+
+    // Naming convention title-cases the type name; the important assertions are
+    // that resolution did NOT fall through to `unknown` and that it bound to the
+    // exact-name schema (`node`), not one of the ambiguous aliases.
+    expect(result.resolvedTypeName).not.toBe('unknown');
+    expect(result.schemaName).toBe('node');
+    expect(result.schema).toMatchObject({
+      properties: { id: { type: 'string' } },
+    });
+  });
+
+  it('getDynamicAnchorIndex returns an empty index when no schemas declare an anchor', () => {
+    const spec = {
+      openapi: '3.1.0',
+      components: {
+        schemas: {
+          Unrelated: { type: 'object' },
+        },
+      },
+    } as OpenApiDocument;
+    const context = { ...createContext(spec), dynamicScope: {} };
+
+    const index = getDynamicAnchorIndex(context);
+
+    expect(index.size).toBe(0);
+  });
+});
+
 describe('null safety in $defs entries', () => {
   it('buildDynamicScope skips null $defs entries without throwing', () => {
     const spec = {
@@ -861,5 +971,155 @@ describe('null safety in $defs entries', () => {
       schemaName: 'foo_bar2',
       isParameter: true,
     });
+  });
+});
+
+describe('buildInlineDynamicScope', () => {
+  it('builds an inline entry from a direct $dynamicAnchor', () => {
+    const inlineSchema = {
+      $dynamicAnchor: 'Pet',
+      type: 'object',
+      properties: { meow: { type: 'boolean' } },
+    } as never;
+
+    const scope = buildInlineDynamicScope(inlineSchema);
+
+    expect(scope.Pet).toEqual({
+      name: 'Pet',
+      schemaName: 'Pet',
+      inlineSchema,
+    });
+  });
+
+  it('builds an inline entry from a $defs $dynamicAnchor without $ref', () => {
+    const defSchema = {
+      $dynamicAnchor: 'itemType',
+      type: 'object',
+      properties: { id: { type: 'string' } },
+    };
+    const inlineSchema = {
+      type: 'object',
+      $defs: { itemType: defSchema },
+    } as never;
+
+    const scope = buildInlineDynamicScope(inlineSchema);
+
+    expect(scope.itemType).toEqual({
+      name: 'itemType',
+      schemaName: 'itemType',
+      inlineSchema: defSchema,
+    });
+  });
+
+  it('ignores $defs anchors that are bound via $ref', () => {
+    const inlineSchema = {
+      type: 'object',
+      $defs: {
+        itemType: {
+          $dynamicAnchor: 'itemType',
+          $ref: '#/components/schemas/User',
+        },
+      },
+    } as never;
+
+    const scope = buildInlineDynamicScope(inlineSchema);
+
+    expect(scope.itemType).toBeUndefined();
+  });
+
+  it('combines a direct anchor and $defs anchors', () => {
+    const defSchema = { $dynamicAnchor: 'child', type: 'string' };
+    const inlineSchema = {
+      $dynamicAnchor: 'parent',
+      type: 'object',
+      $defs: { child: defSchema },
+    } as never;
+
+    const scope = buildInlineDynamicScope(inlineSchema);
+
+    expect(scope.parent).toEqual({
+      name: 'parent',
+      schemaName: 'parent',
+      inlineSchema,
+    });
+    expect(scope.child).toEqual({
+      name: 'child',
+      schemaName: 'child',
+      inlineSchema: defSchema,
+    });
+  });
+
+  it('returns an empty scope for a schema without anchors', () => {
+    const inlineSchema = {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+    } as never;
+
+    const scope = buildInlineDynamicScope(inlineSchema);
+
+    expect(scope).toEqual({});
+  });
+});
+
+describe('resolveDynamicRef — inline overrides', () => {
+  it('returns the inline schema when the scope entry carries one', () => {
+    const spec = {
+      openapi: '3.1.0',
+      components: {
+        schemas: {
+          Pet: {
+            $dynamicAnchor: 'Pet',
+            type: 'object',
+            properties: { name: { type: 'string' } },
+          },
+        },
+      },
+    } as OpenApiDocument;
+    const inlineSchema = {
+      $dynamicAnchor: 'Pet',
+      type: 'object',
+      properties: { meow: { type: 'boolean' } },
+    } as never;
+    const context = {
+      ...createContext(spec),
+      dynamicScope: { Pet: { name: 'Pet', schemaName: 'Pet', inlineSchema } },
+    };
+
+    const result = resolveDynamicRef('Pet', context);
+
+    expect(result.schema).toBe(inlineSchema);
+    expect(result.resolvedTypeName).toBe('Pet');
+    expect(result.schemaName).toBeUndefined();
+  });
+
+  it('prefers the inline schema over a same-named component', () => {
+    const spec = {
+      openapi: '3.1.0',
+      components: {
+        schemas: {
+          Pet: {
+            $dynamicAnchor: 'Pet',
+            type: 'object',
+            properties: { name: { type: 'string' } },
+          },
+        },
+      },
+    } as OpenApiDocument;
+    const inlineSchema = {
+      type: 'object',
+      properties: { purr: { type: 'boolean' } },
+    } as never;
+    const context = {
+      ...createContext(spec),
+      dynamicScope: { Pet: { name: 'Pet', schemaName: 'Pet', inlineSchema } },
+    };
+
+    const result = resolveDynamicRef('Pet', context);
+
+    expect(result.schema).toBe(inlineSchema);
+    // The global Pet component must not be resolved.
+    expect(
+      (result.schema as Record<string, unknown>).properties,
+    ).not.toHaveProperty('name');
   });
 });

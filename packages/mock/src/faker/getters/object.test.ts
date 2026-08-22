@@ -3,7 +3,7 @@ import type {
   MockOptions,
   OpenApiSchemaObject,
 } from '@orval/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 
 import { createTestContextSpec } from '../../../../core/src/test-utils/context';
 import { getMockObject } from './object';
@@ -384,5 +384,69 @@ describe('getMockObject', () => {
 
     // Two imports per delegated ref (factory + strict mock type), not exponential.
     expect(result.imports.length).toBeLessThan(200);
+  });
+});
+
+describe('getMockObject recursive reference terminators', () => {
+  const nodeSchema = {
+    type: 'object',
+    required: ['next'],
+    properties: { next: { $ref: '#/components/schemas/Node' } },
+  } satisfies OpenApiSchemaObject;
+
+  const buildNode = (
+    schema: Exclude<OpenApiSchemaObject, boolean>,
+    mockOptions?: MockOptions,
+  ) => {
+    const context = createTestContextSpec({
+      spec: { components: { schemas: { Node: schema } } },
+    });
+    return getMockObject({
+      item: {
+        name: 'Node',
+        ...schema,
+      } as Parameters<typeof getMockObject>[0]['item'],
+      operationId: 'Node',
+      tags: [],
+      context,
+      imports: [],
+      existingReferencedProperties: ['Node'],
+      splitMockImplementations: [],
+      mockOptions,
+    });
+  };
+
+  it('casts a required non-nullable recursive $ref that cannot be stubbed', () => {
+    const result = buildNode(nodeSchema);
+
+    expect(result.value).toBe('{next: {} as unknown as Node}');
+    expect(result.imports).toContainEqual(
+      expect.objectContaining({ name: 'Node' }),
+    );
+  });
+
+  it('keeps null when the recursive $ref targets a nullable schema', () => {
+    const result = buildNode({
+      ...nodeSchema,
+      type: ['object', 'null'],
+    });
+
+    expect(result.value).toContain('next: null');
+  });
+
+  it('casts instead of null when nonNullable is set', () => {
+    const result = buildNode(
+      { ...nodeSchema, type: ['object', 'null'] },
+      { nonNullable: true },
+    );
+
+    expect(result.value).not.toContain('next: null');
+    expect(result.value).toContain('as unknown as Node');
+  });
+
+  it('omits an optional recursive $ref', () => {
+    const result = buildNode({ ...nodeSchema, required: [] });
+
+    expect(result.value).toBe('{}');
   });
 });

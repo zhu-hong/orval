@@ -1,6 +1,6 @@
 {
   "name": "orval",
-  "version": "8.18.0",
+  "version": "8.25.0",
   "description": "A swagger client generator for typescript",
   "keywords": [
     "angular",
@@ -67,18 +67,17 @@
     "@orval/solid-start": "workspace:*",
     "@orval/swr": "workspace:*",
     "@orval/zod": "workspace:*",
-    "@scalar/json-magic": "^0.12.16",
-    "@scalar/openapi-parser": "^0.28.7",
+    "@scalar/json-magic": "^0.12.19",
+    "@scalar/openapi-parser": "^0.28.11",
     "@scalar/openapi-types": "catalog:",
     "chokidar": "^5.0.0",
     "commander": "^15.0.0",
-    "enquirer": "^2.4.1",
     "execa": "^9.6.1",
     "find-up": "8.0.0",
     "fs-extra": "^11.3.2",
     "get-tsconfig": "^4.14.0",
     "jiti": "^2.6.1",
-    "js-yaml": "4.2.0",
+    "js-yaml": "4.3.1",
     "remeda": "^2.33.6",
     "string-argv": "^0.3.2",
     "typedoc": "^0.28.19",
@@ -90,7 +89,7 @@
     "@types/js-yaml": "^4.0.9",
     "rimraf": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vite-plus": "catalog:"
   },
   "peerDependencies": {
     "prettier": ">=3.0.0"

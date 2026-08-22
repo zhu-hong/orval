@@ -8,7 +8,7 @@ import {
 
 import { ANGULAR_HTTP_DEPENDENCIES, AXIOS_DEPENDENCIES } from './client';
 
-export const REACT_DEPENDENCIES: GeneratorDependency[] = [
+const REACT_DEPENDENCIES: GeneratorDependency[] = [
   {
     exports: [
       {
@@ -20,7 +20,7 @@ export const REACT_DEPENDENCIES: GeneratorDependency[] = [
   },
 ];
 
-export const PARAMS_SERIALIZER_DEPENDENCIES: GeneratorDependency[] = [
+const PARAMS_SERIALIZER_DEPENDENCIES: GeneratorDependency[] = [
   {
     exports: [
       {
@@ -277,9 +277,11 @@ const VUE_QUERY_DEPENDENCIES: GeneratorDependency[] = [
   },
   {
     exports: [
-      { name: 'unref', values: true },
-      { name: 'MaybeRef' },
       { name: 'computed', values: true },
+      { name: 'unref', values: true },
+      { name: 'toValue', values: true },
+      { name: 'MaybeRef' },
+      { name: 'MaybeRefOrGetter' },
     ],
     dependency: 'vue',
   },
@@ -292,11 +294,11 @@ const getSolidQueryImports = (
   const capitalized = prefix === 'use' ? 'Use' : 'Create';
   // Solid Query renamed the plain options interfaces in v5.100.6, dropping the
   // `Solid` prefix: `SolidQueryOptions` → `QueryOptions`, `SolidInfiniteQueryOptions` →
-  // `InfiniteQueryOptions`, `SolidMutationOptions` → `MutationOptions`. The
-  // `Use*Options` / `Create*Options` Accessor aliases keep their names but
-  // are still imported because queries use them as the user-facing
-  // `options.query` param type (Solid's `useQuery` overloads rely on that
-  // shape so the `initialData?` discrimination keeps working).
+  // `InfiniteQueryOptions`, `SolidMutationOptions` → `MutationOptions`.
+  //
+  // `addDependency` only emits an import when the export name appears in the
+  // generated file, so listing every candidate here costs nothing for outputs
+  // that do not use them.
   const queryOptionsTypeName = hasRenamedOptionsTypes
     ? 'QueryOptions'
     : 'SolidQueryOptions';
@@ -321,6 +323,12 @@ const getSolidQueryImports = (
         { name: 'MutationFunction' },
         { name: `${capitalized}QueryResult` },
         { name: `${capitalized}InfiniteQueryResult` },
+        { name: `Defined${capitalized}QueryResult` },
+        { name: `Defined${capitalized}InfiniteQueryResult` },
+        { name: 'DefinedInitialDataOptions' },
+        { name: 'UndefinedInitialDataOptions' },
+        { name: 'DefinedInitialDataInfiniteOptions' },
+        { name: 'UndefinedInitialDataInfiniteOptions' },
         { name: 'QueryKey' },
         { name: 'InfiniteData' },
         { name: `${capitalized}MutationResult` },
@@ -391,10 +399,10 @@ export const isVueQueryV3 = (packageJson: PackageJson | undefined) => {
 };
 
 export const getVueQueryDependencies: ClientDependenciesBuilder = (
-  hasGlobalMutator: boolean,
-  hasParamsSerializerOptions: boolean,
+  hasGlobalMutator,
+  hasParamsSerializerOptions,
   packageJson,
-  httpClient?: OutputHttpClient,
+  httpClient,
 ) => {
   const hasVueQueryV3 = isVueQueryV3(packageJson);
 

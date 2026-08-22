@@ -2,6 +2,7 @@ import {
   dynamicImport,
   isObject,
   isString,
+  isUrl,
   logWarning,
   type NormalizedOptions,
   type OpenApiDocument,
@@ -16,17 +17,16 @@ import {
   readFiles,
 } from '@scalar/json-magic/bundle/plugins/node';
 import { upgrade, validate as validateSpec } from '@scalar/openapi-parser';
+import { readFile } from 'node:fs/promises';
+import nodePath from 'node:path';
 import { isNullish } from 'remeda';
+import jsYaml from 'js-yaml';
 
 import { importOpenApi } from './import-open-api';
+import { getHeadersForUrl } from './utils/options';
 
 interface ResolveSpecOptions {
-  parserOptions?: {
-    headers?: {
-      domains: string[];
-      headers: Record<string, string>;
-    }[];
-  };
+  parserOptions?: NormalizedOptions['input']['parserOptions'];
   transformer?: OverrideInput['transformer'];
   workspace: string;
   unsafeDisableValidation?: boolean;
@@ -41,9 +41,45 @@ export async function resolveSpec(
     unsafeDisableValidation = false,
   }: ResolveSpecOptions,
 ): Promise<OpenApiDocument> {
-  const dereferencedData = await bundleAndDereferenceExternalRefs(
+  const allowedRefs = parserOptions?.externalRefs?.allow ?? [];
+  const isWildcard = allowedRefs.includes('*');
+
+  // Load the top-level spec so we can scan for external $refs before
+  // bundle() resolves them. The top-level target is trusted (user-configured
+  // input.target); only the $ref values inside the spec are untrusted.
+  const { data: specData, origin } = await loadSpec(
     input,
+    parserOptions?.headers,
+  );
+
+  // Enforce the allow-list on refs found in the top-level spec.
+  // Transitive refs (inside external docs) are enforced by the loader wrappers.
+  if (!isWildcard) {
+    const refs = collectExternalRefs(specData);
+    const disallowed = refs.filter(
+      (ref) => !isAllowedRef(ref, allowedRefs, origin),
+    );
+    if (disallowed.length > 0) {
+      throw new Error(formatDisallowedRefsError(disallowed, allowedRefs));
+    }
+  } else {
+    const docs = [
+      ...new Set(collectExternalRefs(specData).map(getRefDocument)),
+    ];
+    if (docs.length > 0) {
+      logWarning(
+        `External $ref documents being resolved:\n` +
+          docs.map((d) => `  - ${d}`).join('\n'),
+      );
+    }
+  }
+
+  const dereferencedData = await bundleAndDereferenceExternalRefs(
+    specData,
     parserOptions,
+    origin,
+    isWildcard,
+    allowedRefs,
   );
 
   // Apply user-provided transformer before validation so users can repair
@@ -63,13 +99,16 @@ export async function resolveSpec(
     // those refs are resolved too (#3327). External refs resolve relative to
     // the original spec file, so reuse the string target as the bundle origin;
     // an object input has no file base and cannot introduce relative refs.
-    transformedData = hasExternalRef(applied)
-      ? await bundleAndDereferenceExternalRefs(
-          applied,
-          parserOptions,
-          isString(input) ? input : undefined,
-        )
-      : applied;
+    transformedData =
+      collectExternalRefs(applied).length > 0
+        ? await bundleAndDereferenceExternalRefs(
+            applied,
+            parserOptions,
+            origin,
+            isWildcard,
+            allowedRefs,
+          )
+        : applied;
   }
 
   if (unsafeDisableValidation) {
@@ -89,11 +128,306 @@ export async function resolveSpec(
     }
   }
 
-  const { specification } = upgrade(transformedData);
+  // The upgrader converts Swagger 2.0 `formData` parameters into a
+  // `requestBody` schema but drops the `items` of array-typed parameters,
+  // which would degrade generated types from e.g. `string[]` to `unknown[]`
+  // (#3857). Capture the item schemas before upgrading (the upgrader also
+  // mutates its input, so `swagger: '2.0'` is gone afterwards) and re-apply
+  // them to the upgraded document.
+  const formDataItems = isSwagger2(transformedData)
+    ? collectSwagger2FormDataItems(transformedData)
+    : undefined;
+
+  const upgraded = upgrade(transformedData);
+  let specification = upgraded.specification;
 
   // upgrade() returns @scalar/openapi-types/3.1 Document (openapi: string);
   // OpenApiDocument uses the legacy OpenAPIV3_1 namespace (openapi version literals).
+  if (formDataItems && formDataItems.size > 0) {
+    specification = restoreSwagger2FormDataItems(specification, formDataItems);
+  }
+
   return specification as OpenApiDocument;
+}
+
+// ─── Swagger 2.0 formData array items repair (#3857) ───────────────────────
+
+/**
+ * A capture of Swagger 2.0 `formData` array parameter item schemas, keyed by
+ * path → method → parameter name. `@scalar/openapi-parser`'s `upgrade()`
+ * rewrites `formData` parameters into a `requestBody.content` schema but does
+ * not carry the parameter's `items` over, so array-typed fields would be
+ * generated as `unknown[]` instead of e.g. `string[]`.
+ */
+type Swagger2FormDataItems = Map<
+  string,
+  Map<
+    string,
+    {
+      byName: Map<string, Record<string, unknown>>;
+      /** Path-level formData parameter names this operation overrides. */
+      overriddenNames: Set<string>;
+    }
+  >
+>;
+
+/**
+ * A stable identity for a parameter: `in` + `name`. Only string values
+ * participate — a non-string `in`/`name` cannot dedupe against anything.
+ */
+function paramKey(
+  param: unknown,
+  resolveParameter: (p: unknown) => Record<string, unknown> | undefined,
+): string | undefined {
+  const resolved = resolveParameter(param);
+  if (!resolved) return undefined;
+  if (!isString(resolved.in) || !isString(resolved.name)) {
+    return undefined;
+  }
+  return `${resolved.in}:${resolved.name}`;
+}
+
+function isSwagger2(document: Record<string, unknown>): boolean {
+  return document.swagger === '2.0';
+}
+
+function collectSwagger2FormDataItems(
+  document: Record<string, unknown>,
+): Swagger2FormDataItems {
+  const reusableParameters = isObject(document.parameters)
+    ? (document.parameters as Record<string, unknown>)
+    : {};
+
+  const resolveParameter = (
+    param: unknown,
+  ): Record<string, unknown> | undefined => {
+    if (!isObject(param)) {
+      return undefined;
+    }
+    if ('$ref' in param && isString(param.$ref)) {
+      const ref = param.$ref;
+      if (!ref.startsWith('#/parameters/')) {
+        return undefined;
+      }
+      const target = reusableParameters[ref.slice('#/parameters/'.length)];
+      return isObject(target) ? target : undefined;
+    }
+    return param;
+  };
+
+  const formDataItems: Swagger2FormDataItems = new Map();
+  const paths = isObject(document.paths) ? document.paths : {};
+
+  for (const [path, pathItem] of Object.entries(paths)) {
+    if (!isObject(pathItem)) continue;
+
+    const pathLevelParams = Array.isArray(pathItem.parameters)
+      ? pathItem.parameters
+      : [];
+
+    for (const [method, operation] of Object.entries(pathItem)) {
+      if (!isObject(operation)) {
+        continue;
+      }
+      const operationParams = Array.isArray(operation.parameters)
+        ? operation.parameters
+        : undefined;
+      if (!operationParams && pathLevelParams.length === 0) {
+        continue;
+      }
+
+      // Swagger 2.0 applies path-item parameters to every operation, with
+      // operation-level parameters overriding path-level ones on the same
+      // (name, in) pair — including a ref and its inline equivalent.
+      const merged = mergePathAndOperationParameters(
+        pathLevelParams,
+        operationParams,
+        resolveParameter,
+      );
+
+      const byName = new Map<string, Record<string, unknown>>();
+      for (const rawParam of merged) {
+        const param = resolveParameter(rawParam);
+        if (!param || param.in !== 'formData' || !isObject(param.items)) {
+          continue;
+        }
+        byName.set(String(param.name), param.items);
+      }
+
+      // Path-level formData parameters this operation overrides on the same
+      // (name, in) key. Their effective items live in the operation's own
+      // request body — never in the shared path-level body that other
+      // operations may still use.
+      const opKeys = new Set(
+        (operationParams ?? [])
+          .map((p) => paramKey(p, resolveParameter))
+          .filter((k): k is string => k !== undefined),
+      );
+      const overriddenNames = new Set<string>();
+      for (const rawParam of pathLevelParams) {
+        const param = resolveParameter(rawParam);
+        if (!param || param.in !== 'formData' || !isString(param.name)) {
+          continue;
+        }
+        const key = paramKey(rawParam, resolveParameter);
+        if (key !== undefined && opKeys.has(key)) {
+          overriddenNames.add(param.name);
+        }
+      }
+
+      if (byName.size > 0) {
+        let methods = formDataItems.get(path);
+        if (!methods) {
+          methods = new Map();
+          formDataItems.set(path, methods);
+        }
+        methods.set(method, { byName, overriddenNames });
+      }
+    }
+  }
+
+  return formDataItems;
+}
+
+/**
+ * Merge path-item parameters into an operation's own parameters per Swagger 2.0
+ * semantics: operation-level parameters override path-level ones with the same
+ * (name, in) pair. `$ref`s are resolved (when possible) so a ref and its inline
+ * equivalent dedupe against each other.
+ */
+function mergePathAndOperationParameters(
+  pathLevel: unknown[],
+  operationLevel: unknown[] | undefined,
+  resolveParameter: (p: unknown) => Record<string, unknown> | undefined,
+): unknown[] {
+  const opKeys = new Set(
+    (operationLevel ?? [])
+      .map((p) => paramKey(p, resolveParameter))
+      .filter((k): k is string => k !== undefined),
+  );
+  const kept = pathLevel.filter((p) => {
+    const key = paramKey(p, resolveParameter);
+    return key === undefined || !opKeys.has(key);
+  });
+  return [...kept, ...(operationLevel ?? [])];
+}
+
+/**
+ * Re-apply captured Swagger 2.0 formData item schemas onto the upgraded
+ * document. Only patches array-typed schema properties that the upgrader
+ * left without an `items` key, so it never overrides anything the upgrader
+ * already preserved.
+ */
+function restoreSwagger2FormDataItems<T extends Record<string, unknown>>(
+  document: T,
+  captured: Swagger2FormDataItems,
+): T {
+  const paths = isObject(document.paths) ? document.paths : {};
+
+  // The upgrader promotes reusable formData parameters (`$ref` to
+  // `#/parameters/...`) to `components.requestBodies` and leaves the
+  // operation's `requestBody` as a `$ref` to them.
+  const components = isObject(document.components) ? document.components : {};
+  const requestBodies = isObject(components.requestBodies)
+    ? (components.requestBodies as Record<string, unknown>)
+    : {};
+
+  const resolveRequestBody = (
+    requestBody: unknown,
+  ): Record<string, unknown> | undefined => {
+    if (!isObject(requestBody)) {
+      return undefined;
+    }
+    if ('$ref' in requestBody && isString(requestBody.$ref)) {
+      const ref = requestBody.$ref;
+      if (!ref.startsWith('#/components/requestBodies/')) {
+        return undefined;
+      }
+      const target =
+        requestBodies[ref.slice('#/components/requestBodies/'.length)];
+      return isObject(target) ? target : undefined;
+    }
+    return requestBody;
+  };
+
+  const patchProperties = (
+    requestBody: Record<string, unknown>,
+    byName: Map<string, Record<string, unknown>>,
+  ): void => {
+    const content = requestBody.content;
+    if (!isObject(content)) return;
+
+    for (const mediaType of Object.values(content)) {
+      if (!isObject(mediaType)) continue;
+      const schema = mediaType.schema;
+      if (!isObject(schema)) continue;
+      const properties = schema.properties;
+      if (!isObject(properties)) continue;
+
+      for (const [paramName, items] of byName) {
+        const property = properties[paramName];
+        if (!isObject(property)) continue;
+
+        const propType = property.type;
+        const isArray =
+          propType === 'array' ||
+          (Array.isArray(propType) && propType.includes('array'));
+        if (!isArray || property.items !== undefined) continue;
+
+        // The captured item schema is a plain Items Object (a `$ref` is not
+        // valid there in Swagger 2.0), so it can be assigned as-is.
+        property.items = items;
+      }
+    }
+  };
+
+  for (const [path, methods] of captured) {
+    const pathItem = paths[path];
+    if (!isObject(pathItem)) continue;
+
+    for (const [method, capture] of methods) {
+      const operation = pathItem[method];
+      if (!isObject(operation)) continue;
+
+      const { byName, overriddenNames } = capture;
+      // Bodies owned by the operation (its direct requestBody plus any refs in
+      // its own parameters array) carry the effective, merged parameter set.
+      const effectiveBodies = new Set<Record<string, unknown>>();
+      const directBody = resolveRequestBody(operation.requestBody);
+      if (directBody) {
+        effectiveBodies.add(directBody);
+      }
+      for (const rawParam of Array.isArray(operation.parameters)
+        ? operation.parameters
+        : []) {
+        const body = resolveRequestBody(rawParam);
+        if (body) {
+          effectiveBodies.add(body);
+        }
+      }
+      for (const body of effectiveBodies) {
+        patchProperties(body, byName);
+      }
+
+      // The Path Item's parameters reference shared request bodies that other
+      // operations may also use. Patch only the names this operation does not
+      // override; an overridden name lives in the operation's own body, and
+      // writing its items here would corrupt the shared body for everyone else.
+      const sharedByNames = new Map(
+        [...byName].filter(([name]) => !overriddenNames.has(name)),
+      );
+      for (const rawParam of Array.isArray(pathItem.parameters)
+        ? pathItem.parameters
+        : []) {
+        const body = resolveRequestBody(rawParam);
+        if (body) {
+          patchProperties(body, sharedByNames);
+        }
+      }
+    }
+  }
+
+  return document;
 }
 
 async function applyInputTransformer(
@@ -128,13 +462,18 @@ async function bundleAndDereferenceExternalRefs(
   input: string | Record<string, unknown>,
   parserOptions: ResolveSpecOptions['parserOptions'],
   origin?: string,
+  isWildcard = false,
+  allowedExternalRefs: string[] = [],
 ): Promise<Record<string, unknown>> {
   const data = await bundle(input, {
     plugins: [
-      readFiles(),
-      fetchUrls({
-        headers: parserOptions?.headers,
-      }),
+      createSafeFileLoader(origin, isWildcard, allowedExternalRefs),
+      createSafeUrlLoader(
+        origin,
+        isWildcard,
+        allowedExternalRefs,
+        parserOptions?.headers,
+      ),
       parseJson(),
       parseYaml(),
     ],
@@ -144,24 +483,196 @@ async function bundleAndDereferenceExternalRefs(
   return dereferenceExternalRef(data as Record<string, unknown>);
 }
 
+// ─── External ref allow-list enforcement (GHSA-cxq5-97v7-87j8) ─────────────
+
 /**
- * Report whether any `$ref` in the document points to an external document.
- * Per the JSON Reference rules a ref is external when it does not start with
- * `#` (an in-document pointer). Used to decide whether a transformer introduced
- * new external refs that need a second bundle pass (#3327) — when it did not,
- * the already-bundled spec is returned untouched.
+ * Load the top-level spec into an inline object so we can scan it for external
+ * `$ref`s before `bundle()` resolves them. The top-level target is trusted
+ * (user-configured `input.target`); only `$ref` values inside the spec are
+ * untrusted.
  */
-function hasExternalRef(obj: unknown): boolean {
-  if (Array.isArray(obj)) {
-    return obj.some((item) => hasExternalRef(item));
+function parseSpec(text: string): Record<string, unknown> {
+  const result = jsYaml.load(text);
+  if (!isObject(result)) {
+    throw new Error('OpenAPI spec must be a valid JSON/YAML object.');
   }
-  if (isObject(obj)) {
-    if ('$ref' in obj && isString(obj.$ref) && !obj.$ref.startsWith('#')) {
-      return true;
+  return result as Record<string, unknown>;
+}
+
+async function loadSpec(
+  input: string | Record<string, unknown>,
+  headers?: NonNullable<ResolveSpecOptions['parserOptions']>['headers'],
+): Promise<{ data: Record<string, unknown>; origin?: string }> {
+  if (!isString(input)) {
+    return { data: input };
+  }
+  if (isUrl(input)) {
+    const response = await fetch(input, {
+      headers: getHeadersForUrl(input, headers),
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Failed to fetch OpenAPI spec from ${input}: ${response.status} ${response.statusText}`,
+      );
     }
-    return Object.values(obj).some((value) => hasExternalRef(value));
+    return { data: parseSpec(await response.text()), origin: input };
   }
-  return false;
+  return { data: parseSpec(await readFile(input, 'utf-8')), origin: input };
+}
+
+/**
+ * Strip the JSON pointer fragment (`#/...`) from a `$ref` value, leaving only
+ * the document target (file path or URL).
+ */
+function getRefDocument(ref: string): string {
+  const hashIndex = ref.indexOf('#');
+  return hashIndex === -1 ? ref : ref.slice(0, hashIndex);
+}
+
+/**
+ * Collect all external `$ref` document targets from a spec object. Returns
+ * deduplicated ref strings in their raw form (before fragment stripping).
+ */
+function collectExternalRefs(obj: unknown): string[] {
+  const refs = new Set<string>();
+  function walk(val: unknown) {
+    if (Array.isArray(val)) {
+      val.forEach(walk);
+      return;
+    }
+    if (isObject(val)) {
+      if ('$ref' in val && isString(val.$ref) && !val.$ref.startsWith('#')) {
+        refs.add(val.$ref);
+      }
+      Object.values(val).forEach(walk);
+    }
+  }
+  walk(obj);
+  return [...refs];
+}
+
+/**
+ * Resolve a ref document target (the part before `#`) to a canonical path or
+ * URL, so it can be compared against allow-list entries that were resolved the
+ * same way.
+ */
+function resolveRefTarget(ref: string, origin?: string): string {
+  const doc = getRefDocument(ref);
+  if (isUrl(doc)) return new URL(doc).href;
+  if (origin && isUrl(origin)) {
+    return new URL(doc, origin).href;
+  }
+  if (origin) {
+    return nodePath.resolve(nodePath.dirname(origin), doc);
+  }
+  return nodePath.resolve(doc);
+}
+
+/**
+ * Check whether a `$ref` is allowed by the user's allow-list. Both the ref and
+ * the allow-list entries are resolved against the spec origin so that
+ * `./schemas/pet.yaml` in the spec matches `./schemas/pet.yaml` in the config.
+ */
+function isAllowedRef(
+  ref: string,
+  allowedExternalRefs: string[],
+  origin?: string,
+): boolean {
+  const resolved = resolveRefTarget(ref, origin);
+  return allowedExternalRefs.some(
+    (entry) => resolveRefTarget(entry, origin) === resolved,
+  );
+}
+
+function formatDisallowedRefsError(
+  disallowed: string[],
+  currentAllowed: string[],
+): string {
+  const docs = [...new Set(disallowed.map(getRefDocument))];
+  const all = [...new Set([...currentAllowed, ...docs])];
+  const configSnippet = JSON.stringify(
+    {
+      input: {
+        parserOptions: { externalRefs: { allow: all } },
+      },
+    },
+    null,
+    2,
+  );
+  return (
+    `External $ref targets are not allowed by default.\n` +
+    `Add them to your config, or use externalRefs.allow: ['*'] to allow all.\n\n` +
+    `Disallowed refs:\n${disallowed.map((r) => `  - ${r}`).join('\n')}\n\n` +
+    `Suggested config:\n${configSnippet}`
+  );
+}
+
+/**
+ * Wrap `readFiles()` so every file read is checked against the allow-list.
+ * The top-level spec file (matching `origin`) is always allowed; subsequent
+ * reads must match an explicit entry or the wildcard.
+ */
+function createSafeFileLoader(
+  origin: string | undefined,
+  isWildcard: boolean,
+  allowedExternalRefs: string[],
+) {
+  const base = readFiles();
+  return {
+    type: 'loader' as const,
+    validate: base.validate,
+    async exec(value: string) {
+      if (isWildcard) {
+        return base.exec(value);
+      }
+      if (origin && nodePath.resolve(value) === nodePath.resolve(origin)) {
+        return base.exec(value);
+      }
+      const isAllowed = isAllowedRef(value, allowedExternalRefs, origin);
+      if (!isAllowed) {
+        throw new Error(
+          `Refused to read external file: ${value}\n` +
+            `Add it to externalRefs.allow or use ['*'] to allow all.`,
+        );
+      }
+      return base.exec(value);
+    },
+  };
+}
+
+/**
+ * Wrap `fetchUrls()` so every URL fetch is checked against the allow-list.
+ * The top-level spec URL (matching `origin`) is always allowed; subsequent
+ * fetches must match an explicit entry or the wildcard.
+ */
+function createSafeUrlLoader(
+  origin: string | undefined,
+  isWildcard: boolean,
+  allowedExternalRefs: string[],
+  headers?: { domains: string[]; headers: Record<string, string> }[],
+) {
+  const base = fetchUrls({ headers });
+  return {
+    type: 'loader' as const,
+    validate: base.validate,
+    async exec(value: string) {
+      if (isWildcard) {
+        return base.exec(value);
+      }
+      const resolved = resolveRefTarget(value, origin);
+      if (origin && resolved === resolveRefTarget(origin)) {
+        return base.exec(value);
+      }
+      const isAllowed = isAllowedRef(value, allowedExternalRefs, origin);
+      if (!isAllowed) {
+        throw new Error(
+          `Refused to fetch external URL: ${value}\n` +
+            `Add it to externalRefs.allow or use ['*'] to allow all.`,
+        );
+      }
+      return base.exec(value);
+    },
+  };
 }
 
 export async function importSpecs(

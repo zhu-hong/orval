@@ -13,6 +13,7 @@ import {
   generateVerbImports,
   type GeneratorVerbOptions,
   getAngularFilteredParamsHelperBody,
+  getAngularObjectParamStrategies,
   getDefaultContentType,
   getEnumImplementation,
   getIsBodyVerb,
@@ -22,8 +23,14 @@ import {
   makeRouteSafe,
   pascal,
   toObjectString,
+  type EnumMember,
+  EnumGeneration,
 } from '@orval/core';
 
+import {
+  getAngularBaseUrlImportSpecifier,
+  getBaseUrlTokenName,
+} from './base-url';
 import { ANGULAR_HTTP_CLIENT_DEPENDENCIES } from './constants';
 import {
   HTTP_CLIENT_OBSERVE_OPTIONS_TEMPLATE,
@@ -132,8 +139,8 @@ export const getAngularDependencies: ClientDependenciesBuilder = () => [
  *
  * @returns A PascalCase helper type/const name for the operation's `Accept` values.
  */
-export const getAcceptHelperName = (operationName: string) =>
-  `${pascal(operationName)}Accept`;
+export const getAcceptHelperName = (typeName: string) =>
+  `${pascal(typeName)}Accept`;
 
 /**
  * Collects the distinct successful response content types for a single
@@ -155,26 +162,24 @@ const toAcceptHelperKey = (contentType: string): string =>
     .toLowerCase();
 
 const buildAcceptHelper = (
-  operationName: string,
+  typeName: string,
   contentTypes: string[],
   output: ContextSpec['output'],
 ): string => {
-  const acceptHelperName = getAcceptHelperName(operationName);
-  const unionValue = contentTypes
-    .map((contentType) => `'${contentType}'`)
-    .join(' | ');
-  const names = contentTypes.map((contentType) =>
-    toAcceptHelperKey(contentType),
-  );
-  const implementation = getEnumImplementation(
-    unionValue,
-    names,
-    undefined,
-    output.override.namingConvention.enum,
-  );
+  const acceptHelperName = getAcceptHelperName(typeName);
+
+  const enumMembers: EnumMember[] = contentTypes.map((contentType) => ({
+    value: contentType,
+    name: toAcceptHelperKey(contentType),
+  }));
+
+  const implementation = getEnumImplementation(enumMembers, {
+    enumNamingConvention: output.override.namingConvention.enum,
+    enumGenerationType: EnumGeneration.CONST,
+  });
 
   return `export type ${acceptHelperName} = typeof ${acceptHelperName}[keyof typeof ${acceptHelperName}];
-
+  
 export const ${acceptHelperName} = {
 ${implementation}} as const;`;
 };
@@ -200,9 +205,7 @@ export const buildAcceptHelpers = (
       );
       if (contentTypes.length <= 1) return [];
 
-      return [
-        buildAcceptHelper(verbOption.operationName, contentTypes, output),
-      ];
+      return [buildAcceptHelper(verbOption.typeName, contentTypes, output)];
     })
     .join('\n\n');
 
@@ -237,6 +240,20 @@ export const generateAngularHeader: ClientHeaderBuilder = ({
   const hasBuiltInFilteredQueryParams = relevantVerbs.some(
     (v) => v.queryParams && !v.paramsFilter,
   );
+  // The helper only needs the object-serialization overload (issue #3705)
+  // when at least one relevant operation actually has a gated strategy to
+  // apply — keeping the base helper byte-identical everywhere else.
+  const hasObjectParams = relevantVerbs.some(
+    (v) =>
+      Object.keys(
+        getAngularObjectParamStrategies({
+          queryParams: v.queryParams,
+          paramsSerializer: v.paramsSerializer,
+          paramsFilter: v.paramsFilter,
+          queryObjectSerialization: v.override.angular.queryObjectSerialization,
+        }),
+      ).length > 0,
+  );
   const acceptHelpers = buildAcceptHelpers(relevantVerbs, output);
 
   return `
@@ -246,7 +263,7 @@ ${
 
 ${HTTP_CLIENT_OBSERVE_OPTIONS_TEMPLATE}
 
-${hasBuiltInFilteredQueryParams ? getAngularFilteredParamsHelperBody() : ''}`
+${hasBuiltInFilteredQueryParams ? getAngularFilteredParamsHelperBody({ hasObjectParams }) : ''}`
     : ''
 }
 
@@ -257,7 +274,12 @@ ${acceptHelpers}
 @Injectable(${provideIn ? `{ providedIn: '${isBoolean(provideIn) ? 'root' : provideIn}' }` : ''})
 export class ${title} {
   private readonly http = inject(HttpClient);
-`;
+${
+  output.override.angular.baseUrl
+    ? `  private readonly baseUrl = inject(${getBaseUrlTokenName(output.override.angular.baseUrl.apiId)});
+`
+    : ''
+}`;
 };
 
 /**
@@ -306,6 +328,7 @@ export const generateHttpClientImplementation = (
     headers,
     queryParams,
     operationName,
+    typeName,
     response,
     mutator,
     body,
@@ -327,6 +350,13 @@ export const generateHttpClientImplementation = (
   let route = _route;
   if (context.output.urlEncodeParameters) {
     route = makeRouteSafe(route);
+  }
+  // MUST run after the urlEncodeParameters/makeRouteSafe step above:
+  // wrapRouteParameters (invoked by makeRouteSafe) rewrites every `${...}`
+  // segment of the route, so prefixing before it would wrap `this.baseUrl`
+  // in `encodeURIComponent(String(...))`.
+  if (context.output.override.angular.baseUrl) {
+    route = '${this.baseUrl}' + route;
   }
 
   const isRequestOptions = override.requestOptions !== false;
@@ -404,7 +434,7 @@ export const generateHttpClientImplementation = (
   returnTypesRegistry.set(
     operationName,
     `export type ${pascal(
-      operationName,
+      typeName,
     )}ClientResult = NonNullable<${resultAliasType}>`,
   );
 
@@ -452,11 +482,23 @@ export const generateHttpClientImplementation = (
   `;
   }
 
+  // Object-typed query param serialization (issue #3705), already gated for
+  // `override.angular.queryObjectSerialization`, `paramsFilter`, and
+  // `paramsSerializer` — computed once and forwarded verbatim everywhere a
+  // filter expression is built below.
+  const objectParamStrategies = getAngularObjectParamStrategies({
+    queryParams,
+    paramsSerializer,
+    paramsFilter,
+    queryObjectSerialization: override.angular.queryObjectSerialization,
+  });
+
   const optionsBase = {
     route,
     body,
     headers,
     queryParams,
+    objectQueryParamStrategies: objectParamStrategies,
     response,
     verb,
     requestOptions: override.requestOptions,
@@ -476,7 +518,7 @@ export const generateHttpClientImplementation = (
   const uniqueContentTypes = getUniqueContentTypes(successTypes);
   const hasMultipleContentTypes = uniqueContentTypes.length > 1;
   const acceptTypeName = hasMultipleContentTypes
-    ? getAcceptHelperName(operationName)
+    ? getAcceptHelperName(typeName)
     : undefined;
 
   const needsObserveBranching = isRequestOptions && !hasMultipleContentTypes;
@@ -499,6 +541,7 @@ export const generateHttpClientImplementation = (
       nonPrimitiveKeys: paramsSerializer
         ? (queryParams.nonPrimitiveKeys ?? [])
         : [],
+      objectParamStrategies,
       paramsFilter,
       // Request-options path uses the shared `filterParams` helper emitted in
       // the file header; the non-request-options path inlines an IIFE.
@@ -738,7 +781,7 @@ export const generateHttpClientImplementation = (
     if (accept.includes('json') || accept.includes('+json')) {
       return ${buildHttpClientCall(`<${parsedJsonReturnType}>`, buildOptionsObject('json'))}${jsonValidationPipe};
     } else if (accept.startsWith('text/') || accept.includes('xml')) {
-      return ${buildHttpClientCall('', buildOptionsObject('text'))} as Observable<any>;
+      return ${buildHttpClientCall('', buildOptionsObject('text'))} as Observable<string>;
     }${
       blobSuccessTypes.length > 0
         ? ` else {
@@ -892,10 +935,23 @@ export const generateAngular: ClientBuilder = (verbOptions, options) => {
     options,
   );
 
+  const baseUrl = options.context.output.override.angular.baseUrl;
+
   const imports = [
     ...generateVerbImports(normalizedVerbOptions),
     ...(implementation.includes('.pipe(map(')
       ? [{ name: 'map', values: true, importPath: 'rxjs' }]
+      : []),
+    ...(baseUrl
+      ? [
+          {
+            name: getBaseUrlTokenName(baseUrl.apiId),
+            values: true,
+            importPath: getAngularBaseUrlImportSpecifier(
+              options.context.output,
+            ),
+          },
+        ]
       : []),
   ];
 

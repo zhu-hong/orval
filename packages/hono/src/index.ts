@@ -1,8 +1,9 @@
 import nodePath from 'node:path';
 
 import {
-  camel,
+  camelPathParamName,
   type ClientBuilder,
+  conventionName,
   type ClientExtraFilesBuilder,
   type ClientFooterBuilder,
   type ClientGeneratorsBuilder,
@@ -13,23 +14,25 @@ import {
   type GeneratorImport,
   type GeneratorVerbOptions,
   getFileInfo,
+  getOperationTagKey,
   getOrvalGeneratedTypes,
   getParamsInPath,
   type HonoHandlerStrategy,
   isObject,
+  isOperationInTagBucket,
   jsDoc,
-  kebab,
   logWarning,
   type NormalizedMutator,
   type NormalizedOutputOptions,
   type OpenApiInfoObject,
+  getKey,
   pascal,
-  sanitize,
+  sanitizePathParamName,
   getImportExtension,
   type Tsconfig,
   upath,
 } from '@orval/core';
-import { generateZod } from '@orval/zod';
+import { generateZod, getZodImportSource } from '@orval/zod';
 import fs from 'fs-extra';
 
 import {
@@ -40,6 +43,13 @@ import {
   reconcileHandlerFile,
 } from './handler-merge';
 import { getRoute } from './route';
+
+// Always a namespace import: `import { z as zod }` pulls in zod's assembled `z` object,
+// which transitively references every locale table and cannot be tree-shaken. Matches
+// what `@orval/zod` and `@orval/effect` already emit via `namespaceImport`.
+const getZodSchemaImportStatement = (
+  variant: NormalizedOutputOptions['override']['zod']['variant'],
+) => `import * as zod from '${getZodImportSource(variant)}';`;
 
 // Warn at most once per run when the optional `typescript` peer is missing and a
 // non-`skip` strategy was requested, so the degraded behavior is never silent.
@@ -128,13 +138,13 @@ export const getHonoHeader: ClientHeaderBuilder = ({
         // sub-directory. `tags` mode flattens them next to `target`, so the
         // import must be resolved from `targetInfo.dirname` directly.
         const isSplitDir = output.mode === 'tags-split';
-        const tag = kebab(verbOption.tags[0] ?? 'default');
+        const tag = getOperationTagKey(verbOption);
 
         const handlersPath = upath.relativeSafe(
           nodePath.join(targetInfo.dirname, isSplitDir ? tag : ''),
           nodePath.join(
             handlerFileInfo.dirname,
-            `./${verbOption.operationName}`,
+            `./${conventionName(verbOption.operationName, output.namingConvention)}`,
           ),
         );
 
@@ -219,31 +229,31 @@ const getDesiredValidators = (
 ): DesiredValidator[] => {
   if (!validator) return [];
 
-  const pascalOperationName = pascal(verbOption.operationName);
+  const pascalTypeName = pascal(verbOption.typeName);
   const validators: DesiredValidator[] = [];
 
   if (verbOption.headers) {
     validators.push({
       target: 'header',
-      schema: `${pascalOperationName}Header`,
+      schema: `${pascalTypeName}Header`,
     });
   }
   if (verbOption.params.length > 0) {
     validators.push({
       target: 'param',
-      schema: `${pascalOperationName}Params`,
+      schema: `${pascalTypeName}Params`,
     });
   }
   if (verbOption.queryParams) {
     validators.push({
       target: 'query',
-      schema: `${pascalOperationName}QueryParams`,
+      schema: `${pascalTypeName}QueryParams`,
     });
   }
   if (verbOption.body.definition) {
     validators.push({
       target: isFormBody(verbOption.body) ? 'form' : 'json',
-      schema: `${pascalOperationName}Body`,
+      schema: `${pascalTypeName}Body`,
     });
   }
   if (
@@ -255,7 +265,7 @@ const getDesiredValidators = (
   ) {
     validators.push({
       target: 'response',
-      schema: `${pascalOperationName}Response`,
+      schema: `${pascalTypeName}Response`,
     });
   }
 
@@ -315,29 +325,29 @@ const getZvalidatorImports = (
   const specifiers = [];
 
   for (const {
-    operationName,
+    typeName,
     headers,
     params,
     queryParams,
     body,
     response,
   } of verbOptions) {
-    const pascalOperationName = pascal(operationName);
+    const pascalTypeName = pascal(typeName);
 
     if (headers) {
-      specifiers.push(`${pascalOperationName}Header`);
+      specifiers.push(`${pascalTypeName}Header`);
     }
 
     if (params.length > 0) {
-      specifiers.push(`${pascalOperationName}Params`);
+      specifiers.push(`${pascalTypeName}Params`);
     }
 
     if (queryParams) {
-      specifiers.push(`${pascalOperationName}QueryParams`);
+      specifiers.push(`${pascalTypeName}QueryParams`);
     }
 
     if (body.definition) {
-      specifiers.push(`${pascalOperationName}Body`);
+      specifiers.push(`${pascalTypeName}Body`);
     }
 
     if (
@@ -346,7 +356,7 @@ const getZvalidatorImports = (
       response.originalSchema?.['200']?.content?.['application/json'] !=
         undefined
     ) {
-      specifiers.push(`${pascalOperationName}Response`);
+      specifiers.push(`${pascalTypeName}Response`);
     }
   }
 
@@ -361,10 +371,7 @@ const getVerbOptionGroupByTag = (
   const grouped: Record<string, GeneratorVerbOptions[]> = {};
 
   for (const value of Object.values(verbOptions)) {
-    const tag = value.tags[0];
-    // this is not always false
-    // TODO look into types
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    const tag = getOperationTagKey(value);
     if (!grouped[tag]) {
       grouped[tag] = [];
     }
@@ -393,7 +400,7 @@ const buildDesiredImports = ({
   tsconfig?: Tsconfig;
 }): DesiredImports => {
   const contextNames = verbList.map(
-    (verb) => `${pascal(verb.operationName)}Context`,
+    (verb) => `${pascal(verb.typeName)}Context`,
   );
   const zodNames = verbList.flatMap((verb) =>
     getDesiredValidators(verb, validator).map((v) => v.schema),
@@ -447,7 +454,7 @@ const generateFreshHandlerFile = ({
   const [handlerCode, hasZValidator] = getHonoHandlers(
     ...verbList.map((verbOption) => ({
       handlerName: `${verbOption.operationName}Handlers`,
-      contextTypeName: `${pascal(verbOption.operationName)}Context`,
+      contextTypeName: `${pascal(verbOption.typeName)}Context`,
       verbOption,
       validator,
       bodyOverride: bodyFor?.(verbOption.operationName),
@@ -464,7 +471,7 @@ const generateFreshHandlerFile = ({
 
   imports.push(
     `import { ${verbList
-      .map((verb) => `${pascal(verb.operationName)}Context`)
+      .map((verb) => `${pascal(verb.typeName)}Context`)
       .join(
         ',\n',
       )} } from '${generateModuleSpecifier(path, contextModule, tsconfig)}';`,
@@ -586,7 +593,7 @@ export const generateHandlerFile = async ({
       validators: getDesiredValidators(verbOption, validator),
       stub: getHonoHandlers({
         handlerName: `${verbOption.operationName}Handlers`,
-        contextTypeName: `${pascal(verbOption.operationName)}Context`,
+        contextTypeName: `${pascal(verbOption.typeName)}Context`,
         verbOption,
         validator,
       })[0],
@@ -614,11 +621,12 @@ const generateHandlerFiles = async (
     // One file per operation in the user-provided directory.
     return Promise.all(
       Object.values(verbOptions).map(async (verbOption) => {
-        const tag = kebab(verbOption.tags[0] ?? 'default');
+        const tag = getOperationTagKey(verbOption);
 
         const path = nodePath.join(
           output.override.hono.handlers ?? '',
-          `./${verbOption.operationName}` + extension,
+          `./${conventionName(verbOption.operationName, output.namingConvention)}` +
+            extension,
         );
 
         // Mirror the layout used by generateZodFiles/generateContextFiles so
@@ -626,11 +634,8 @@ const generateHandlerFiles = async (
         let zodModule: string;
         let contextModule: string;
         if (output.mode === 'tags') {
-          zodModule = nodePath.join(dirname, `${kebab(tag)}.zod${extension}`);
-          contextModule = nodePath.join(
-            dirname,
-            `${kebab(tag)}.context${extension}`,
-          );
+          zodModule = nodePath.join(dirname, `${tag}.zod${extension}`);
+          contextModule = nodePath.join(dirname, `${tag}.context${extension}`);
         } else if (output.mode === 'tags-split') {
           zodModule = nodePath.join(dirname, tag, tag + '.zod' + extension);
           contextModule = nodePath.join(
@@ -671,7 +676,7 @@ const generateHandlerFiles = async (
       Object.entries(groupByTags).map(async ([tag, verbs]) => {
         const handlerPath =
           output.mode === 'tags'
-            ? nodePath.join(dirname, `${kebab(tag)}.handlers${extension}`)
+            ? nodePath.join(dirname, `${tag}.handlers${extension}`)
             : nodePath.join(dirname, tag, tag + '.handlers' + extension);
 
         return {
@@ -682,11 +687,11 @@ const generateHandlerFiles = async (
             validatorModule,
             zodModule:
               output.mode === 'tags'
-                ? nodePath.join(dirname, `${kebab(tag)}.zod${extension}`)
+                ? nodePath.join(dirname, `${tag}.zod${extension}`)
                 : nodePath.join(dirname, tag, tag + '.zod' + extension),
             contextModule:
               output.mode === 'tags'
-                ? nodePath.join(dirname, `${kebab(tag)}.context${extension}`)
+                ? nodePath.join(dirname, `${tag}.context${extension}`)
                 : nodePath.join(dirname, tag, tag + '.context' + extension),
             strategy,
             tsconfig: output.tsconfig,
@@ -728,12 +733,14 @@ const getContext = (verbOption: GeneratorVerbOptions) => {
   if (verbOption.params.length > 0) {
     const params = getParamsInPath(verbOption.pathRoute).map((name) => {
       const param = verbOption.params.find(
-        (p) => p.name === sanitize(camel(name), { es5keyword: true }),
+        (p) => p.name === camelPathParamName(name),
       );
       const definition = param?.definition.split(':')[1];
       const required = param?.required ?? false;
+      // The key must be the same name the emitted route uses (`:name`), which
+      // is the sanitized spec name — that is the key Hono's runtime exposes.
       return {
-        definition: `${name}${required ? '' : '?'}:${definition}`,
+        definition: `${getKey(sanitizePathParamName(name))}${required ? '' : '?'}:${definition}`,
       };
     });
     paramType = `param: {\n ${params
@@ -750,7 +757,7 @@ const getContext = (verbOption: GeneratorVerbOptions) => {
   const hasIn = !!paramType || !!queryType || !!bodyType;
 
   return `export type ${pascal(
-    verbOption.operationName,
+    verbOption.typeName,
   )}Context<E extends Env = any> = Context<E, '${getRoute(
     verbOption.pathRoute,
   )}'${
@@ -853,7 +860,7 @@ const generateContextFiles = (
     return Object.entries(groupByTags).map(([tag, verbs]) => {
       const path =
         output.mode === 'tags'
-          ? nodePath.join(dirname, `${kebab(tag)}.context${extension}`)
+          ? nodePath.join(dirname, `${tag}.context${extension}`)
           : nodePath.join(dirname, tag, tag + '.context' + extension);
       const code = generateContextFile({
         verbs,
@@ -931,11 +938,11 @@ const generateZodFiles = async (
           oneMore: output.mode === 'tags-split',
         });
 
-        let content = `${header}import { z as zod } from 'zod';\n${mutatorsImports}\n`;
+        let content = `${header}${getZodSchemaImportStatement(output.override.zod.variant)}\n${mutatorsImports}\n`;
 
         const zodPath =
           output.mode === 'tags'
-            ? nodePath.join(dirname, `${kebab(tag)}.zod${extension}`)
+            ? nodePath.join(dirname, `${tag}.zod${extension}`)
             : nodePath.join(dirname, tag, tag + '.zod' + extension);
 
         content += zods.map((zod) => zod.implementation).join('\n');
@@ -976,7 +983,7 @@ const generateZodFiles = async (
     mutators: allMutators,
   });
 
-  let content = `${header}import { z as zod } from 'zod';\n${mutatorsImports}\n`;
+  let content = `${header}${getZodSchemaImportStatement(output.override.zod.variant)}\n${mutatorsImports}\n`;
 
   const zodPath = nodePath.join(dirname, `${filename}.zod${extension}`);
 
@@ -1046,7 +1053,7 @@ const generateCompositeRoutes = (
           compositeRouteInfo.path,
           nodePath.join(
             handlerFileInfo.dirname,
-            `./${operationName}${targetInfo.extension}`,
+            `./${conventionName(operationName, output.namingConvention)}${targetInfo.extension}`,
           ),
           output.tsconfig,
         );
@@ -1056,29 +1063,36 @@ const generateCompositeRoutes = (
       .join('\n');
   } else {
     const tags = importHandlers.map((verbOption) =>
-      kebab(verbOption.tags[0] ?? 'default'),
+      getOperationTagKey(verbOption),
     );
     const uniqueTags = tags.filter((t, i) => tags.indexOf(t) === i);
 
     ImportHandlersImplementation = uniqueTags
       .map((tag) => {
         const importHandlerNames = importHandlers
-          .filter((verbOption) => verbOption.tags[0] === tag)
+          .filter((verbOption) => isOperationInTagBucket(verbOption, tag))
           .map((verbOption) => ` ${verbOption.operationName}Handlers`)
           .join(`, \n`);
 
+        const handlerFilePath =
+          output.mode === 'tags-split'
+            ? nodePath.join(
+                targetInfo.dirname,
+                tag,
+                `${tag}.handlers${targetInfo.extension}`,
+              )
+            : nodePath.join(
+                targetInfo.dirname,
+                `${tag}.handlers${targetInfo.extension}`,
+              );
+
         const handlersPath = generateModuleSpecifier(
           compositeRouteInfo.path,
-          nodePath.join(targetInfo.dirname, tag),
+          handlerFilePath,
           output.tsconfig,
         );
 
-        const handlersImportExt = getImportExtension(
-          targetInfo.extension,
-          output.tsconfig,
-        );
-
-        return `import {\n${importHandlerNames}\n} from '${handlersPath}/${tag}.handlers${handlersImportExt}';`;
+        return `import {\n${importHandlerNames}\n} from '${handlersPath}';`;
       })
       .join('\n');
   }

@@ -2,6 +2,7 @@
 ![NPM Downloads](https://img.shields.io/npm/dm/orval?color=purple)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Gurubase](https://img.shields.io/badge/Gurubase-Ask%20Orval%20Guru-006BFF)](https://gurubase.io/g/orval)
+[![pkg.pr.new](https://pkg.pr.new/badge/orval-labs/orval)](https://pkg.pr.new/~/orval-labs/orval)
 
 <p align="center">
   <img src="./logo/orval-logo-horizontal.svg?raw=true" width="500" height="160" alt="orval - Restfull Client Generator" />
@@ -57,6 +58,51 @@ You can find some samples below:
 ### Playground
 
 Try Orval out for yourself using our [Playground](https://orval.dev/playground) application!
+
+### Docker
+
+Orval 8+ requires Node.js 22.18 or newer. Projects on an older Node LTS can run code generation with the official Docker image.
+
+**Basic usage**
+
+```bash
+# macOS / Linux
+docker run --rm -v "$(pwd):/app" -w /app ghcr.io/orval-labs/orval
+
+# Windows Git Bash
+MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd):/app" -w /app ghcr.io/orval-labs/orval
+
+# Windows CMD
+cd /d "C:\path\to\your-project"
+docker run --rm -v "%cd%:/app" -w /app ghcr.io/orval-labs/orval
+
+# Windows PowerShell
+cd "C:\path\to\your-project"
+docker run --rm -v "${PWD}:/app" -w /app ghcr.io/orval-labs/orval
+```
+
+**Local API (`localhost` → `host.docker.internal`)**
+
+```bash
+# macOS / Linux
+docker run --rm -v "$(pwd):/app" -w /app -e ORVAL_SWAGGER_URL="https://host.docker.internal:7142/swagger/v1/swagger.json" -e NODE_TLS_REJECT_UNAUTHORIZED=0 ghcr.io/orval-labs/orval --config ./orval.config.ts
+
+# Linux (native Docker)
+docker run --rm --add-host=host.docker.internal:host-gateway -v "$(pwd):/app" -w /app -e ORVAL_SWAGGER_URL="https://host.docker.internal:7142/swagger/v1/swagger.json" -e NODE_TLS_REJECT_UNAUTHORIZED=0 ghcr.io/orval-labs/orval --config ./orval.config.ts
+
+# Windows Git Bash
+MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd):/app" -w /app -e ORVAL_SWAGGER_URL="https://host.docker.internal:7142/swagger/v1/swagger.json" -e NODE_TLS_REJECT_UNAUTHORIZED=0 ghcr.io/orval-labs/orval --config ./orval.config.ts
+
+# Windows CMD
+cd /d "C:\path\to\your-project"
+docker run --rm -v "%cd%:/app" -w /app -e "ORVAL_SWAGGER_URL=https://host.docker.internal:7142/swagger/v1/swagger.json" -e "NODE_TLS_REJECT_UNAUTHORIZED=0" ghcr.io/orval-labs/orval --config ./orval.config.ts
+
+# Windows PowerShell
+cd "C:\path\to\your-project"
+docker run --rm -v "${PWD}:/app" -w /app -e ORVAL_SWAGGER_URL="https://host.docker.internal:7142/swagger/v1/swagger.json" -e NODE_TLS_REJECT_UNAUTHORIZED=0 ghcr.io/orval-labs/orval --config ./orval.config.ts
+```
+
+Replace `ghcr.io/orval-labs/orval` with `orval:local` when testing locally before the official image is published. See the [installation docs](https://orval.dev/docs/installation#docker) for details.
 
 ## A note about AI
 
@@ -138,16 +184,6 @@ Support us with a one-time donation and help us continue our activities on [Open
 </a>
 
 **Note:** After becoming a sponsor or backer, please contact us on [Discord](https://discord.gg/6fC2sjDU7w) to upload your logo.
-
-## Star History
-
-<a href="https://star-history.com/#orval-labs/orval&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=orval-labs/orval&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=orval-labs/orval&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=orval-labs/orval&type=Date" />
-  </picture>
-</a>
 
 ### All Thanks To Our Contributors:
 

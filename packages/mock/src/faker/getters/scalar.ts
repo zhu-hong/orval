@@ -5,6 +5,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-return */
 /* eslint-disable @typescript-eslint/no-unnecessary-condition */
 import {
+  compareNatural,
   type ContextSpec,
   EnumGeneration,
   type GeneratorImport,
@@ -87,7 +88,7 @@ export function getMockScalar({
     properties: {},
   };
   const sortedTags = Object.entries(safeMockOptions.tags ?? {}).toSorted(
-    (a, b) => a[0].localeCompare(b[0], 'en', { numeric: true }),
+    (a, b) => compareNatural(a[0], b[0]),
   );
   for (const [tag, options] of sortedTags) {
     if (!tags.includes(tag)) {
@@ -104,6 +105,24 @@ export function getMockScalar({
 
   if (tagProperty) {
     return tagProperty;
+  }
+
+  // Schema-scoped overrides (#override.mock.schemas): apply only to properties
+  // of a named schema. `item.parentName` is the enclosing schema name, set when
+  // an object property is resolved (see getters/object.ts) — so the same
+  // property name can mock differently per schema. More specific
+  // operation/tag rules above still win; this beats the global `properties`.
+  const schemaName = item.parentName;
+  const schemaProperty = schemaName
+    ? resolveMockOverride(
+        safeMockOptions.schemas?.[schemaName]?.properties,
+        item,
+        nonNullableOption,
+      )
+    : undefined;
+
+  if (schemaProperty) {
+    return schemaProperty;
   }
 
   const property = resolveMockOverride(
@@ -295,6 +314,44 @@ export function getMockScalar({
     }
 
     case 'array': {
+      // OpenAPI 3.1 tuples carry their positional element schemas in
+      // `prefixItems` (not `items`). Mock each fixed position so the emitted
+      // literal is assignable to the generated `[T0, T1, ...]` tuple type.
+      // Emitting only the fixed positions stays type-safe even when `items`
+      // also defines a rest element, because the generated type is
+      // `[...prefix, ...Additional[]]` and the rest permits zero elements.
+      const prefixItems = item.prefixItems as MockSchema[] | undefined;
+      if (prefixItems && prefixItems.length > 0) {
+        const tupleImports: GeneratorImport[] = [];
+        const tupleValues = prefixItems.map((prefixItem, index) => {
+          const { value: elementValue, imports: elementImports } =
+            resolveMockValue({
+              schema: {
+                ...prefixItem,
+                name: item.name,
+                parentName: item.parentName,
+                path: item.path ? `${item.path}.[${index}]` : `#.[${index}]`,
+              },
+              combine,
+              mockOptions,
+              operationId,
+              tags,
+              context,
+              imports,
+              existingReferencedProperties,
+              existingReferencedAllOfRefs,
+              splitMockImplementations,
+            });
+          tupleImports.push(...elementImports);
+          return elementValue;
+        });
+        return {
+          value: `[${tupleValues.join(', ')}]`,
+          imports: tupleImports,
+          name: item.name,
+        };
+      }
+
       if (!item.items) {
         return { value: '[]', imports: [], name: item.name };
       }
@@ -598,7 +655,13 @@ function getEnum(
 
   let enumValue = `[${joinedEnumValues}]`;
   if (context.output.override.enumGenerationType === EnumGeneration.ENUM) {
-    if (item.isRef || existingReferencedProperties.length === 0) {
+    const isRootSchema =
+      !item.parentName && existingReferencedProperties.at(-1) === item.name;
+    if (
+      item.isRef ||
+      existingReferencedProperties.length === 0 ||
+      isRootSchema
+    ) {
       enumValue += ` as ${item.name}${item.name.endsWith('[]') ? '' : '[]'}`;
       imports.push({ name: item.name });
     } else {
@@ -617,8 +680,16 @@ function getEnum(
     enumValue += ' as const';
   }
 
-  // But if the value is a reference, we can use the object directly via the imports and using Object.values.
-  if (item.isRef && type === 'string') {
+  // But if the value is a reference to a schema that emits a runtime value
+  // (a native `enum` object or a `const` object), we can use it directly via
+  // the imports and `Object.values`. A `union` reference is a pure type with
+  // no runtime value, so `Object.values` would fail (TS2693) — keep the
+  // inlined values in that case (#3690).
+  if (
+    item.isRef &&
+    type === 'string' &&
+    context.output.override.enumGenerationType !== EnumGeneration.UNION
+  ) {
     enumValue = `Object.values(${item.name})`;
     imports.push({
       name: item.name,

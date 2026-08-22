@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import type { OpenApiDocument } from '@orval/core';
 import * as orvalCore from '@orval/core';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vite-plus/test';
 
 import {
   dereferenceExternalRef,
@@ -87,6 +87,36 @@ const TEST_SPEC: OpenApiDocument = {
   },
 };
 
+const OPTIONAL_SECURITY_SPEC: OpenApiDocument = {
+  openapi: '3.1.0',
+  info: {
+    title: 'Optional Security API',
+    version: '1.0.0',
+  },
+  paths: {
+    '/public-or-authenticated': {
+      get: {
+        operationId: 'publicOrAuthenticated',
+        security: [{}, { ApiKeyAuth: [] }],
+        responses: {
+          '200': {
+            description: 'Success',
+          },
+        },
+      },
+    },
+  },
+  components: {
+    securitySchemes: {
+      ApiKeyAuth: {
+        type: 'apiKey',
+        name: 'x-api-key',
+        in: 'header',
+      },
+    },
+  },
+};
+
 const SSE_ITEM_SCHEMA_SPEC: OpenApiDocument = {
   openapi: '3.1.0',
   info: {
@@ -147,6 +177,24 @@ const SSE_ITEM_SCHEMA_SPEC: OpenApiDocument = {
 };
 
 describe('validation', () => {
+  it('should accept optional security alternatives during import', async () => {
+    const workspace = 'test';
+    const normalizedOptions = await normalizeOptions(
+      {
+        output: { target: '' },
+        input: { target: OPTIONAL_SECURITY_SPEC },
+      },
+      workspace,
+      {},
+    );
+
+    const spec = await importSpecs(workspace, normalizedOptions);
+    expect(spec.verbOptions).toHaveProperty('publicOrAuthenticated');
+    expect(
+      spec.spec.paths?.['/public-or-authenticated']?.get?.security,
+    ).toEqual([{}, { ApiKeyAuth: [] }]);
+  });
+
   it('should throw on non-standard fields like itemSchema by default', async () => {
     const workspace = 'test';
     const normalizedOptions = await normalizeOptions(
@@ -329,6 +377,7 @@ describe('validation', () => {
           output: { target: '' },
           input: {
             target: specPath,
+            parserOptions: { externalRefs: { allow: ['refs.yaml'] } },
             override: {
               transformer: (input: OpenApiDocument) => {
                 const next = structuredClone(input);
@@ -367,6 +416,564 @@ describe('validation', () => {
       expect(field?.model).not.toContain('refs.yaml');
     } finally {
       await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('swagger2FormData', () => {
+  // Regression spec for https://github.com/orval-labs/orval/issues/3857:
+  // @scalar/openapi-parser's upgrade() drops the `items` of Swagger 2.0
+  // formData array parameters when converting them to a requestBody schema,
+  // so generated types would degrade from `string[]` to `unknown[]`.
+  const SWAGGER2_FORM_DATA_SPEC = {
+    swagger: '2.0',
+    info: { title: 'Form Data API (OAS 2.0)', version: '1.0.0' },
+    basePath: '/',
+    parameters: {
+      tagList: {
+        name: 'tags',
+        in: 'formData',
+        required: true,
+        type: 'array',
+        items: { type: 'string' },
+      },
+    },
+    paths: {
+      '/submit': {
+        post: {
+          operationId: 'submitForm',
+          consumes: ['application/x-www-form-urlencoded'],
+          produces: ['application/json'],
+          parameters: [
+            {
+              name: 'tags',
+              in: 'formData',
+              required: true,
+              type: 'array',
+              items: { type: 'string' },
+              collectionFormat: 'csv',
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Success',
+              schema: {
+                type: 'object',
+                properties: { ok: { type: 'boolean' } },
+              },
+            },
+          },
+        },
+      },
+      '/upload': {
+        post: {
+          operationId: 'uploadForm',
+          consumes: ['multipart/form-data'],
+          parameters: [{ $ref: '#/parameters/tagList' }],
+          responses: { '200': { description: 'Success' } },
+        },
+      },
+      '/ints': {
+        post: {
+          operationId: 'intListForm',
+          consumes: ['application/x-www-form-urlencoded'],
+          parameters: [
+            {
+              name: 'ids',
+              in: 'formData',
+              required: true,
+              type: 'array',
+              items: { type: 'integer', format: 'int64' },
+            },
+          ],
+          responses: { '200': { description: 'Success' } },
+        },
+      },
+    },
+  };
+
+  async function importSwagger2FormData() {
+    const normalizedOptions = await normalizeOptions(
+      {
+        output: { target: '' },
+        input: { target: SWAGGER2_FORM_DATA_SPEC },
+      },
+      'test',
+      {},
+    );
+    return importSpecs('test', normalizedOptions);
+  }
+
+  it('keeps items on inline formData array parameters (#3857)', async () => {
+    const spec = await importSwagger2FormData();
+    const body = spec.schemas.find((s) => s.name === 'SubmitFormBody');
+    expect(body?.model).toContain('tags: string[]');
+    expect(body?.model).not.toContain('unknown[]');
+  });
+
+  it('keeps items on reusable formData parameters referenced via #/parameters (#3857)', async () => {
+    const spec = await importSwagger2FormData();
+    const body = spec.schemas.find((s) => s.name === 'TagListBody');
+    expect(body?.model).toContain('tags: string[]');
+    expect(body?.model).not.toContain('unknown[]');
+  });
+
+  it('keeps non-string item types (integer → number[]) (#3857)', async () => {
+    const spec = await importSwagger2FormData();
+    const body = spec.schemas.find((s) => s.name === 'IntListFormBody');
+    expect(body?.model).toContain('ids: number[]');
+    expect(body?.model).not.toContain('unknown[]');
+  });
+
+  it('keeps items on path-level inline formData array parameters (#3857)', async () => {
+    // Swagger 2.0 allows parameters on a Path Item Object; they apply to every
+    // operation under the path. The capture must merge them in.
+    const spec = {
+      swagger: '2.0',
+      info: { title: 'Path-level form data', version: '1.0.0' },
+      paths: {
+        '/submit': {
+          parameters: [
+            {
+              name: 'tags',
+              in: 'formData',
+              required: true,
+              type: 'array',
+              items: { type: 'string' },
+            },
+          ],
+          post: {
+            operationId: 'submitForm',
+            consumes: ['application/x-www-form-urlencoded'],
+            responses: { '200': { description: 'Success' } },
+          },
+        },
+      },
+    };
+    const normalizedOptions = await normalizeOptions(
+      { output: { target: '' }, input: { target: spec } },
+      'test',
+      {},
+    );
+    const result = await importSpecs('test', normalizedOptions);
+    const body = result.schemas.find((s) => s.name === 'SubmitFormBody');
+    expect(body?.model).toContain('tags: string[]');
+    expect(body?.model).not.toContain('unknown[]');
+  });
+
+  it('keeps items on path-level reusable formData parameters (#3857)', async () => {
+    const spec = {
+      swagger: '2.0',
+      info: { title: 'Path-level reusable form data', version: '1.0.0' },
+      parameters: {
+        tagList: {
+          name: 'tags',
+          in: 'formData',
+          required: true,
+          type: 'array',
+          items: { type: 'string' },
+        },
+      },
+      paths: {
+        '/submit': {
+          parameters: [{ $ref: '#/parameters/tagList' }],
+          post: {
+            operationId: 'submitForm',
+            consumes: ['multipart/form-data'],
+            responses: { '200': { description: 'Success' } },
+          },
+        },
+      },
+    };
+    const normalizedOptions = await normalizeOptions(
+      { output: { target: '' }, input: { target: spec } },
+      'test',
+      {},
+    );
+    const result = await importSpecs('test', normalizedOptions);
+    // Reusable formData parameters are promoted to a requestBody component, so
+    // the generated body type takes its name from the reusable parameter key.
+    const body = result.schemas.find((s) => s.name === 'TagListBody');
+    expect(body?.model).toContain('tags: string[]');
+    expect(body?.model).not.toContain('unknown[]');
+  });
+
+  it('lets operation-level parameters override path-level ones (#3857)', async () => {
+    const spec = {
+      swagger: '2.0',
+      info: { title: 'Path-level override', version: '1.0.0' },
+      paths: {
+        '/submit': {
+          parameters: [
+            {
+              name: 'tags',
+              in: 'formData',
+              required: true,
+              type: 'array',
+              items: { type: 'string' },
+            },
+          ],
+          post: {
+            operationId: 'submitForm',
+            consumes: ['application/x-www-form-urlencoded'],
+            parameters: [
+              {
+                name: 'tags',
+                in: 'formData',
+                required: true,
+                type: 'array',
+                items: { type: 'integer', format: 'int64' },
+              },
+            ],
+            responses: { '200': { description: 'Success' } },
+          },
+        },
+      },
+    };
+    const normalizedOptions = await normalizeOptions(
+      { output: { target: '' }, input: { target: spec } },
+      'test',
+      {},
+    );
+    const result = await importSpecs('test', normalizedOptions);
+    const body = result.schemas.find((s) => s.name === 'SubmitFormBody');
+    expect(body?.model).toContain('tags: number[]');
+    expect(body?.model).not.toContain('unknown[]');
+  });
+
+  it('keeps shared path-level bodies intact when an operation overrides a parameter (#3857)', async () => {
+    // A reusable path-level formData parameter is promoted to a shared
+    // components.requestBodies entry referenced from the Path Item. When one
+    // operation overrides that parameter, the override lives in the operation's
+    // own request body — it must never be written into the shared body, which
+    // other operations still use.
+    const spec = {
+      swagger: '2.0',
+      info: { title: 'Shared path-level override', version: '1.0.0' },
+      parameters: {
+        tagList: {
+          name: 'tags',
+          in: 'formData',
+          required: true,
+          type: 'array',
+          items: { type: 'string' },
+        },
+      },
+      paths: {
+        '/submit': {
+          parameters: [{ $ref: '#/parameters/tagList' }],
+          // The overriding operation is declared first so the repair cannot
+          // hide behind iteration order: the shared body is patched by the
+          // override before the non-overriding operation visits it.
+          put: {
+            operationId: 'replaceForm',
+            consumes: ['multipart/form-data'],
+            parameters: [
+              {
+                name: 'tags',
+                in: 'formData',
+                required: true,
+                type: 'array',
+                items: { type: 'integer', format: 'int64' },
+              },
+            ],
+            responses: { '200': { description: 'Success' } },
+          },
+          post: {
+            operationId: 'submitForm',
+            consumes: ['multipart/form-data'],
+            responses: { '200': { description: 'Success' } },
+          },
+        },
+      },
+    };
+    const normalizedOptions = await normalizeOptions(
+      { output: { target: '' }, input: { target: spec } },
+      'test',
+      {},
+    );
+    const result = await importSpecs('test', normalizedOptions);
+    // The shared, path-level request body must keep the path-level item type.
+    const shared = result.schemas.find((s) => s.name === 'TagListBody');
+    expect(shared?.model).toContain('tags: string[]');
+    expect(shared?.model).not.toContain('unknown[]');
+    expect(shared?.model).not.toContain('number[]');
+    // The overriding operation gets its own body with the operation-level type.
+    const override = result.schemas.find((s) => s.name === 'ReplaceFormBody');
+    expect(override?.model).toContain('tags: number[]');
+    expect(override?.model).not.toContain('unknown[]');
+  });
+
+  it('does not alter OAS 3 formData array parameters (#3857)', async () => {
+    // The working OAS 3.0 counterpart from the issue: item types are already
+    // preserved by the upgrader, so the repair must be a no-op.
+    const normalizedOptions = await normalizeOptions(
+      {
+        output: { target: '' },
+        input: {
+          target: {
+            openapi: '3.0.3',
+            info: { title: 'Form Data API (OAS 3.0)', version: '1.0.0' },
+            paths: {
+              '/submit': {
+                post: {
+                  operationId: 'submitForm',
+                  requestBody: {
+                    required: true,
+                    content: {
+                      'application/x-www-form-urlencoded': {
+                        schema: {
+                          type: 'object',
+                          required: ['tags'],
+                          properties: {
+                            tags: {
+                              type: 'array',
+                              items: { type: 'string' },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                  responses: {
+                    '200': {
+                      description: 'Success',
+                      content: {
+                        'application/json': {
+                          schema: {
+                            type: 'object',
+                            properties: { ok: { type: 'boolean' } },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      'test',
+      {},
+    );
+
+    const spec = await importSpecs('test', normalizedOptions);
+    const body = spec.schemas.find((s) => s.name === 'SubmitFormBody');
+    expect(body?.model).toContain('tags: string[]');
+    expect(body?.model).not.toContain('unknown[]');
+  });
+});
+
+describe('externalRefs', () => {
+  async function createExternalRefWorkspace() {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), 'orval-allow-'));
+    const specPath = path.join(workspace, 'spec.yaml');
+    const externalPath = path.join(workspace, 'external.yaml');
+    const external = {
+      openapi: '3.0.2',
+      info: { title: 'ext', version: '1.0' },
+      paths: {},
+      components: { schemas: { Foo: { type: 'string' } } },
+    };
+    const spec = {
+      openapi: '3.0.2',
+      info: { title: 'main', version: '1.0' },
+      paths: {
+        '/x': {
+          get: {
+            operationId: 'getX',
+            responses: {
+              '200': {
+                description: 'ok',
+                content: {
+                  'application/json': {
+                    schema: { $ref: 'external.yaml#/components/schemas/Foo' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    await writeFile(externalPath, JSON.stringify(external), 'utf8');
+    await writeFile(specPath, JSON.stringify(spec), 'utf8');
+    return { workspace, specPath };
+  }
+
+  it('should block external $ref by default and print a config snippet', async () => {
+    const { workspace, specPath } = await createExternalRefWorkspace();
+    try {
+      const normalizedOptions = await normalizeOptions(
+        { output: { target: '' }, input: { target: specPath } },
+        workspace,
+        {},
+      );
+      await expect(importSpecs(workspace, normalizedOptions)).rejects.toThrow(
+        /External \$ref targets are not allowed by default/,
+      );
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('should resolve external $ref when explicitly allowed', async () => {
+    const { workspace, specPath } = await createExternalRefWorkspace();
+    try {
+      const normalizedOptions = await normalizeOptions(
+        {
+          output: { target: '' },
+          input: {
+            target: specPath,
+            parserOptions: { externalRefs: { allow: ['external.yaml'] } },
+          },
+        },
+        workspace,
+        {},
+      );
+      const spec = await importSpecs(workspace, normalizedOptions);
+      expect(spec.verbOptions).toHaveProperty('getX');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('should resolve all external $refs with wildcard and emit warnings', async () => {
+    const { workspace, specPath } = await createExternalRefWorkspace();
+    const warnSpy = vi
+      .spyOn(orvalCore, 'logWarning')
+      .mockImplementation(() => {});
+    try {
+      const normalizedOptions = await normalizeOptions(
+        {
+          output: { target: '' },
+          input: {
+            target: specPath,
+            parserOptions: { externalRefs: { allow: ['*'] } },
+          },
+        },
+        workspace,
+        {},
+      );
+      const spec = await importSpecs(workspace, normalizedOptions);
+      expect(spec.verbOptions).toHaveProperty('getX');
+
+      const warnings = warnSpy.mock.calls.map(([msg]) => msg).join('\n');
+      expect(warnings).toContain('External $ref documents being resolved');
+      expect(warnings).toContain('external.yaml');
+    } finally {
+      warnSpy.mockRestore();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('should use configured headers when loading a remote top-level spec', async () => {
+    const remoteTarget = 'https://api.example.com/openapi.json';
+    const spec = {
+      openapi: '3.0.2',
+      info: { title: 'remote', version: '1.0' },
+      paths: {},
+    };
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      expect(new Headers(init?.headers).get('Authorization')).toBe(
+        'Bearer token',
+      );
+      if (init?.method === 'HEAD') {
+        return new Response(undefined, { status: 200 });
+      }
+      return new Response(JSON.stringify(spec), { status: 200 });
+    });
+
+    vi.stubGlobal('fetch', fetchMock as typeof fetch);
+    try {
+      const normalizedOptions = await normalizeOptions(
+        {
+          output: { target: '' },
+          input: {
+            target: [remoteTarget],
+            parserOptions: {
+              headers: [
+                {
+                  domains: ['api.example.com'],
+                  headers: { Authorization: 'Bearer token' },
+                },
+              ],
+            },
+          },
+        },
+        'test',
+        {},
+      );
+
+      const specBuilder = await importSpecs('test', normalizedOptions);
+
+      expect(specBuilder.spec.info?.title).toBe('remote');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('should allow remote relative refs when listed relative to the remote spec', async () => {
+    const remoteTarget = 'https://api.example.com/openapi.json';
+    const spec = {
+      openapi: '3.0.2',
+      info: { title: 'remote', version: '1.0' },
+      paths: {
+        '/x': {
+          get: {
+            operationId: 'getX',
+            responses: {
+              '200': {
+                description: 'ok',
+                content: {
+                  'application/json': {
+                    schema: { $ref: './common.yaml#/components/schemas/Foo' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    const external = {
+      openapi: '3.0.2',
+      info: { title: 'external', version: '1.0' },
+      paths: {},
+      components: { schemas: { Foo: { type: 'string' } } },
+    };
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      if (init?.method === 'HEAD') {
+        return new Response(undefined, { status: 200 });
+      }
+      const url = input instanceof Request ? input.url : String(input);
+      return new Response(
+        JSON.stringify(url.endsWith('/common.yaml') ? external : spec),
+        { status: 200 },
+      );
+    });
+
+    vi.stubGlobal('fetch', fetchMock as typeof fetch);
+    try {
+      const normalizedOptions = await normalizeOptions(
+        {
+          output: { target: '' },
+          input: {
+            target: [remoteTarget],
+            parserOptions: { externalRefs: { allow: ['./common.yaml'] } },
+          },
+        },
+        'test',
+        {},
+      );
+
+      const specBuilder = await importSpecs('test', normalizedOptions);
+
+      expect(specBuilder.verbOptions).toHaveProperty('getX');
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });

@@ -36,7 +36,7 @@ export interface NormalizedOptions {
 export interface NormalizedOutputOptions {
   workspace?: string;
   target: string;
-  schemas?: string | SchemaOptions;
+  schemas?: string | NormalizedSchemaOptions;
   operationSchemas?: string;
   namingConvention: NamingConvention;
   fileExtension: string;
@@ -68,6 +68,8 @@ export interface NormalizedOutputOptions {
   optionsParamRequired: boolean;
   propertySortOrder: PropertySortOrder;
   factoryMethods?: NormalizedFactoryMethodsOptions;
+  tagsSplitDeduplication: boolean;
+  commonTypesFileName: string;
 }
 
 export interface NormalizedParamsSerializerOptions {
@@ -138,10 +140,11 @@ export interface NormalizedOverrideOutput {
     operation: OpenApiOperationObject,
     route: string,
     verb: Verbs,
-  ) => string;
+  ) => string | [string, string];
 
   requestOptions: Record<string, unknown> | boolean;
   useDates?: boolean;
+  useDatesTransform?: boolean;
   useTypeOverInterfaces?: boolean;
   useDeprecatedOperations?: boolean;
   useBigInt?: boolean;
@@ -184,6 +187,7 @@ export interface NormalizedOverrideOutput {
 
 export interface NormalizedMutator {
   path: string;
+  resolvedPath?: string;
   name?: string;
   default: boolean;
   alias?: Record<string, string>;
@@ -202,13 +206,13 @@ export interface NormalizedOperationOptions {
   query?: NormalizedQueryOptions;
   angular?: NormalizedAngularOptions;
   swr?: SwrOptions;
-  zod?: NormalizedZodOptions;
+  zod?: NormalizedOperationZodOptions;
   effect?: NormalizedEffectOptions;
   operationName?: (
     operation: OpenApiOperationObject,
     route: string,
     verb: Verbs,
-  ) => string;
+  ) => string | [string, string];
   fetch?: FetchOptions;
   formData?: NormalizedFormDataType<NormalizedMutator>;
   formUrlEncoded?: boolean | NormalizedMutator;
@@ -227,6 +231,10 @@ export interface NormalizedInputOptions {
       domains: string[];
       headers: Record<string, string>;
     }[];
+    externalRefs?: {
+      allow?: string[];
+      // TODO: add `deny?: string[]` when users need "allow all except X"
+    };
   };
 }
 
@@ -258,6 +266,27 @@ export interface BaseUrlRuntime {
   imports?: GeneratorImport[];
   getBaseUrlFromSpecification?: never;
   baseUrl?: never;
+}
+
+/**
+ * Opt-in config for `override.angular.baseUrl`: composes a runtime base URL
+ * for a generated Angular output via Angular DI (an `InjectionToken`) rather
+ * than baking a static prefix into every route at generation time.
+ *
+ * Angular-client only; mutually exclusive with the top-level `output.baseUrl`
+ * (which bakes a prefix into every generated route string for ALL clients).
+ * `apiId` is required and explicit — never derived from the spec — so the
+ * generated identifiers (`<API_ID>_BASE_URL`, `provide<Api>BaseUrl`, ...) are
+ * stable across regenerations and collision-free when multiple outputs are
+ * generated into the same app.
+ */
+export interface AngularBaseUrlOptions {
+  /** Explicit, stable identifier for this API, used to derive all generated DI token/helper names. Must match `/^[A-Za-z][A-Za-z0-9_-]*$/`. */
+  apiId: string;
+  /** Index into the specification's `servers` array to embed as the default fallback URL. Defaults to `0`. */
+  index?: number;
+  /** Values for any `{variable}` placeholders in the selected server URL. */
+  variables?: Record<string, string>;
 }
 
 export const PropertySortOrder = {
@@ -309,12 +338,21 @@ export interface SchemaOptions {
   path: string;
   type?: SchemaGenerationType;
   importPath?: string;
+  /**
+   * When `true`, schemas are organized into per-tag subdirectories instead of
+   * a single flat directory. Schemas referenced by multiple tags remain at the
+   * root of the schema directory.
+   *
+   * @default false
+   */
+  splitByTags?: boolean;
 }
 
 export interface NormalizedSchemaOptions {
   path: string;
   type: SchemaGenerationType;
   importPath?: string;
+  splitByTags: boolean;
 }
 
 export interface OutputOptions {
@@ -360,6 +398,8 @@ export interface OutputOptions {
   optionsParamRequired?: boolean;
   propertySortOrder?: PropertySortOrder;
   factoryMethods?: FactoryMethodsOptions;
+  tagsSplitDeduplication?: boolean;
+  commonTypesFileName?: string;
 }
 
 export interface InputFiltersOptions {
@@ -398,6 +438,24 @@ export interface InputOptions {
       domains: string[];
       headers: Record<string, string>;
     }[];
+    /**
+     * Control how external `$ref` targets (local files or remote URLs) are
+     * resolved.
+     *
+     * By default, orval refuses to resolve any external `$ref` and prints a
+     * config snippet you can paste into your `parserOptions`.
+     */
+    externalRefs?: {
+      /**
+       * External `$ref` document targets to allow. Each entry should be the
+       * document part of the `$ref` (without the `#/...` fragment). File paths
+       * are relative to the spec file. Use `['*']` to allow all external refs.
+       *
+       * @default []
+       */
+      allow?: string[];
+      // TODO: add `deny?: string[]` when users need "allow all except X"
+    };
   };
 }
 
@@ -435,6 +493,8 @@ export const OutputMode = {
   SPLIT: 'split',
   TAGS: 'tags',
   TAGS_SPLIT: 'tags-split',
+  TAGS_OPERATIONS: 'tags-operations',
+  TAGS_OPERATIONS_SPLIT: 'tags-operations-split',
 } as const;
 
 export type OutputMode = (typeof OutputMode)[keyof typeof OutputMode];
@@ -478,6 +538,10 @@ export interface CommonMockOptions {
 
 export interface MswMockOptions extends CommonMockOptions {
   type: typeof OutputMockType.MSW;
+  // Emit faker responses in MSW handler output, defaults to true. Disable to
+  // generate handlers only which require passing in mock responses, falls back
+  // to `undefined` if no mock response passed to handler.
+  operationResponses?: boolean;
   // Base URL prefix for the generated MSW route matchers
   baseUrl?: string;
   // Response delay before MSW handlers resolve (false disables delay)
@@ -564,14 +628,22 @@ export type OverrideMockOptions = Partial<GlobalMockOptions> & {
   required?: boolean; // When true, all properties are required (and thus not optional) in mocks.
   nonNullable?: boolean; // When true, nullable mock values are never wrapped in `arrayElement([value, null])`.
   properties?: MockProperties;
+  // Scope property overrides to a named schema (e.g. `components/schemas/Apple`),
+  // so the same property name can mock differently per schema. Matching rules are
+  // identical to `properties` (bare name, `/regex/`, exact `#.path`).
+  schemas?: Record<string, { properties: MockProperties }>;
   format?: Record<string, unknown>;
   fractionDigits?: number;
 };
 
-export type MockOptions = Omit<OverrideMockOptions, 'properties'> & {
+export type MockOptions = Omit<
+  OverrideMockOptions,
+  'properties' | 'schemas'
+> & {
   properties?: Record<string, unknown>;
   operations?: Record<string, { properties: Record<string, unknown> }>;
   tags?: Record<string, { properties: Record<string, unknown> }>;
+  schemas?: Record<string, { properties: Record<string, unknown> }>;
 };
 
 export type MockPropertiesObject = Record<string, unknown>;
@@ -652,6 +724,25 @@ export interface OverrideOutput {
   tags?: Record<string, OperationOptions>;
   mock?: OverrideMockOptions;
   contentType?: OverrideOutputContentType;
+  /**
+   * The comment block written at the top of each generated file. This is
+   * unrelated to `output.headers`, which controls HTTP request header
+   * parameters.
+   *
+   * Pass `false` to omit the block, or a function receiving the spec's
+   * {@link OpenApiInfoObject} and returning either one string, used verbatim,
+   * or an array of strings, rendered as a JSDoc comment with one line each.
+   * Only `title` and `version` are guaranteed to be present on `info`.
+   *
+   * Any other value, including `true`, falls back to the built-in header, so
+   * passing `true` is indistinguishable from omitting the option.
+   *
+   * @example
+   * header: (info) => [
+   *   'Generated by orval',
+   *   ...(info.description ? [info.description] : []),
+   * ]
+   */
   header?: boolean | ((info: OpenApiInfoObject) => string[] | string);
   formData?: boolean | Mutator | FormDataType<Mutator>;
   formUrlEncoded?: boolean | Mutator;
@@ -687,11 +778,17 @@ export interface OverrideOutput {
     operation: OpenApiOperationObject,
     route: string,
     verb: Verbs,
-  ) => string;
+  ) => string | [string, string];
   fetch?: FetchOptions;
 
   requestOptions?: Record<string, unknown> | boolean;
   useDates?: boolean;
+  /**
+   * Emit per-operation response deserializers that convert schema-declared
+   * `format: date` / `format: date-time` fields to `Date` at runtime.
+   * Implies `useDates`. @default false
+   */
+  useDatesTransform?: boolean;
   useTypeOverInterfaces?: boolean;
   useDeprecatedOperations?: boolean;
   useBigInt?: boolean;
@@ -772,7 +869,22 @@ export interface ZodTimeOptions {
   precision?: -1 | 0 | 1 | 2 | 3;
 }
 
-export interface ZodOptions {
+/**
+ * Target Zod major version for generated output.
+ *
+ * - `4` — always emit Zod 4-style output (`z.strictObject`, `z.looseObject`,
+ *   `z.iso.datetime()`, `.meta()`, …) regardless of the installed `zod` version.
+ * - `3` — always emit Zod 3-compatible output (`.strict()`/`.passthrough()`,
+ *   `z.string().datetime()`, …) regardless of the installed `zod` version.
+ * - `'auto'` — infer the target from the `zod` version resolved in the output
+ *   project's `package.json`; when no `zod` package can be detected, fall back
+ *   to Zod 4 output.
+ */
+export type ZodVersionOption = 3 | 4 | 'auto';
+
+export type ZodVariantOption = 'classic' | 'mini';
+
+interface BaseZodOptions {
   strict?: {
     param?: boolean;
     query?: boolean;
@@ -813,10 +925,26 @@ export interface ZodOptions {
    * location.
    */
   params?: Mutator;
+  useBrandedTypes?: boolean;
+}
+
+export interface ZodOptions extends BaseZodOptions {
+  /**
+   * Select the generated Zod API style. `classic` imports from `zod`; `mini`
+   * imports from `zod/mini` and emits the functional/check-based Zod Mini API.
+   * Zod Mini requires a Zod 4 target.
+   */
+  variant?: ZodVariantOption;
+  /**
+   * Pin the Zod output target so generation is deterministic instead of
+   * inferred from the installed `zod` version. Defaults to `'auto'`, which
+   * infers from the detected package and otherwise falls back to Zod 4 output.
+   * See {@link ZodVersionOption}.
+   */
+  version?: ZodVersionOption;
   dateTimeOptions?: ZodDateTimeOptions;
   timeOptions?: ZodTimeOptions;
   generateEachHttpStatus?: boolean;
-  useBrandedTypes?: boolean;
   /**
    * When true, emits one reusable Zod schema per `#/components/schemas/*` `$ref`
    * (with `namingConvention` applied to the name) and references it everywhere
@@ -831,13 +959,44 @@ export interface ZodOptions {
    * via `.describe()`. Default `false`.
    */
   generateMeta?: boolean;
+  /**
+   * When true, a `oneOf`/`anyOf` that carries an OpenAPI `discriminator` is
+   * emitted as `zod.discriminatedUnion(key, [...])` (better per-branch errors)
+   * instead of a plain `zod.union([...])`, but only when every branch can be
+   * represented as an object — otherwise it safely falls back to a union.
+   * Default `false` (opt-in), so existing output is unchanged.
+   */
+  generateDiscriminatedUnion?: boolean;
+  /**
+   * When true (zod v4 only), emits optional object properties with
+   * `.exactOptional()` (classic) / `zod.exactOptional()` (mini) instead of
+   * `.optional()`, so consumers with `exactOptionalPropertyTypes` infer
+   * `{ x?: T }` rather than `{ x?: T | undefined }`. On zod v3 (which has no
+   * `.exactOptional()`) this is a no-op and `.optional()` is emitted. Default
+   * `false` (opt-in), so existing output is unchanged.
+   */
+  exactOptional?: boolean;
 }
+
+/**
+ * Per-operation/tag Zod overrides only include settings that are actually
+ * merged into the operation-specific generator path. Output-wide target and
+ * schema-layout settings belong on `override.zod`, not `override.operations.*`
+ * / `override.tags.*`.
+ */
+export type OperationZodOptions = BaseZodOptions;
 
 export interface EffectOptions {
   strict?: ZodOptions['strict'];
   generate?: ZodOptions['generate'];
   generateEachHttpStatus?: boolean;
   useBrandedTypes?: boolean;
+  /**
+   * When true, emits optional Struct properties with
+   * `S.optionalWith(schema, { exact: true })` instead of `S.optional(schema)`,
+   * so `exactOptionalPropertyTypes` consumers infer `{ x?: T }`. Default `false`.
+   */
+  exactOptional?: boolean;
 }
 
 export type ZodCoerceType =
@@ -852,6 +1011,8 @@ export type ZodCoerceType =
   | 'array';
 
 export interface NormalizedZodOptions {
+  variant: ZodVariantOption;
+  version: ZodVersionOption;
   strict: {
     param: boolean;
     query: boolean;
@@ -885,15 +1046,23 @@ export interface NormalizedZodOptions {
   useBrandedTypes: boolean;
   generateReusableSchemas: boolean;
   generateMeta: boolean;
+  generateDiscriminatedUnion: boolean;
+  exactOptional: boolean;
   dateTimeOptions: ZodDateTimeOptions;
   timeOptions: ZodTimeOptions;
 }
+
+export type NormalizedOperationZodOptions = Pick<
+  NormalizedZodOptions,
+  'strict' | 'generate' | 'coerce' | 'preprocess' | 'params' | 'useBrandedTypes'
+>;
 
 export interface NormalizedEffectOptions {
   strict: NormalizedZodOptions['strict'];
   generate: NormalizedZodOptions['generate'];
   generateEachHttpStatus: boolean;
   useBrandedTypes: boolean;
+  exactOptional: boolean;
 }
 
 /**
@@ -954,7 +1123,7 @@ export interface NormalizedQueryOptions {
   useMutation?: boolean;
   useInfinite?: boolean;
   useSuspenseInfiniteQuery?: boolean;
-  useInfiniteQueryParam?: string;
+  useInfiniteQueryParam?: string | string[];
   usePrefetch?: boolean;
   useInvalidate?: boolean;
   useSetQueryData?: boolean;
@@ -983,7 +1152,7 @@ export interface QueryOptions {
   useMutation?: boolean;
   useInfinite?: boolean;
   useSuspenseInfiniteQuery?: boolean;
-  useInfiniteQueryParam?: string;
+  useInfiniteQueryParam?: string | string[];
   usePrefetch?: boolean;
   useInvalidate?: boolean;
   useSetQueryData?: boolean;
@@ -1027,6 +1196,30 @@ export interface AngularOptions {
   client?: 'httpClient' | 'httpResource' | 'both';
   runtimeValidation?: boolean;
   httpResource?: AngularHttpResourceOptions;
+  /**
+   * Opt-in: compose the runtime base URL for this output via Angular DI
+   * (an `InjectionToken`) instead of baking a static prefix into every
+   * route at generation time. Angular-client only; mutually exclusive with
+   * the top-level `output.baseUrl`.
+   */
+  baseUrl?: AngularBaseUrlOptions;
+  /**
+   * Controls how object-typed query parameters are serialized when no
+   * `paramsSerializer` is configured.
+   *
+   * - `spec` (default): honor the OpenAPI parameter's `style`/`explode` —
+   *   `form` + `explode: true` (the OpenAPI default) spreads the object's
+   *   properties as top-level query params, `form` + `explode: false` joins
+   *   them into a single comma-separated value, and `deepObject` emits
+   *   bracketed `name[prop]` keys.
+   * - `legacy`: restore the pre-#3705 behavior of silently dropping
+   *   object-typed query params from the generated request.
+   *
+   * Has no effect when a `paramsSerializer` or `paramsFilter` is configured
+   * for the operation — those remain in full control of the raw value. See
+   * issue #3705.
+   */
+  queryObjectSerialization?: 'spec' | 'legacy';
 }
 
 export interface NormalizedAngularOptions {
@@ -1034,6 +1227,8 @@ export interface NormalizedAngularOptions {
   client: 'httpClient' | 'httpResource' | 'both';
   runtimeValidation: boolean;
   httpResource?: AngularHttpResourceOptions;
+  baseUrl?: AngularBaseUrlOptions;
+  queryObjectSerialization: 'spec' | 'legacy';
 }
 
 export interface AngularHttpResourceOptions {
@@ -1072,17 +1267,45 @@ export interface SwrOptions {
 export interface NormalizedFetchOptions {
   includeHttpResponseReturnType: boolean;
   forceSuccessResponse: boolean;
+  serializeResponseHeaders: boolean;
   jsonReviver?: Mutator;
   runtimeValidation: boolean;
   useRuntimeFetcher: boolean;
+  /**
+   * Serialization format for array query parameters that do not have an explicit
+   * `explode` setting in the OpenAPI spec.
+   *
+   * - `repeat` — repeat the key for each value: `foo=1&foo=2`
+   * - `brackets` — append `[]` to the key: `foo[]=1&foo[]=2`
+   * - `comma` — join values with a comma: `foo=1,2`
+   */
+  arrayFormat?: 'repeat' | 'brackets' | 'comma';
 }
 
 export interface FetchOptions {
   includeHttpResponseReturnType?: boolean;
   forceSuccessResponse?: boolean;
+  /**
+   * Return response `headers` as a plain `Record<string, string>` instead of a
+   * `Headers` instance, so the response stays serializable. Keys are lowercased
+   * and `set-cookie` is omitted. With a `mutator` this only changes the declared
+   * type — the mutator must return headers in that shape itself.
+   *
+   * @default false
+   */
+  serializeResponseHeaders?: boolean;
   jsonReviver?: Mutator;
   runtimeValidation?: boolean;
   useRuntimeFetcher?: boolean;
+  /**
+   * Serialization format for array query parameters that do not have an explicit
+   * `explode` setting in the OpenAPI spec.
+   *
+   * - `repeat` — repeat the key for each value: `foo=1&foo=2`
+   * - `brackets` — append `[]` to the key: `foo[]=1&foo[]=2`
+   * - `comma` — join values with a comma: `foo=1,2`
+   */
+  arrayFormat?: 'repeat' | 'brackets' | 'comma';
 }
 
 export type InputTransformerFn = (
@@ -1105,13 +1328,13 @@ export interface OperationOptions {
   query?: QueryOptions;
   angular?: AngularOptions;
   swr?: SwrOptions;
-  zod?: ZodOptions;
+  zod?: OperationZodOptions;
   effect?: EffectOptions;
   operationName?: (
     operation: OpenApiOperationObject,
     route: string,
     verb: Verbs,
-  ) => string;
+  ) => string | [string, string];
   fetch?: FetchOptions;
   formData?: boolean | Mutator | FormDataType<Mutator>;
   formUrlEncoded?: boolean | Mutator;
@@ -1145,15 +1368,25 @@ export type HooksOptions<T = HookCommand | NormalizedHookCommand> = Partial<
 
 export type NormalizedHookOptions = HooksOptions<NormalizedHookCommand>;
 
-export type Verbs = 'post' | 'put' | 'get' | 'patch' | 'delete' | 'head';
+export type Verbs =
+  | 'get'
+  | 'put'
+  | 'post'
+  | 'delete'
+  | 'options'
+  | 'head'
+  | 'patch'
+  | 'query';
 
 export const Verbs = {
-  POST: 'post' as Verbs,
-  PUT: 'put' as Verbs,
   GET: 'get' as Verbs,
-  PATCH: 'patch' as Verbs,
+  PUT: 'put' as Verbs,
+  POST: 'post' as Verbs,
   DELETE: 'delete' as Verbs,
+  OPTIONS: 'options' as Verbs,
   HEAD: 'head' as Verbs,
+  PATCH: 'patch' as Verbs,
+  QUERY: 'query' as Verbs,
 };
 
 /**
@@ -1183,6 +1416,20 @@ export interface ContextSpec {
    */
   dynamicScope?: Partial<Record<string, DynamicScopeEntry>>;
   /**
+   * Lazily-built index of every `$dynamicAnchor` declared in
+   * `components.schemas`, used by the `resolveDynamicRef` fallback when an
+   * anchor is absent from {@link dynamicScope}. Memoized on first miss so the
+   * O(numSchemas) scan runs once per spec instead of once per `$dynamicRef`.
+   * Populated by `getDynamicAnchorIndex` in `resolvers/ref.ts`.
+   */
+  dynamicAnchorIndex?: Map<string, DynamicAnchorIndexEntry>;
+  /**
+   * Lazily-built set of normalized component schema names, used while naming
+   * inline object-property schemas so component name collision checks do not
+   * rescan `components.schemas` for every property.
+   */
+  normalizedComponentSchemaNames?: Set<string>;
+  /**
    * Tracks array-item mock factory names already emitted per output file scope.
    * Populated by `@orval/mock` when `arrayItems: true` so shared `$ref` item
    * factories are not re-declared within the same file (single/split) or tag
@@ -1209,11 +1456,38 @@ export interface ContextSpec {
  *   - `isParameter` — `true`, signals this is a generic type parameter
  *   - `name` — the `$dynamicAnchor` name used as the type parameter (e.g. `itemType`)
  *   - `schemaName` — same as `name` for parameters
+ *
+ * Inline entry (anonymous subschema overriding an anchor without a `$ref`):
+ *   - `inlineSchema` — the concrete schema object to resolve `$dynamicRef` against.
+ *     Takes precedence over the component lookup in `resolveDynamicRef`, so an
+ *     inline `$dynamicAnchor` (e.g. inside `allOf` / `items`) correctly shadows
+ *     the outer/global anchor. `schemaName` is the anchor name itself.
  */
 export interface DynamicScopeEntry {
   name: string;
   schemaName: string;
   isParameter?: boolean;
+  inlineSchema?: OpenApiSchemaObject;
+}
+
+/**
+ * Compact per-anchor result of the single `$dynamicAnchor` index scan.
+ *
+ * Reproduces the precedence in `resolveDynamicRef`'s fallback without storing
+ * full match arrays:
+ *   - {@link exactName} — a schema whose key equals the anchor name. Always
+ *     wins when present (matches `matches.find(m => m === anchorName)`).
+ *   - {@link firstName} / {@link count} — non-exact matches. Only the first is
+ *     kept; `count` is capped at 2 because the resolution only distinguishes
+ *     "exactly one" from "ambiguous". Recording stops once `count >= 2`, which
+ *     is the safe form of "bail early when ambiguous" — a literal early-return
+ *     at `count === 2` would regress the exact-name rule when the exact schema
+ *     appears later in iteration order.
+ */
+export interface DynamicAnchorIndexEntry {
+  exactName?: string;
+  firstName?: string;
+  count: number;
 }
 
 export interface GlobalOptions {
@@ -1230,6 +1504,7 @@ export interface GlobalOptions {
   input?: string | string[];
   output?: string;
   failOnWarnings?: boolean;
+  throwOnError?: boolean;
 }
 
 export interface Tsconfig {
@@ -1389,6 +1664,7 @@ export interface GeneratorTarget {
   paramsSerializer?: GeneratorMutator[];
   paramsFilter?: GeneratorMutator[];
   fetchReviver?: GeneratorMutator[];
+  sharedTypes?: SharedTypeDeclaration[];
 }
 
 export interface GeneratorTargetFull {
@@ -1402,6 +1678,7 @@ export interface GeneratorTargetFull {
   paramsSerializer?: GeneratorMutator[];
   paramsFilter?: GeneratorMutator[];
   fetchReviver?: GeneratorMutator[];
+  sharedTypes?: SharedTypeDeclaration[];
 }
 
 export interface GeneratorOperation {
@@ -1422,6 +1699,57 @@ export interface GeneratorOperation {
   };
 }
 
+/**
+ * One operation's slice of a tag bucket, produced by
+ * `generateTargetForTagsOperations` for the `tags-operations` /
+ * `tags-operations-split` modes. Unlike `GeneratorTargetFull`, the
+ * implementation here is never merged with sibling operations — each
+ * operation keeps its own header/footer-wrapped implementation so it can be
+ * written to its own file.
+ */
+export interface GeneratorOperationTarget {
+  operationName: string;
+  imports: GeneratorImport[];
+  implementation: string;
+  mockOutputs: GeneratorMockOutput[];
+  mockOutputsFull: GeneratorMockOutputFull[];
+  mutators?: GeneratorMutator[];
+  clientMutators?: GeneratorMutator[];
+  formData?: GeneratorMutator[];
+  formUrlEncoded?: GeneratorMutator[];
+  paramsSerializer?: GeneratorMutator[];
+  paramsFilter?: GeneratorMutator[];
+  fetchReviver?: GeneratorMutator[];
+}
+
+/**
+ * Shared per-tag helper block (e.g. `AwaitedInput`/`Awaited`,
+ * `SecondParameter`, query-key helpers, deduplicated shared types) computed
+ * once per tag so every operation file in that tag can import it instead of
+ * redeclaring it.
+ */
+export interface GeneratorTagHelpers {
+  implementation: string;
+  sharedTypes?: SharedTypeDeclaration[];
+  /**
+   * Top-level `type` identifiers declared in `implementation`. Writers
+   * import these with `import type { ... }` — a side-effect import
+   * (`import './<tag>.helpers'`) never brings type names into scope.
+   */
+  typeNames: string[];
+  /**
+   * Top-level `const`/`function` identifiers declared in `implementation`
+   * (e.g. a query-key helper called at runtime). These must survive as a
+   * real value import, not `import type`.
+   */
+  valueNames: string[];
+}
+
+export interface GeneratorTagOperationsTarget {
+  helpers: GeneratorTagHelpers;
+  operations: GeneratorOperationTarget[];
+}
+
 export interface GeneratorVerbOptions {
   verb: Verbs;
   route: string;
@@ -1431,6 +1759,7 @@ export interface GeneratorVerbOptions {
   tags: string[];
   operationId: string;
   operationName: string;
+  typeName: string;
   response: GetterResponse;
   body: GetterBody;
   headers?: GetterQueryParam;
@@ -1465,6 +1794,7 @@ export interface GeneratorClient {
   mutators?: GeneratorMutator[];
   /** When set, overrides the default verbOption.doc prepended to the implementation */
   docComment?: string;
+  returnType?: (title?: string) => string;
 }
 
 export interface GeneratorMutatorParsingInfo {
@@ -1500,6 +1830,17 @@ export type ClientExtraFilesBuilder = (
   context: ContextSpec,
 ) => Promise<ClientFileBuilder[]>;
 
+export interface SharedTypeDeclaration {
+  name: string;
+  exported: boolean;
+  code: string;
+}
+
+export type HeaderResult = {
+  implementation: string;
+  sharedTypes?: SharedTypeDeclaration[];
+};
+
 export type ClientHeaderBuilder = (params: {
   title: string;
   isRequestOptions: boolean;
@@ -1513,11 +1854,12 @@ export type ClientHeaderBuilder = (params: {
   tag?: string;
   isDefaultTagBucket?: boolean;
   clientImplementation: string;
-}) => string;
+}) => string | HeaderResult;
 
 export type ClientFooterBuilder = (params: {
   noFunction?: boolean | undefined;
   operationNames: string[];
+  operations?: GeneratorOperation[];
   title?: string;
   hasAwaitedType: boolean;
   hasMutator: boolean;
@@ -1590,6 +1932,7 @@ export interface GetterBody {
   formUrlEncoded?: string;
   contentType: string;
   isOptional: boolean;
+  isBlob: boolean;
 }
 
 export interface GetterParameters {
@@ -1623,6 +1966,24 @@ export interface GetterQueryParam {
    * `paramsFilter` is then responsible for handling them. See issue #3326.
    */
   nonPrimitiveKeys?: string[];
+  /**
+   * Per-parameter serialization strategy for query params whose declared
+   * schema is a plain object, derived from the OpenAPI parameter's
+   * `style`/`explode` (defaulting to `form` + `explode: true` per spec).
+   * Used by Angular generators' default `filterParams` helper to serialize
+   * these values instead of silently dropping them, when no
+   * `paramsSerializer`/`paramsFilter` is configured. See issue #3705.
+   *
+   * - `flatten`: `form` + `explode: true` — spread properties as top-level
+   *   query params.
+   * - `comma`: `form` + `explode: false` — join `prop,value` pairs with commas
+   *   into a single value.
+   * - `deepObject`: `deepObject` style — emit bracketed `name[prop]` keys.
+   */
+  objectQueryParams?: {
+    key: string;
+    strategy: 'flatten' | 'comma' | 'deepObject';
+  }[];
 }
 
 export type GetterPropType =
@@ -1741,6 +2102,14 @@ export interface WriteModeProps {
   header: string;
   needSchema: boolean;
   generateSchemasInline?: () => string;
+  // Schema-to-tag map computed by `writeSpecs` when `schemas.splitByTags` is
+  // enabled. Mode writers forward it to `generateImportsForBuilder` so the
+  // `indexFiles: false` branch can route each schema import into its tag
+  // subdirectory instead of assuming a flat layout. `undefined` when
+  // `splitByTags` is disabled, in which case routing falls back to the flat
+  // layout. The `'.'` sentinel marks schemas referenced by 0 or 2+ tags
+  // (shared, kept at the schemas root).
+  schemaTagMap?: Map<string, string>;
 }
 
 export interface GeneratorApiOperations {
@@ -1752,6 +2121,7 @@ export interface GeneratorApiOperations {
 export interface GeneratorClientExtra {
   implementation: string;
   implementationMock: string;
+  sharedTypes?: SharedTypeDeclaration[];
 }
 
 export type GeneratorClientTitle = (data: {
@@ -1779,6 +2149,7 @@ export type GeneratorClientHeader = (data: {
 export type GeneratorClientFooter = (data: {
   outputClient: OutputClient | OutputClientFunc;
   operationNames: string[];
+  operations?: GeneratorOperation[];
   hasMutator: boolean;
   hasAwaitedType: boolean;
   titles: GeneratorClientExtra;
@@ -1854,6 +2225,16 @@ export type OpenApiResponsesObject = OpenAPIV3_1.ResponsesObject;
 export type OpenApiResponseObject = OpenAPIV3_1.ResponseObject;
 export type OpenApiParameterObject = OpenAPIV3_1.ParameterObject;
 export type OpenApiRequestBodyObject = OpenAPIV3_1.RequestBodyObject;
+/**
+ * The OpenAPI Info Object, as passed to the {@link OverrideOutput.header}
+ * callback.
+ *
+ * `title` and `version` are required by the specification. `summary`,
+ * `description`, `termsOfService`, `contact` and `license` are optional, so
+ * guard them before use. Specification extensions (`x-*`) are also allowed.
+ *
+ * @see https://spec.openapis.org/oas/v3.1.1#info-object
+ */
 export type OpenApiInfoObject = OpenAPIV3_1.InfoObject;
 export type OpenApiExampleObject = OpenAPIV3_1.ExampleObject;
 export type OpenApiOperationObject = OpenAPIV3_1.OperationObject;

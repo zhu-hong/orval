@@ -2,8 +2,10 @@
 
 import {
   buildDynamicScope,
+  buildInlineDynamicScope,
   camel,
   type ClientBuilder,
+  type ClientDependenciesBuilder,
   type ClientGeneratorsBuilder,
   type ContextSpec,
   generateMutator,
@@ -15,6 +17,7 @@ import {
   getFormDataFieldFileType,
   getNumberWord,
   getRefInfo,
+  getRequiredKeys,
   isBoolean,
   isDynamicReference,
   isNumber,
@@ -33,20 +36,36 @@ import {
   resolveRef,
   stringify,
   type ZodCoerceType,
+  type ZodVariantOption,
+  getEnumMembers,
+  hasEnumMetadata,
+  getEnumValueInfo,
+  getEnumImplementation,
+  EnumGeneration,
 } from '@orval/core';
+import jsesc from 'jsesc';
 import { unique } from 'remeda';
 
 import {
   getLooseObjectFunctionName,
   getObjectFunctionName,
+  getZodImportSource,
   getParameterFunctions,
   getZodDateFormat,
   getZodDateTimeFormat,
   getZodTimeFormat,
-  isZodVersionV4,
+  assertZodTarget,
+  resolveIsZodV4,
 } from './compatible-v4';
 
-const ZOD_DEPENDENCIES: GeneratorDependency[] = [
+export const getZodDependencies: ClientDependenciesBuilder = (
+  _hasGlobalMutator,
+  _hasParamsSerializerOptions,
+  _packageJson,
+  _httpClient,
+  _hasTagsMutator,
+  override,
+): GeneratorDependency[] => [
   {
     exports: [
       {
@@ -57,11 +76,9 @@ const ZOD_DEPENDENCIES: GeneratorDependency[] = [
         values: true,
       },
     ],
-    dependency: 'zod',
+    dependency: getZodImportSource(override?.zod.variant),
   },
 ];
-
-export const getZodDependencies = () => ZOD_DEPENDENCIES;
 
 /**
  * values that may appear in "type". Equals SchemaObjectType
@@ -101,8 +118,7 @@ const resolveZodType = (schema: OpenApiSchemaObject): ResolvedZodType => {
     // Filter out 'null' type as it's handled separately via nullable
     const nonNullTypes = schemaTypeValue
       .filter((t): t is string => isString(t))
-      .filter((t) => t !== 'null' && possibleSchemaTypes.has(t))
-      .map((t) => (t === 'integer' ? 'number' : t));
+      .filter((t) => t !== 'null' && possibleSchemaTypes.has(t));
 
     // If multiple types, return a special marker for union handling
     if (nonNullTypes.length > 1) {
@@ -128,14 +144,16 @@ const resolveZodType = (schema: OpenApiSchemaObject): ResolvedZodType => {
     return 'tuple';
   }
 
-  switch (type) {
-    case 'integer': {
-      return 'number';
-    }
-    default: {
-      return type ?? 'unknown';
-    }
+  // Infer type from const value when type is not explicitly specified
+  if (!type && 'const' in schema) {
+    const constValue = schema.const;
+    if (isString(constValue)) return 'string';
+    if (isNumber(constValue)) return 'number';
+    if (isBoolean(constValue)) return 'boolean';
+    if (constValue === null) return 'null';
   }
+
+  return type ?? 'unknown';
 };
 
 // https://github.com/colinhacks/zod#coercion-for-primitives
@@ -147,12 +165,37 @@ const COERCIBLE_TYPES = new Set([
   'date',
 ]);
 
+const PURE_COMMENT = '/*#__PURE__*/ ';
+
+const zodMiniCall = (fn: string, args = '') =>
+  `${PURE_COMMENT}zod.${fn}(${args})`;
+
+const zodMiniCoerceCall = (fn: string, args = '') =>
+  `${PURE_COMMENT}zod.coerce.${fn}(${args})`;
+
+/** Escapes string defaults for safe embedding in template literals. */
+function formatDefaultValue(value: unknown): string {
+  if (isString(value)) {
+    return jsesc(value, { quotes: 'backtick', wrap: true });
+  }
+  if (Array.isArray(value)) {
+    return `[${value
+      .map((item) =>
+        isString(item)
+          ? jsesc(item, { quotes: 'backtick', wrap: true })
+          : formatDefaultValue(item),
+      )
+      .join(', ')}]`;
+  }
+  return stringify(value) ?? 'null';
+}
+
 export interface ZodValidationSchemaDefinition {
   functions: [string, unknown][];
   consts: string[];
 }
 
-const minAndMaxTypes = new Set(['number', 'string', 'array']);
+const minAndMaxTypes = new Set(['number', 'integer', 'string', 'array']);
 
 const removeReadOnlyProperties = (
   schema: OpenApiSchemaObject,
@@ -198,6 +241,216 @@ const COMPONENT_SCHEMAS_REF_PATTERN = /^#\/components\/schemas\/[^/]+$/;
 const isComponentSchemaRef = (ref: string): boolean =>
   COMPONENT_SCHEMAS_REF_PATTERN.test(ref);
 
+// --- Discriminated unions -------------------------------------------------
+//
+// A `oneOf`/`anyOf` carrying an OpenAPI `discriminator` maps naturally onto
+// `zod.discriminatedUnion(key, [...])`, which gives per-branch validation
+// errors instead of the useless "no union member matched" that a plain
+// `zod.union` produces. Orval shipped this once (PR #1907) but reverted it
+// (PR #2118, issue #2085) because `zod.discriminatedUnion` only accepts
+// *object* options: an inheritance branch (`allOf`) renders as a
+// `zod.object().and(...)` intersection, which zod rejects at construction and
+// crashes the generated module.
+//
+// The fix is to only emit a discriminated union when every branch can be
+// rendered as a single `ZodObject`, and fall back to a plain union otherwise.
+// The go/no-go decision is made here (against the resolved spec, where we have
+// full type information); the render side just trusts the marker and forces
+// `allOf` branches to merge into one object.
+//
+// The property name is smuggled through the definition's function name because
+// the definition tuple only carries `[name, args]` (see PR #1907, which used
+// the same approach).
+const DISCRIMINATOR_MARK = '::discriminator::';
+
+const encodeDiscriminatorSeparator = (base: string, property: string): string =>
+  `${base}${DISCRIMINATOR_MARK}${property}`;
+
+const decodeDiscriminatorSeparator = (
+  fn: string,
+): { base: string; property: string } | null => {
+  const index = fn.indexOf(DISCRIMINATOR_MARK);
+  if (index === -1) return null;
+  return {
+    base: fn.slice(0, index),
+    property: fn.slice(index + DISCRIMINATOR_MARK.length),
+  };
+};
+
+// Follow a single `$ref` to its target; pass concrete schemas through as-is.
+const resolveUnionMemberSchema = (
+  member: OpenApiSchemaObject | OpenApiReferenceObject,
+  context: ContextSpec,
+): OpenApiSchemaObject | undefined => {
+  if (member && '$ref' in member && typeof member.$ref === 'string') {
+    return tryResolveRefSchema(member.$ref, context);
+  }
+  return member as OpenApiSchemaObject;
+};
+
+// A schema that renders to a single `zod.object({...})` — i.e. not a union,
+// not an intersection (`allOf`), and shaped like an object.
+const isPlainObjectSchema = (
+  schema: OpenApiSchemaObject | undefined,
+): boolean => {
+  if (!schema || schema.oneOf || schema.anyOf || schema.allOf) return false;
+  return (
+    schema.type === 'object' ||
+    (isObject(schema.properties) && Object.keys(schema.properties).length > 0)
+  );
+};
+
+// Keywords a member may carry while still describing no shape of its own:
+// `title` and `description` only annotate, and `not` is not translated into
+// anything by this generator today, so a branch carrying one renders as bare
+// `zod.unknown()` either way. Anything outside this set — `enum`, `const`,
+// `additionalProperties`, `nullable`, `default`, … — already renders to
+// something meaningful on its own and must be left alone.
+const SHAPELESS_MEMBER_KEYS = new Set([
+  'required',
+  'title',
+  'description',
+  'not',
+]);
+
+// A `oneOf`/`anyOf` member that declares no shape of its own and only narrows
+// which of the sibling properties must be present — e.g. two branches that each
+// `required` a different pair of keys. JSON Schema applies every branch to the
+// same instance, so the property types live on the composing schema rather than
+// on the branch. Rendered in isolation such a member has no type to resolve and
+// falls through to `zod.unknown()`, silently dropping its `required`. (#3780)
+const isConstraintOnlyMember = (
+  member: OpenApiSchemaObject | OpenApiReferenceObject,
+): boolean => {
+  if ('$ref' in member) return false;
+  const schema = member as OpenApiSchemaObject;
+  if (!Array.isArray(schema.required) || schema.required.length === 0) {
+    return false;
+  }
+  return Object.keys(schema).every((key) => SHAPELESS_MEMBER_KEYS.has(key));
+};
+
+// Extracts the property names a member forbids via `not`. JSON Schema forbids a
+// key when `not` lists any subschema that `required`s it — i.e.
+// `not: { anyOf: [{ required: [X] }, { required: [Y] }] }` means X and Y must
+// be absent. Returns `undefined` when the member has no such constraint. (#3780)
+const getForbiddenKeys = (
+  member: OpenApiSchemaObject,
+): string[] | undefined => {
+  if (!isObject(member.not)) return undefined;
+  const not = member.not as OpenApiSchemaObject;
+
+  // `not: { anyOf: [ {required:[X]}, {required:[Y]} ] }` is the form emitted by
+  // common OpenAPI tooling. A bare `not: { required: [X] }` is accepted too.
+  const branches = Array.isArray(not.anyOf)
+    ? not.anyOf
+    : Array.isArray(not.required)
+      ? [not]
+      : [];
+
+  const forbidden = new Set<string>();
+  for (const branch of branches) {
+    if (isObject(branch) && Array.isArray(branch.required)) {
+      for (const key of branch.required) {
+        forbidden.add(key as string);
+      }
+    }
+  }
+  return forbidden.size > 0 ? [...forbidden] : undefined;
+};
+
+// The branch must declare the discriminator key as a literal value — a `const`
+// or an `enum`. Both zod v3 (>=3.20) and v4 build their branch lookup by
+// reading discrete literal values off each option, and throw at construction if
+// a discriminator resolves to a non-literal (e.g. a free `string`). Requiring a
+// literal here keeps such specs on the plain-union path instead.
+const hasLiteralDiscriminator = (
+  schema: OpenApiSchemaObject | undefined,
+  property: string,
+): boolean => {
+  if (!schema || !isObject(schema.properties)) return false;
+  const propertySchema = schema.properties[property];
+  if (!isObject(propertySchema)) return false;
+  return (
+    (propertySchema as { const?: unknown }).const !== undefined ||
+    Array.isArray((propertySchema as { enum?: unknown }).enum)
+  );
+};
+
+// Read the literal discriminator value(s) a branch declares for `property`
+// (a `const` yields one value, an `enum` yields several). Resolves `$ref` and,
+// for `allOf`, honours the render-time merge semantics where a later member
+// overrides an earlier one — so the last part that declares the property wins.
+// Returns null when no literal is found. Used to reject duplicate discriminator
+// values across branches, which `zod.discriminatedUnion` throws on at
+// construction.
+const collectDiscriminatorValues = (
+  member: OpenApiSchemaObject | OpenApiReferenceObject,
+  property: string,
+  context: ContextSpec,
+): unknown[] | null => {
+  const readValues = (
+    schema: OpenApiSchemaObject | undefined,
+  ): unknown[] | null => {
+    if (!schema || !isObject(schema.properties)) return null;
+    const propertySchema = schema.properties[property];
+    if (!isObject(propertySchema)) return null;
+    const constValue = (propertySchema as { const?: unknown }).const;
+    if (constValue !== undefined) return [constValue];
+    const enumValues = (propertySchema as { enum?: unknown }).enum;
+    if (Array.isArray(enumValues)) return enumValues;
+    return null;
+  };
+
+  const resolved = resolveUnionMemberSchema(member, context);
+  if (!resolved) return null;
+
+  if (resolved.allOf) {
+    const parts = (
+      resolved.allOf as (OpenApiSchemaObject | OpenApiReferenceObject)[]
+    ).map((part) => resolveUnionMemberSchema(part, context));
+    for (let index = parts.length - 1; index >= 0; index--) {
+      const values = readValues(parts[index]);
+      if (values) return values;
+    }
+    return null;
+  }
+
+  return readValues(resolved);
+};
+
+// Can this union branch be rendered as a `ZodObject` carrying the discriminator
+// literal? If not, the whole union must stay a plain `zod.union`.
+const isDiscriminatableMember = (
+  member: OpenApiSchemaObject | OpenApiReferenceObject,
+  property: string,
+  useReusableSchemas: boolean,
+  context: ContextSpec,
+): boolean => {
+  const resolved = resolveUnionMemberSchema(member, context);
+  if (!resolved) return false;
+
+  // A nested union can't be a discriminated-union option.
+  if (resolved.oneOf || resolved.anyOf) return false;
+
+  if (resolved.allOf) {
+    // Inheritance: representable only when we can flatten the parts into one
+    // object at render time. That needs the parts inlined property-by-property.
+    // With `useReusableSchemas` the parts stay `$ref` identifiers to other
+    // consts (potentially intersections themselves), so we can't guarantee a
+    // ZodObject — leave it as a plain union.
+    if (useReusableSchemas) return false;
+    const parts = (
+      resolved.allOf as (OpenApiSchemaObject | OpenApiReferenceObject)[]
+    ).map((part) => resolveUnionMemberSchema(part, context));
+    if (!parts.every((part) => isPlainObjectSchema(part))) return false;
+    return parts.some((part) => hasLiteralDiscriminator(part, property));
+  }
+
+  if (!isPlainObjectSchema(resolved)) return false;
+  return hasLiteralDiscriminator(resolved, property);
+};
+
 export const generateZodValidationSchemaDefinition = (
   schema: OpenApiSchemaObject | OpenApiReferenceObject | undefined,
   context: ContextSpec,
@@ -233,6 +486,15 @@ export const generateZodValidationSchemaDefinition = (
      * placeholder instead of being inlined.
      */
     useReusableSchemas?: boolean;
+    /**
+     * When true, suppress File/Blob coercion for binary string fields anywhere
+     * in the tree (`format: binary` / `contentMediaType: application/octet-stream`),
+     * keeping them as `string`. Set for `application/x-www-form-urlencoded` bodies,
+     * which serialize via URLSearchParams (string-only) — mirrors core's
+     * `formDataContext.urlEncoded` handling in getScalar (#1624). Threaded into
+     * every recursive call so nested/array/composed fields are covered too.
+     */
+    urlEncoded?: boolean;
     /**
      * When true (and `isZodV4`), the top-level (named component) schema emits a
      * `.meta({ id, description?, deprecated? })` instead of `.describe(...)`.
@@ -388,6 +650,7 @@ export const generateZodValidationSchemaDefinition = (
   }
 
   const useReusableSchemas = rules?.useReusableSchemas ?? false;
+  const urlEncoded = rules?.urlEncoded ?? false;
   const consts: string[] = [];
   const constNameRegistry = rules?.constNameRegistry ?? {};
   const constsCounter = isNumber(constNameRegistry[name])
@@ -475,6 +738,54 @@ export const generateZodValidationSchemaDefinition = (
       | OpenApiReferenceObject
     )[];
 
+    // Emit a discriminated union only when the opt-in flag is set AND the spec
+    // asks for one AND every branch can be rendered as a `ZodObject` (see the
+    // notes on `isDiscriminatableMember`). Otherwise keep `separator` as-is and
+    // fall back to a plain `zod.union`, which accepts any member shape.
+    const discriminatorProperty = ((): string | undefined => {
+      if (
+        !context.output?.override?.zod?.generateDiscriminatedUnion ||
+        !(schema.oneOf || schema.anyOf) ||
+        !schema.discriminator?.propertyName ||
+        schemas.length <= 1
+      ) {
+        return undefined;
+      }
+
+      const property = schema.discriminator.propertyName;
+      if (
+        !schemas.every((member) =>
+          isDiscriminatableMember(
+            member,
+            property,
+            useReusableSchemas,
+            context,
+          ),
+        )
+      ) {
+        return undefined;
+      }
+
+      // `zod.discriminatedUnion` builds a value->branch map at construction and
+      // throws if two branches share a discriminator value. Require the values
+      // to be unique across all branches; otherwise fall back to a plain union.
+      const seenValues = new Set<string>();
+      for (const member of schemas) {
+        const values = collectDiscriminatorValues(member, property, context);
+        if (!values || values.length === 0) return undefined;
+        for (const value of values) {
+          const key = JSON.stringify(value);
+          if (seenValues.has(key)) return undefined;
+          seenValues.add(key);
+        }
+      }
+
+      return property;
+    })();
+    const unionSeparator = discriminatorProperty
+      ? encodeDiscriminatorSeparator(separator, discriminatorProperty)
+      : separator;
+
     // In JSON Schema / OpenAPI 3.1 a `required` array in any `allOf` member
     // (and on the composing schema itself) applies to properties contributed by
     // any member. Collect them all so each member's own properties can be marked
@@ -484,29 +795,100 @@ export const generateZodValidationSchemaDefinition = (
     const allOfRequired = schema.allOf
       ? [
           ...new Set([
-            ...(schema.required ?? []),
-            ...schemas.flatMap((member) => {
+            ...getRequiredKeys(schema, name),
+            ...schemas.flatMap((member, index) => {
               // Only the member's top-level `required` is needed. For `$ref`
               // members resolve shallowly (no deep property dereference) and
               // tolerate unresolvable refs — they simply contribute no keys.
-              const resolved =
-                '$ref' in member && typeof member.$ref === 'string'
-                  ? tryResolveRefSchema(member.$ref, context)
-                  : (member as OpenApiSchemaObject);
-              const memberRequired = resolved?.required;
-              return Array.isArray(memberRequired)
-                ? (memberRequired as string[])
-                : [];
+              const isRef = '$ref' in member && typeof member.$ref === 'string';
+              const resolved = isRef
+                ? tryResolveRefSchema(member.$ref as string, context)
+                : (member as OpenApiSchemaObject);
+              if (!resolved) return [];
+              // A constraint-only member never reaches the object path below,
+              // so a misplaced boolean here would otherwise pass unreported.
+              // Name the member, not the composing schema, or the message
+              // points at the wrong place in the document.
+              return getRequiredKeys(
+                resolved,
+                isRef ? (member.$ref as string) : `${name}.allOf[${index}]`,
+              );
             }),
           ]),
         ]
       : undefined;
 
+    // Constraint-only branches have to be rendered against the composing
+    // schema's `properties`, otherwise their `required` is lost. Only for
+    // `oneOf`/`anyOf` — an `allOf` member already gets the same effect through
+    // `additionalRequired` above. (#3780)
+    const withSiblingProperties = (
+      member: OpenApiSchemaObject | OpenApiReferenceObject,
+    ) => {
+      const properties = schema.properties;
+      if (
+        !(schema.oneOf || schema.anyOf) ||
+        !isObject(properties) ||
+        Object.keys(properties).length === 0 ||
+        !isConstraintOnlyMember(member)
+      ) {
+        return member as OpenApiSchemaObject;
+      }
+
+      const required = (member as OpenApiSchemaObject).required as string[];
+
+      // Every key the branch requires needs a sibling schema to attach to. A key
+      // with none cannot be made required in zod — both `unknown` and `any` are
+      // treated as optional inside an object, so `{}` would still match — and
+      // rewriting would silently drop it. Leave the whole branch as-is rather
+      // than emit an object that only looks like it enforces the constraint.
+      if (!required.every((key) => Object.hasOwn(properties, key))) {
+        return member as OpenApiSchemaObject;
+      }
+
+      const forbidden = getForbiddenKeys(member as OpenApiSchemaObject);
+
+      // A `not` constraint forbids keys. When the member is rendered against the
+      // sibling properties, forbidden keys must be emitted as `zod.never()`
+      // (optional, so absence passes and any value fails). These are injected
+      // as pre-generated property overrides into the object schema below. (#3780)
+      let propertyOverrides:
+        | Record<string, ZodValidationSchemaDefinition>
+        | undefined;
+      if (forbidden) {
+        propertyOverrides = {};
+        for (const key of forbidden) {
+          // A key that is both forbidden and required contradicts itself; emit
+          // the required form (no optional) so the `never` still rejects any
+          // value while the key is expected to be absent.
+          const isForbiddenAndRequired = required.includes(key);
+          propertyOverrides[key] = {
+            functions: [
+              ['never', undefined],
+              ...(isForbiddenAndRequired
+                ? []
+                : ([['optional', undefined]] as const)),
+            ],
+            consts: [],
+          } as ZodValidationSchemaDefinition;
+        }
+      }
+
+      return {
+        type: 'object',
+        properties,
+        required,
+        // carried over so the branch keeps its `.describe(...)`
+        description: (member as OpenApiSchemaObject).description,
+        'x-orval-property-overrides': propertyOverrides,
+      } as OpenApiSchemaObject;
+    };
+
     // Use index-based naming to ensure uniqueness when processing multiple schemas
     // This prevents duplicate schema names when nullable refs are used
     const baseSchemas = schemas.map((schema, index) =>
       generateZodValidationSchemaDefinition(
-        schema as OpenApiSchemaObject,
+        withSiblingProperties(schema),
         context,
         `${camel(name)}${pascal(getNumberWord(index + 1))}`,
         strict,
@@ -514,8 +896,14 @@ export const generateZodValidationSchemaDefinition = (
         {
           required: true,
           additionalRequired: allOfRequired,
+          propertyOverrides: (
+            withSiblingProperties(schema) as OpenApiSchemaObject
+          )['x-orval-property-overrides'] as
+            | Record<string, ZodValidationSchemaDefinition>
+            | undefined,
           constNameRegistry,
           useReusableSchemas,
+          urlEncoded,
         },
       ),
     );
@@ -543,6 +931,7 @@ export const generateZodValidationSchemaDefinition = (
             additionalRequired: allOfRequired,
             constNameRegistry,
             useReusableSchemas,
+            urlEncoded,
           },
         );
 
@@ -552,7 +941,7 @@ export const generateZodValidationSchemaDefinition = (
         functions.push([
           'allOf',
           [
-            { functions: [[separator, baseSchemas]], consts: [] },
+            { functions: [[unionSeparator, baseSchemas]], consts: [] },
             additionalPropertiesDefinition,
           ],
         ]);
@@ -562,7 +951,7 @@ export const generateZodValidationSchemaDefinition = (
         functions.push([separator, baseSchemas]);
       }
     } else {
-      functions.push([separator, baseSchemas]);
+      functions.push([unionSeparator, baseSchemas]);
     }
     skipSwitchStatement = true;
   }
@@ -587,15 +976,16 @@ export const generateZodValidationSchemaDefinition = (
       // `.default()` rejects against its mutable parameter type (#3399).
       const entries = Object.entries(schema.default)
         .map(([key, value]) => {
+          const safeKey = JSON.stringify(key);
           if (isString(value)) {
-            return `${key}: ${JSON.stringify(value)} as const`;
+            return `${safeKey}: ${JSON.stringify(value)} as const`;
           }
 
           if (Array.isArray(value)) {
             const arrayItems = value.map((item) =>
               isString(item) ? `${JSON.stringify(item)} as const` : `${item}`,
             );
-            return `${key}: [${arrayItems.join(', ')}]`;
+            return `${safeKey}: [${arrayItems.join(', ')}]`;
           }
 
           if (
@@ -604,17 +994,13 @@ export const generateZodValidationSchemaDefinition = (
             isNumber(value) ||
             isBoolean(value)
           )
-            return `${key}: ${value}`;
+            return `${safeKey}: ${value}`;
         })
         .join(', ');
       defaultValue = entries.length === 0 ? `{}` : `{ ${entries} }`;
     } else {
       // OpenApiSchemaObject defines default as 'any'
-      const rawStringified = stringify(schema.default);
-      defaultValue =
-        rawStringified === undefined
-          ? 'null'
-          : rawStringified.replaceAll("'", '`');
+      defaultValue = formatDefaultValue(schema.default);
 
       // If the schema is an array with enum items, inject inplace to avoid issues with default values
       const isArrayWithEnumItems =
@@ -653,6 +1039,7 @@ export const generateZodValidationSchemaDefinition = (
             required: true,
             constNameRegistry,
             useReusableSchemas,
+            urlEncoded,
           },
         ),
       ),
@@ -712,6 +1099,7 @@ export const generateZodValidationSchemaDefinition = (
                     required: true,
                     constNameRegistry,
                     useReusableSchemas,
+                    urlEncoded,
                   },
                 ),
               ),
@@ -734,6 +1122,7 @@ export const generateZodValidationSchemaDefinition = (
                     required: true,
                     constNameRegistry,
                     useReusableSchemas,
+                    urlEncoded,
                   },
                 ),
               ]);
@@ -755,6 +1144,7 @@ export const generateZodValidationSchemaDefinition = (
               required: true,
               constNameRegistry,
               useReusableSchemas,
+              urlEncoded,
             },
           ),
         ]);
@@ -773,7 +1163,9 @@ export const generateZodValidationSchemaDefinition = (
           break;
         }
 
-        if (schema.format === 'binary') {
+        // url-encoded bodies serialize via URLSearchParams (strings only), so
+        // binary fields stay `string` rather than becoming `File` (#3664).
+        if (!urlEncoded && schema.format === 'binary') {
           functions.push(['instanceof', 'File']);
           break;
         }
@@ -783,6 +1175,7 @@ export const generateZodValidationSchemaDefinition = (
         // Swagger 2.0 / OAS 3.0 → OAS 3.1. Treat it the same as
         // format: binary so $ref-based model types generate File validation.
         if (
+          !urlEncoded &&
           schema.contentMediaType === 'application/octet-stream' &&
           !schema.contentEncoding
         ) {
@@ -875,7 +1268,30 @@ export const generateZodValidationSchemaDefinition = (
 
         break;
       }
+      case 'never': {
+        // `not`-forbidden keys render as `zod.never()`. Optional, so the key's
+        // absence passes while any supplied value fails validation. (#3780)
+        functions.push(['never', undefined]);
+        if (required) {
+          functions.push(['optional', undefined]);
+        }
+        break;
+      }
+
       default: {
+        // Handle const for number, boolean, null, and object types
+        if ('const' in schema) {
+          const constValue = schema.const;
+          if (
+            isNumber(constValue) ||
+            isBoolean(constValue) ||
+            constValue === null
+          ) {
+            functions.push(['literal', constValue]);
+            break;
+          }
+        }
+
         const hasProperties = !!schema.properties;
         const properties = schema.properties ?? {};
         const hasDefinedProperties = Object.keys(properties).length > 0;
@@ -898,7 +1314,7 @@ export const generateZodValidationSchemaDefinition = (
           // A property is required when this schema requires it OR when a
           // sibling `allOf` member requires it (propagated via additionalRequired). (#3171)
           const requiredKeys = new Set<string>([
-            ...(schema.required ?? []),
+            ...getRequiredKeys(schema, name),
             ...(rules?.additionalRequired ?? []),
           ]);
 
@@ -918,6 +1334,7 @@ export const generateZodValidationSchemaDefinition = (
                       required: requiredKeys.has(key),
                       constNameRegistry,
                       useReusableSchemas,
+                      urlEncoded,
                     },
                   ),
               }))
@@ -958,6 +1375,7 @@ export const generateZodValidationSchemaDefinition = (
                 required: true,
                 constNameRegistry,
                 useReusableSchemas,
+                urlEncoded,
               },
             ),
           ]);
@@ -969,7 +1387,7 @@ export const generateZodValidationSchemaDefinition = (
           break;
         }
 
-        functions.push([type, undefined]);
+        functions.push([type === 'integer' ? 'int' : type, undefined]);
 
         break;
       }
@@ -1064,22 +1482,40 @@ export const generateZodValidationSchemaDefinition = (
 
   // Array item enums are handled by the nested item schema. Guard parent-array
   // enum emission to avoid generating invalid trailing `.enum(...)` chains.
-  if (schema.enum && type !== 'array') {
-    const uniqueEnumValues = unique(schema.enum);
 
-    if (uniqueEnumValues.every((value) => isString(value))) {
+  if (schema.enum && type !== 'array') {
+    const enumMembers = getEnumMembers(schema);
+    const hasMetadata = hasEnumMetadata(enumMembers);
+    const enumValueInfo = getEnumValueInfo(enumMembers);
+
+    const enumValues = enumMembers.map((member) => member.value);
+
+    const canUseEnumObject =
+      enumValueInfo.isHomogeneous && !enumValueInfo.isBoolean && hasMetadata;
+
+    if (canUseEnumObject) {
+      const enumContent = getEnumImplementation(enumMembers, {
+        enumNamingConvention: context.output.override.namingConvention.enum,
+        enumGenerationType: EnumGeneration.CONST,
+      });
+      functions.push(['enumObject', `{\n${enumContent}}`]);
+    } else if (enumValues.every((value) => isString(value))) {
       functions.push([
         'enum',
-        `[${uniqueEnumValues.map((value) => `'${jsStringLiteralEscape(value)}'`).join(', ')}]`,
+        `[${enumValues
+          .map((value) => `'${jsStringLiteralEscape(value)}'`)
+          .join(', ')}]`,
       ]);
     } else {
       functions.push([
         'oneOf',
-        uniqueEnumValues.map((value) => ({
+        enumMembers.map((member) => ({
           functions: [
             [
               'literal',
-              isString(value) ? `'${jsStringLiteralEscape(value)}'` : value,
+              isString(member.value)
+                ? `'${jsStringLiteralEscape(member.value)}'`
+                : member.value,
             ],
           ],
           consts: [],
@@ -1166,6 +1602,8 @@ export const parseZodValidationSchemaDefinition = (
   isZodV4: boolean,
   preprocess?: GeneratorMutator,
   paramsInjection?: ZodParamsInjection,
+  variant: ZodVariantOption = 'classic',
+  exactOptional = false,
 ): { zod: string; consts: string; usedRefs: Set<string> } => {
   if (input.functions.length === 0) {
     return { zod: '', consts: '', usedRefs: new Set() };
@@ -1220,6 +1658,479 @@ export const parseZodValidationSchemaDefinition = (
     return `${paramsInjection.mutator.name}(${JSON.stringify(ctx)})`;
   };
 
+  const shouldCoerce = (fn: string) =>
+    coerceTypes &&
+    (Array.isArray(coerceTypes)
+      ? coerceTypes.includes(fn as ZodCoerceType)
+      : COERCIBLE_TYPES.has(fn));
+
+  const buildCombinedArgs = (
+    fn: string,
+    args: unknown,
+    fieldPath: readonly string[],
+  ) => {
+    const formattedArgs = formatFunctionArgs(args);
+    const paramsArg = buildParamsArg(fn, fieldPath);
+    if (
+      paramsArg &&
+      formattedArgs &&
+      PARAMS_MERGE_INTO_OPTIONS_VALIDATORS.has(fn)
+    ) {
+      return `{ ...${formattedArgs}, ...${paramsArg} }`;
+    }
+    if (paramsArg) {
+      return formattedArgs ? `${formattedArgs}, ${paramsArg}` : paramsArg;
+    }
+    return formattedArgs;
+  };
+
+  type MiniRendered = { expr: string; kind?: string };
+
+  const renderMiniDefinition = (
+    definition: ZodValidationSchemaDefinition,
+    fieldPath: readonly string[] = [],
+  ): MiniRendered => {
+    let current: MiniRendered | undefined;
+
+    const requireCurrent = (fn: string) => {
+      if (!current) {
+        throw new Error(`Cannot render zod mini ${fn} without a base schema`);
+      }
+      return current;
+    };
+
+    const renderObject = (
+      objectArgs: Record<string, ZodValidationSchemaDefinition>,
+      objectType: string,
+    ): MiniRendered => ({
+      kind: 'object',
+      expr: `${zodMiniCall(
+        objectType,
+        `{
+${Object.entries(objectArgs)
+  .map(([key, schema]) => {
+    const rendered = renderMiniDefinition(schema, [...fieldPath, key]);
+    appendConstsChunk(schema.consts.join('\n'));
+    const coerceArrays =
+      Array.isArray(coerceTypes) &&
+      coerceTypes.includes('array' as ZodCoerceType);
+    if (coerceArrays && schema.functions.some(([fn]) => fn === 'array')) {
+      return `  ${JSON.stringify(key)}: ${zodMiniCall('pipe', `${zodMiniCall('transform', '(value) => value === undefined || Array.isArray(value) ? value : [value]')}, ${rendered.expr}`)}`;
+    }
+    return `  ${JSON.stringify(key)}: ${rendered.expr}`;
+  })
+  .join(',\n')}
+}`,
+      )}`,
+    });
+
+    // Merge an `allOf` of object schemas into one set of properties, or null
+    // when a part isn't a plain object. Mirrors `mergeAllOfObjectsClassic`.
+    const mergeAllOfObjectsMini = (
+      allOfArgs: ZodValidationSchemaDefinition[],
+    ): Record<string, ZodValidationSchemaDefinition> | null => {
+      const allAreObjects =
+        allOfArgs.length > 0 &&
+        allOfArgs.every((partSchema) => {
+          if (partSchema.functions.length === 0) return false;
+          const firstFn = partSchema.functions[0][0];
+          return firstFn === 'object' || firstFn === 'strictObject';
+        });
+      if (!allAreObjects) return null;
+
+      const mergedProperties: Record<string, ZodValidationSchemaDefinition> =
+        {};
+      for (const partSchema of allOfArgs) {
+        if (partSchema.consts.length > 0) {
+          appendConstsChunk(partSchema.consts.join('\n'));
+        }
+        const objectFunctionIndex = partSchema.functions.findIndex(
+          ([fnName]) => fnName === 'object' || fnName === 'strictObject',
+        );
+        if (objectFunctionIndex !== -1) {
+          const objectArgs = partSchema.functions[objectFunctionIndex][1];
+          if (isObject(objectArgs)) {
+            Object.assign(
+              mergedProperties,
+              objectArgs as Record<string, ZodValidationSchemaDefinition>,
+            );
+          }
+        }
+      }
+      return mergedProperties;
+    };
+
+    // Render a single discriminated-union branch as a `ZodObject` (see
+    // `renderDiscriminatedUnionMember` for the classic-variant counterpart).
+    const renderDiscriminatedUnionMemberMini = (
+      member: ZodValidationSchemaDefinition,
+    ): string => {
+      if (member.functions[0]?.[0] === 'allOf') {
+        const merged = mergeAllOfObjectsMini(
+          member.functions[0][1] as ZodValidationSchemaDefinition[],
+        );
+        if (merged !== null) {
+          return renderObject(merged, getObjectFunctionName(true, strict)).expr;
+        }
+      }
+      appendConstsChunk(member.consts.join('\n'));
+      return renderMiniDefinition(member, fieldPath).expr;
+    };
+
+    for (let index = 0; index < definition.functions.length; index++) {
+      const [fn, args = ''] = definition.functions[index];
+
+      if (fn === 'namedRef') {
+        const refArgs = args as { name: string; sourceRef: string };
+        usedRefs.add(refArgs.name);
+        current = { expr: `__REF_${refArgs.name}__`, kind: 'ref' };
+        continue;
+      }
+
+      if (fn === 'fileOrString') {
+        current = {
+          expr: zodMiniCall(
+            'union',
+            `[${zodMiniCall('instanceof', 'File')}, ${zodMiniCall('string')}]`,
+          ),
+          kind: 'union',
+        };
+        continue;
+      }
+
+      if (fn === 'enumObject') {
+        // Mini's `_enum` has no `const` type parameter, so an object literal
+        // would widen to `Record<string, string | number>` and the generated
+        // schema would lose its member literal types. Classic v3 already
+        // appends `as const` for the same reason; mirror it here.
+        current = {
+          expr: zodMiniCall('enum', `${String(args)} as const`),
+          kind: 'enum',
+        };
+        continue;
+      }
+
+      if (fn === 'allOf') {
+        const allOfArgs = args as ZodValidationSchemaDefinition[];
+        const mergedProperties = strict
+          ? mergeAllOfObjectsMini(allOfArgs)
+          : null;
+
+        if (mergedProperties !== null) {
+          current = renderObject(
+            mergedProperties,
+            getObjectFunctionName(true, strict),
+          );
+          continue;
+        }
+
+        const rendered = allOfArgs.map((partSchema) => {
+          appendConstsChunk(partSchema.consts.join('\n'));
+          return renderMiniDefinition(partSchema, fieldPath).expr;
+        });
+        if (rendered.length === 0) {
+          current = { expr: '' };
+          continue;
+        }
+        current = {
+          expr: rendered.reduce((acc, value) =>
+            acc ? zodMiniCall('intersection', `${acc}, ${value}`) : value,
+          ),
+          kind: 'intersection',
+        };
+        continue;
+      }
+
+      const discriminator = decodeDiscriminatorSeparator(fn);
+      if (discriminator || fn === 'oneOf' || fn === 'anyOf') {
+        const unionArgs = args as ZodValidationSchemaDefinition[];
+        if (unionArgs.length === 1) {
+          appendConstsChunk(unionArgs[0].consts.join('\n'));
+          current = renderMiniDefinition(unionArgs[0], fieldPath);
+          continue;
+        }
+        if (discriminator) {
+          current = {
+            expr: zodMiniCall(
+              'discriminatedUnion',
+              `'${jsStringEscape(discriminator.property)}', [${unionArgs
+                .map((arg) => renderDiscriminatedUnionMemberMini(arg))
+                .join(',')}]`,
+            ),
+            kind: 'union',
+          };
+          continue;
+        }
+        current = {
+          expr: zodMiniCall(
+            'union',
+            `[${unionArgs
+              .map((arg) => {
+                appendConstsChunk(arg.consts.join('\n'));
+                return renderMiniDefinition(arg, fieldPath).expr;
+              })
+              .join(',')}]`,
+          ),
+          kind: 'union',
+        };
+        continue;
+      }
+
+      if (fn === 'additionalProperties') {
+        const additionalPropertiesArgs = args as ZodValidationSchemaDefinition;
+        const rendered = renderMiniDefinition(
+          additionalPropertiesArgs,
+          fieldPath,
+        );
+        if (Array.isArray(additionalPropertiesArgs.consts)) {
+          appendConstsChunk(additionalPropertiesArgs.consts.join('\n'));
+        }
+        current = {
+          expr: zodMiniCall(
+            'record',
+            `${zodMiniCall('string')}, ${rendered.expr}`,
+          ),
+          kind: 'object',
+        };
+        continue;
+      }
+
+      if (fn === 'object' || fn === 'strictObject' || fn === 'looseObject') {
+        const objectType =
+          fn === 'looseObject'
+            ? 'looseObject'
+            : getObjectFunctionName(true, strict);
+        current = renderObject(
+          args as Record<string, ZodValidationSchemaDefinition>,
+          objectType,
+        );
+        continue;
+      }
+
+      if (fn === 'passthrough' || fn === 'strict') {
+        continue;
+      }
+
+      if (fn === 'array') {
+        const arrayArgs = args as ZodValidationSchemaDefinition;
+        const rendered = renderMiniDefinition(arrayArgs, fieldPath);
+        if (isString(arrayArgs.consts)) {
+          appendConstsChunk(arrayArgs.consts);
+        } else if (Array.isArray(arrayArgs.consts)) {
+          appendConstsChunk(arrayArgs.consts.join('\n'));
+        }
+        current = { expr: zodMiniCall('array', rendered.expr), kind: 'array' };
+        continue;
+      }
+
+      if (fn === 'tuple') {
+        const tupleItems = (args as ZodValidationSchemaDefinition[])
+          .map((x) => {
+            const rendered = renderMiniDefinition(x, fieldPath);
+            appendConstsChunk(x.consts.join('\n'));
+            return rendered.expr;
+          })
+          .join(',\n');
+        const next = definition.functions[index + 1];
+        if (next?.[0] === 'rest') {
+          const restDefinition = next[1] as ZodValidationSchemaDefinition;
+          const rest = renderMiniDefinition(restDefinition, fieldPath).expr;
+          appendConstsChunk(restDefinition.consts.join('\n'));
+          current = {
+            expr: zodMiniCall('tuple', `[${tupleItems}], ${rest}`),
+            kind: 'tuple',
+          };
+          index++;
+        } else {
+          current = {
+            expr: zodMiniCall('tuple', `[${tupleItems}]`),
+            kind: 'tuple',
+          };
+        }
+        continue;
+      }
+
+      const combinedArgs = buildCombinedArgs(fn, args, fieldPath);
+
+      if (fn === 'int' && shouldCoerce('number')) {
+        const numberArgs = buildCombinedArgs('number', undefined, fieldPath);
+        current = {
+          expr: zodMiniCall(
+            'pipe',
+            `${zodMiniCoerceCall('number', numberArgs)}, ${zodMiniCall('int', combinedArgs)}`,
+          ),
+          kind: 'number',
+        };
+        continue;
+      }
+
+      if (fn === 'optional' || fn === 'nullable' || fn === 'nullish') {
+        const value = requireCurrent(fn);
+        const miniFn =
+          exactOptional && isZodV4 && fn === 'optional' ? 'exactOptional' : fn;
+        current = { expr: zodMiniCall(miniFn, value.expr), kind: value.kind };
+        continue;
+      }
+
+      if (fn === 'default') {
+        const value = requireCurrent(fn);
+        current = {
+          expr: zodMiniCall('_default', `${value.expr}, ${combinedArgs}`),
+          kind: value.kind,
+        };
+        continue;
+      }
+
+      if (fn === 'describe' || fn === 'meta') {
+        const value = requireCurrent(fn);
+        current = {
+          expr: `${value.expr}.check(${zodMiniCall(fn, combinedArgs)})`,
+          kind: value.kind,
+        };
+        continue;
+      }
+
+      if (
+        fn === 'min' ||
+        fn === 'max' ||
+        fn === 'gt' ||
+        fn === 'lt' ||
+        fn === 'multipleOf' ||
+        fn === 'regex' ||
+        fn === 'length'
+      ) {
+        const value = requireCurrent(fn);
+        const checkName =
+          fn === 'min'
+            ? value.kind === 'number'
+              ? 'gte'
+              : 'minLength'
+            : fn === 'max'
+              ? value.kind === 'number'
+                ? 'lte'
+                : 'maxLength'
+              : fn;
+        current = {
+          expr: `${value.expr}.check(${zodMiniCall(checkName, combinedArgs)})`,
+          kind: value.kind,
+        };
+        continue;
+      }
+
+      if (
+        (fn !== 'date' && shouldCoerce(fn)) ||
+        (fn === 'date' && shouldCoerce(fn) && context.output.override.useDates)
+      ) {
+        current = {
+          expr: zodMiniCoerceCall(fn, combinedArgs),
+          kind: fn,
+        };
+        continue;
+      }
+
+      current = {
+        expr: zodMiniCall(fn, combinedArgs),
+        kind:
+          fn === 'int'
+            ? 'number'
+            : fn === 'enum' || fn === 'literal' || fn === 'stringFormat'
+              ? 'string'
+              : fn.split('.')[0],
+      };
+    }
+
+    return current ?? { expr: '' };
+  };
+
+  // Merge an `allOf` of object schemas into a single `zod.object({...})`.
+  // Returns null when a part isn't a plain object (so the caller can fall back
+  // to `.and()`). Used both for strict-mode object merging and to turn an
+  // inheritance branch of a discriminated union into a valid object option.
+  function mergeAllOfObjectsClassic(
+    allOfArgs: ZodValidationSchemaDefinition[],
+    fieldPath: readonly string[],
+  ): string | null {
+    const allAreObjects =
+      allOfArgs.length > 0 &&
+      allOfArgs.every((partSchema) => {
+        if (partSchema.functions.length === 0) return false;
+        const firstFn = partSchema.functions[0][0];
+        // Zod v3 renders a strict object as `object(...).strict()`, so the
+        // object constructor is still the first function.
+        return firstFn === 'object' || firstFn === 'strictObject';
+      });
+    if (!allAreObjects) return null;
+
+    const mergedProperties: Record<string, ZodValidationSchemaDefinition> = {};
+    let allConsts = '';
+    for (const partSchema of allOfArgs) {
+      if (partSchema.consts.length > 0) {
+        allConsts += partSchema.consts.join('\n');
+      }
+      const objectFunctionIndex = partSchema.functions.findIndex(
+        ([fnName]) => fnName === 'object' || fnName === 'strictObject',
+      );
+      if (objectFunctionIndex !== -1) {
+        const objectArgs = partSchema.functions[objectFunctionIndex][1];
+        if (isObject(objectArgs)) {
+          // Later members override earlier ones (derived over base).
+          Object.assign(
+            mergedProperties,
+            objectArgs as Record<string, ZodValidationSchemaDefinition>,
+          );
+        }
+      }
+    }
+
+    if (allConsts.length > 0) {
+      appendConstsChunk(allConsts);
+    }
+
+    const objectType = getObjectFunctionName(isZodV4, strict);
+    const mergedObjectString = `zod.${objectType}({
+${Object.entries(mergedProperties)
+  .map(([key, schema]) => {
+    const value = schema.functions
+      .map((prop) => parseProperty(prop, [...fieldPath, key]))
+      .join('');
+    appendConstsChunk(schema.consts.join('\n'));
+    return `  ${JSON.stringify(key)}: ${value.startsWith('.') ? 'zod' : ''}${value}`;
+  })
+  .join(',\n')}
+})`;
+
+    // Apply strict only once for Zod v3 (v4 uses strictObject above).
+    if (strict && !isZodV4) {
+      return `${mergedObjectString}.strict()`;
+    }
+    return mergedObjectString;
+  }
+
+  // Render a single discriminated-union branch as a `ZodObject`. `allOf`
+  // (inheritance) branches are merged into one object; every other branch is a
+  // plain object or a `$ref` identifier and renders as-is. Generation only
+  // marks the union as discriminated when all branches satisfy this, so the
+  // fallback here should not trigger in practice.
+  const renderDiscriminatedUnionMember = (
+    member: ZodValidationSchemaDefinition,
+    fieldPath: readonly string[],
+  ): string => {
+    if (member.functions[0]?.[0] === 'allOf') {
+      const merged = mergeAllOfObjectsClassic(
+        member.functions[0][1] as ZodValidationSchemaDefinition[],
+        fieldPath,
+      );
+      if (merged !== null) {
+        return merged;
+      }
+    }
+    appendConstsChunk(member.consts.join('\n'));
+    const value = member.functions
+      .map((prop) => parseProperty(prop, fieldPath))
+      .join('');
+    return `${value.startsWith('.') ? 'zod' : ''}${value}`;
+  };
+
   const parseProperty = (
     property: [string, unknown],
     fieldPath: readonly string[] = [],
@@ -1230,6 +2141,13 @@ export const parseZodValidationSchemaDefinition = (
       const refArgs = args as { name: string; sourceRef: string };
       usedRefs.add(refArgs.name);
       return `__REF_${refArgs.name}__`;
+    }
+
+    if (fn === 'enumObject') {
+      const enumObjectImplementation = args as string;
+      return isZodV4
+        ? `.enum(${enumObjectImplementation})`
+        : `.nativeEnum(${enumObjectImplementation} as const)`;
     }
 
     // `.meta({ id, description?, deprecated? })` — registry metadata for zod v4.
@@ -1259,70 +2177,13 @@ export const parseZodValidationSchemaDefinition = (
 
     if (fn === 'allOf') {
       const allOfArgs = args as ZodValidationSchemaDefinition[];
-      // Check if all parts are objects and we need to merge them for strict mode
-      const allAreObjects =
-        strict &&
-        allOfArgs.length > 0 &&
-        allOfArgs.every((partSchema) => {
-          if (partSchema.functions.length === 0) return false;
-          const firstFn = partSchema.functions[0][0];
-          // Check if first function is object or strictObject
-          // For Zod v3 with strict, it will be object followed by strict
-          return firstFn === 'object' || firstFn === 'strictObject';
-        });
-
-      if (allAreObjects) {
-        // Merge all object properties into a single object
-        const mergedProperties: Record<string, ZodValidationSchemaDefinition> =
-          {};
-        let allConsts = '';
-
-        for (const partSchema of allOfArgs) {
-          if (partSchema.consts.length > 0) {
-            allConsts += partSchema.consts.join('\n');
-          }
-
-          // Find the object function (might be first or second after strict)
-          const objectFunctionIndex = partSchema.functions.findIndex(
-            ([fnName]) => fnName === 'object' || fnName === 'strictObject',
-          );
-
-          if (objectFunctionIndex !== -1) {
-            const objectArgs = partSchema.functions[objectFunctionIndex][1];
-            if (isObject(objectArgs)) {
-              // Merge properties (later schemas override earlier ones)
-              Object.assign(
-                mergedProperties,
-                objectArgs as Record<string, ZodValidationSchemaDefinition>,
-              );
-            }
-          }
+      // In strict mode, merge object parts into a single object so the extra
+      // constraint applies once (rather than to each `.and()` term).
+      if (strict) {
+        const merged = mergeAllOfObjectsClassic(allOfArgs, fieldPath);
+        if (merged !== null) {
+          return merged;
         }
-
-        if (allConsts.length > 0) {
-          appendConstsChunk(allConsts);
-        }
-
-        // Generate merged object
-        const objectType = getObjectFunctionName(isZodV4, strict);
-        const mergedObjectString = `zod.${objectType}({
-${Object.entries(mergedProperties)
-  .map(([key, schema]) => {
-    const value = schema.functions
-      .map((prop) => parseProperty(prop, [...fieldPath, key]))
-      .join('');
-    appendConstsChunk(schema.consts.join('\n'));
-    return `  "${key}": ${value.startsWith('.') ? 'zod' : ''}${value}`;
-  })
-  .join(',\n')}
-})`;
-
-        // Apply strict only once for Zod v3 (v4 uses strictObject)
-        if (!isZodV4) {
-          return `${mergedObjectString}.strict()`;
-        }
-
-        return mergedObjectString;
       }
 
       // Fallback to original .and() approach for non-object or non-strict cases
@@ -1346,7 +2207,8 @@ ${Object.entries(mergedProperties)
 
       return acc;
     }
-    if (fn === 'oneOf' || fn === 'anyOf') {
+    const discriminator = decodeDiscriminatorSeparator(fn);
+    if (discriminator || fn === 'oneOf' || fn === 'anyOf') {
       const unionArgs = args as ZodValidationSchemaDefinition[];
       // Can't use zod.union() with a single item
       if (unionArgs.length === 1) {
@@ -1354,6 +2216,13 @@ ${Object.entries(mergedProperties)
         return unionArgs[0].functions
           .map((prop: [string, unknown]) => parseProperty(prop, fieldPath))
           .join('');
+      }
+
+      if (discriminator) {
+        const members = unionArgs.map((member) =>
+          renderDiscriminatedUnionMember(member, fieldPath),
+        );
+        return `.discriminatedUnion('${jsStringEscape(discriminator.property)}', [${members.join(',')}])`;
       }
 
       const union = unionArgs.map(
@@ -1413,11 +2282,12 @@ ${Object.entries(objectArgs)
     // `.default()` still applies. Already-arrays are left untouched (no-op for
     // JSON-body arrays).
     const coerceArrays =
-      Array.isArray(coerceTypes) && coerceTypes.includes('array');
+      Array.isArray(coerceTypes) &&
+      coerceTypes.includes('array' as ZodCoerceType);
     if (coerceArrays && schema.functions.some(([fn]) => fn === 'array')) {
-      return `  "${key}": zod.preprocess((value) => value === undefined || Array.isArray(value) ? value : [value], ${fieldZod})`;
+      return `  ${JSON.stringify(key)}: zod.preprocess((value) => value === undefined || Array.isArray(value) ? value : [value], ${fieldZod})`;
     }
-    return `  "${key}": ${fieldZod}`;
+    return `  ${JSON.stringify(key)}: ${fieldZod}`;
   })
   .join(',\n')}
 })`;
@@ -1488,6 +2358,16 @@ ${Object.entries(objectArgs)
       combinedArgs = formattedArgs;
     }
 
+    if (fn === 'int') {
+      const numberArgs = buildCombinedArgs('number', undefined, fieldPath);
+      if (shouldCoerce('number')) {
+        return `.coerce.number(${numberArgs}).int(${combinedArgs})`;
+      }
+      if (!isZodV4) {
+        return `.number(${numberArgs}).int(${combinedArgs})`;
+      }
+    }
+
     if (
       (fn !== 'date' && shouldCoerceType) ||
       (fn === 'date' && shouldCoerceType && context.output.override.useDates)
@@ -1495,10 +2375,31 @@ ${Object.entries(objectArgs)
       return `.coerce.${fn}(${combinedArgs})`;
     }
 
+    // `.exactOptional()` (zod v4 only) narrows an optional property to `{ x?: T }`
+    // for `exactOptionalPropertyTypes` consumers. Zod v3 has no such method, so
+    // the flag no-ops there and a plain `.optional()` is emitted.
+    if (exactOptional && isZodV4 && fn === 'optional') {
+      return '.exactOptional()';
+    }
+
     return `.${fn}(${combinedArgs})`;
   };
 
   appendConstsChunk(input.consts.join('\n'));
+
+  if (variant === 'mini') {
+    const rendered = renderMiniDefinition(input);
+    const value = preprocess
+      ? zodMiniCall(
+          'pipe',
+          `${zodMiniCall('transform', preprocess.name)}, ${rendered.expr}`,
+        )
+      : rendered.expr;
+    if (consts.includes(',export')) {
+      consts = consts.replaceAll(',export', '\nexport');
+    }
+    return { zod: value, consts, usedRefs };
+  }
 
   const schema = input.functions.map((prop) => parseProperty(prop)).join('');
   const value = preprocess
@@ -1663,26 +2564,38 @@ function buildScopedContext(
   refName: string | undefined,
   resolvedSchema: OpenApiSchemaObject,
 ): ContextSpec {
-  if (!refName) return childContext;
+  if (refName) {
+    const schemaName = extractSchemaNameFromRef(refName);
+    if (!schemaName) return childContext;
 
-  const schemaName = extractSchemaNameFromRef(refName);
-  if (!schemaName) return childContext;
+    const schemaRecord = resolvedSchema as Record<string, unknown>;
+    const hasDynamicAnchor = typeof schemaRecord.$dynamicAnchor === 'string';
+    const defs = schemaRecord.$defs as Record<string, unknown> | undefined;
+    const hasDefsAnchors =
+      defs &&
+      typeof defs === 'object' &&
+      Object.values(defs).some(
+        (d) => d && typeof d === 'object' && '$dynamicAnchor' in d,
+      );
 
-  const schemaRecord = resolvedSchema as Record<string, unknown>;
-  const hasDynamicAnchor = typeof schemaRecord.$dynamicAnchor === 'string';
-  const defs = schemaRecord.$defs as Record<string, unknown> | undefined;
-  const hasDefsAnchors =
-    defs &&
-    typeof defs === 'object' &&
-    Object.values(defs).some(
-      (d) => d && typeof d === 'object' && '$dynamicAnchor' in d,
-    );
+    if (!hasDynamicAnchor && !hasDefsAnchors) return childContext;
 
-  if (!hasDynamicAnchor && !hasDefsAnchors) return childContext;
+    return {
+      ...childContext,
+      dynamicScope: buildDynamicScope(schemaName, resolvedSchema, childContext),
+    };
+  }
+
+  // Anonymous inline subschema (reached via allOf/items/nested props without a
+  // $ref). Detect inline $dynamicAnchor / $defs anchors and merge them over the
+  // existing scope so the inline override shadows the parent anchor while
+  // non-overridden parent anchors remain reachable. See #3492.
+  const inlineScope = buildInlineDynamicScope(resolvedSchema);
+  if (Object.keys(inlineScope).length === 0) return childContext;
 
   return {
     ...childContext,
-    dynamicScope: buildDynamicScope(schemaName, resolvedSchema, childContext),
+    dynamicScope: { ...childContext.dynamicScope, ...inlineScope },
   };
 }
 
@@ -1702,6 +2615,15 @@ function dereferenceDynamicRef(
     schemaName,
   } = resolveDynamicRef(anchorName, context);
 
+  // Cycle key. Inline overrides resolve with `schemaName: undefined`, so every
+  // resolution of the same anchor collapses to `@?`. This is correct for a
+  // self-referential inline override. A false positive is possible only in the
+  // contrived shape where an inline override A (reached via `$dynamicRef`) itself
+  // contains a *distinct* nested inline override B of the same anchor with a
+  // `$dynamicRef` descendant — B's resolution inherits A's key from `parents`
+  // and returns `{}` instead of B. Siblings don't leak (each `dereference` uses
+  // an immutable parent context), only this nested-via-`$dynamicRef` shape.
+  // Acceptable given how exotic it is. See #3492.
   const dynamicRefPath = `$dynamicRef:${dynamicRef}@${schemaName ?? '?'}`;
   if (context.parents?.includes(dynamicRefPath)) {
     return {};
@@ -1807,6 +2729,15 @@ export const generateFormDataZodSchema = (
   );
 };
 
+/**
+ * Parse a request body or response into a zod validation schema definition.
+ *
+ * Selects the relevant content type — JSON (and `+json` vendor types),
+ * `multipart/form-data`, or `application/x-www-form-urlencoded`, plus
+ * `text/plain` for responses — and generates the matching schema, handling
+ * array roots. The url-encoded string-contract rationale lives where the flag
+ * is derived (see `isFormUrlEncoded` below).
+ */
 const parseBodyAndResponse = ({
   data,
   context,
@@ -1848,9 +2779,10 @@ const parseBodyAndResponse = ({
     | OpenApiResponseObject
     | OpenApiRequestBodyObject;
 
-  // Only handle JSON and form-data; other content types (e.g., application/octet-stream)
-  // Only handle JSON and form-data; other content types (e.g., application/octet-stream)
-  // are skipped - unclear if this is correct behavior for root-level binary/text bodies.
+  // Only handle JSON, form-data and form-urlencoded here; other content types
+  // (e.g., application/octet-stream) are skipped - unclear if this is correct
+  // behavior for root-level binary/text bodies. The one exception is text/plain
+  // responses, which are handled separately below (as a plain string schema).
   const contentEntries = Object.entries(resolvedRef.content ?? {});
 
   const jsonContent = contentEntries.find(
@@ -1866,11 +2798,25 @@ const parseBodyAndResponse = ({
   const formDataContent = contentEntries.find(
     isMediaType(String.raw`^multipart\/form-data$`),
   );
+  // form-urlencoded bodies are plain objects serialized via URLSearchParams, so
+  // they validate like JSON (no file fields) — emit a regular object schema.
+  const formUrlEncodedContent = contentEntries.find(
+    isMediaType(String.raw`^application\/x-www-form-urlencoded$`),
+  );
   const [contentType, mediaType] = jsonContent
     ? (['application/json', jsonContent[1]] as const)
     : formDataContent
       ? (['multipart/form-data', formDataContent[1]] as const)
-      : [undefined, undefined];
+      : formUrlEncodedContent
+        ? ([
+            'application/x-www-form-urlencoded',
+            formUrlEncodedContent[1],
+          ] as const)
+        : [undefined, undefined];
+
+  // url-encoded bodies serialize via URLSearchParams (strings only); the flag is
+  // threaded into the generator so binary fields stay `string` at any depth.
+  const isFormUrlEncoded = contentType === 'application/x-www-form-urlencoded';
 
   const schema = mediaType?.schema;
 
@@ -1933,6 +2879,7 @@ const parseBodyAndResponse = ({
         {
           required: true,
           useReusableSchemas,
+          urlEncoded: isFormUrlEncoded,
         },
       ),
       isArray: true,
@@ -1974,7 +2921,7 @@ const parseBodyAndResponse = ({
           name,
           strict,
           isZodV4,
-          { required: true, useReusableSchemas },
+          { required: true, useReusableSchemas, urlEncoded: isFormUrlEncoded },
         ),
     isArray: false,
   };
@@ -2069,6 +3016,8 @@ export const parseParameters = ({
     params: {},
   };
 
+  const constNameRegistry: Record<string, number> = {};
+
   const defintionsByParameters = data.reduce((acc, val) => {
     const { schema: parameter }: { schema: OpenApiParameterObject } =
       resolveRef(val, context);
@@ -2126,6 +3075,7 @@ export const parseParameters = ({
       {
         required: parameter.required,
         useReusableSchemas,
+        constNameRegistry,
       },
     );
 
@@ -2206,11 +3156,21 @@ export const parseParameters = ({
 };
 
 const generateZodRoute = async (
-  { operationId, operationName, verb, override }: GeneratorVerbOptions,
+  {
+    operationId,
+    operationName,
+    typeName,
+    verb,
+    override,
+  }: GeneratorVerbOptions,
   { pathRoute, context, output }: GeneratorOptions,
 ) => {
-  const isZodV4 =
-    !!context.output.packageJson && isZodVersionV4(context.output.packageJson);
+  const zodVariant = context.output.override.zod.variant;
+  const isZodV4 = resolveIsZodV4(
+    context.output.override.zod.version,
+    context.output.packageJson,
+  );
+  assertZodTarget({ variant: zodVariant, isZodV4 });
   const useReusableSchemas =
     context.output.override.zod.generateReusableSchemas;
   const spec = context.spec.paths?.[pathRoute];
@@ -2284,7 +3244,7 @@ const generateZodRoute = async (
       })
     : undefined;
 
-  const pascalOperationName = pascal(operationName);
+  const pascalTypeName = pascal(typeName);
   const makeParamsInjection = (
     location: ZodParamsInjection['location'],
     schemaSuffix: string,
@@ -2294,7 +3254,7 @@ const generateZodRoute = async (
           mutator: paramsMutator,
           operationId,
           location,
-          schemaName: `${pascalOperationName}${schemaSuffix}`,
+          schemaName: `${pascalTypeName}${schemaSuffix}`,
         }
       : undefined;
 
@@ -2306,6 +3266,8 @@ const generateZodRoute = async (
     isZodV4,
     preprocessParams,
     makeParamsInjection('param', 'Params'),
+    zodVariant,
+    override.zod.exactOptional,
   );
 
   const preprocessQueryParams = override.zod.preprocess?.query
@@ -2326,6 +3288,8 @@ const generateZodRoute = async (
     isZodV4,
     preprocessQueryParams,
     makeParamsInjection('query', 'QueryParams'),
+    zodVariant,
+    override.zod.exactOptional,
   );
 
   const preprocessHeader = override.zod.preprocess?.header
@@ -2346,6 +3310,8 @@ const generateZodRoute = async (
     isZodV4,
     preprocessHeader,
     makeParamsInjection('header', 'Header'),
+    zodVariant,
+    override.zod.exactOptional,
   );
 
   const preprocessBody = override.zod.preprocess?.body
@@ -2366,6 +3332,8 @@ const generateZodRoute = async (
     isZodV4,
     preprocessBody,
     makeParamsInjection('body', 'Body'),
+    zodVariant,
+    override.zod.exactOptional,
   );
 
   const preprocessResponse = override.zod.preprocess?.response
@@ -2390,6 +3358,8 @@ const generateZodRoute = async (
         'response',
         responses[index][0] ? `${responses[index][0]}Response` : 'Response',
       ),
+      zodVariant,
+      override.zod.exactOptional,
     ),
   );
 
@@ -2446,6 +3416,26 @@ const generateZodRoute = async (
         : `.brand<"${name}">()`
       : '';
 
+  const zodArrayWithBounds = (
+    itemName: string,
+    rules: { min?: number; max?: number } | undefined,
+  ) => {
+    const checks = [
+      ...(rules?.min ? [zodMiniCall('minLength', `${rules.min}`)] : []),
+      ...(rules?.max ? [zodMiniCall('maxLength', `${rules.max}`)] : []),
+    ];
+
+    if (zodVariant === 'mini') {
+      return `${zodMiniCall('array', itemName)}${checks
+        .map((check) => `.check(${check})`)
+        .join('')}`;
+    }
+
+    return `zod.array(${itemName})${rules?.min ? `.min(${rules.min})` : ''}${
+      rules?.max ? `.max(${rules.max})` : ''
+    }`;
+  };
+
   // With `generateReusableSchemas`, operations import component schemas by
   // their PascalCase name from a sibling schemas module. When an operation's
   // own pascalized wrapper name (e.g. `ListPetsResponse` from operationId
@@ -2485,14 +3475,14 @@ const generateZodRoute = async (
     return candidate;
   };
 
-  const paramsName = allocateExportName(`${pascalOperationName}Params`, false);
+  const paramsName = allocateExportName(`${pascalTypeName}Params`, false);
   const queryParamsName = allocateExportName(
-    `${pascalOperationName}QueryParams`,
+    `${pascalTypeName}QueryParams`,
     false,
   );
-  const headerName = allocateExportName(`${pascalOperationName}Header`, false);
+  const headerName = allocateExportName(`${pascalTypeName}Header`, false);
   const bodyName = allocateExportName(
-    `${pascalOperationName}Body`,
+    `${pascalTypeName}Body`,
     parsedBody.isArray,
   );
 
@@ -2521,17 +3511,13 @@ const generateZodRoute = async (
         ? [
             parsedBody.isArray
               ? `export const ${bodyName}Item = ${inputBody.zod}
-export const ${bodyName} = zod.array(${bodyName}Item)${
-                  parsedBody.rules?.min ? `.min(${parsedBody.rules.min})` : ''
-                }${
-                  parsedBody.rules?.max ? `.max(${parsedBody.rules.max})` : ''
-                }${brand(bodyName)}`
+export const ${bodyName} = ${zodArrayWithBounds(bodyName + 'Item', parsedBody.rules)}${brand(bodyName)}`
               : `export const ${bodyName} = ${inputBody.zod}${brand(bodyName)}`,
           ]
         : []),
       ...inputResponses.flatMap((inputResponse, index) => {
         const operationResponse = allocateExportName(
-          pascal(`${operationName}-${responses[index][0]}-response`),
+          pascal(`${typeName}-${responses[index][0]}-response`),
           parsedResponses[index].isArray,
         );
 
@@ -2557,7 +3543,13 @@ export const ${bodyName} = zod.array(${bodyName}Item)${
               specResponseKeys.has('2xx');
             isNoContent = !hasStandardSuccess;
           }
-          const noContentSchema = isNoContent ? 'zod.void()' : 'zod.unknown()';
+          const noContentSchema = isNoContent
+            ? zodVariant === 'mini'
+              ? zodMiniCall('void')
+              : 'zod.void()'
+            : zodVariant === 'mini'
+              ? zodMiniCall('unknown')
+              : 'zod.unknown()';
 
           return [
             `export const ${operationResponse} = ${noContentSchema}${brand(operationResponse)}`,
@@ -2568,15 +3560,7 @@ export const ${bodyName} = zod.array(${bodyName}Item)${
           ...(inputResponse.consts ? [inputResponse.consts] : []),
           parsedResponses[index].isArray
             ? `export const ${operationResponse}Item = ${inputResponse.zod}
-export const ${operationResponse} = zod.array(${operationResponse}Item)${
-                parsedResponses[index].rules?.min
-                  ? `.min(${parsedResponses[index].rules.min})`
-                  : ''
-              }${
-                parsedResponses[index].rules?.max
-                  ? `.max(${parsedResponses[index].rules.max})`
-                  : ''
-              }${brand(operationResponse)}`
+export const ${operationResponse} = ${zodArrayWithBounds(`${operationResponse}Item`, parsedResponses[index].rules)}${brand(operationResponse)}`
             : `export const ${operationResponse} = ${inputResponse.zod}${brand(operationResponse)}`,
         ];
       }),
@@ -2630,6 +3614,12 @@ const zodClientBuilder: ClientGeneratorsBuilder = {
 
 export const builder = () => () => zodClientBuilder;
 
-export { isZodVersionV4 } from './compatible-v4';
+export {
+  assertZodTarget,
+  getZodImportSource,
+  getZodTypeName,
+  isZodVersionV4,
+  resolveIsZodV4,
+} from './compatible-v4';
 
 export default builder;

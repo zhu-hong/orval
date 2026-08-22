@@ -1,10 +1,14 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { OpenApiDocument } from '@orval/core';
+import {
+  type OpenApiDocument,
+  OutputMockType,
+  type OutputOptions,
+} from '@orval/core';
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 
 import { generateSpec } from './generate-spec';
 import { normalizeOptions } from './utils';
@@ -46,9 +50,121 @@ const PETSTORE_SPEC: OpenApiDocument = {
   },
 };
 
+const QUERY_METHOD_SPEC = {
+  openapi: '3.2.0',
+  info: { title: 'Search API', version: '1.0.0' },
+  paths: {
+    '/search': {
+      query: {
+        operationId: 'searchPets',
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  term: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Search results',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'array',
+                  items: { $ref: '#/components/schemas/Pet' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  components: PETSTORE_SPEC.components,
+} as unknown as OpenApiDocument;
+
 const createTempWorkspace = async () => {
   return mkdtemp(path.join(os.tmpdir(), 'orval-gen-spec-'));
 };
+
+describe('generateSpec - unchanged formatted output', () => {
+  it('keeps mtimes when prettier produces the same final files', async () => {
+    const workspace = await createTempWorkspace();
+    const targetFile = path.join(workspace, 'endpoints.ts');
+    const schemasDir = path.join(workspace, 'model');
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: PETSTORE_SPEC },
+          output: {
+            target: './endpoints.ts',
+            schemas: './model',
+            client: 'zod',
+            formatter: 'prettier',
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+      const generatedFiles = [
+        targetFile,
+        ...(await fs.readdir(schemasDir)).map((file) =>
+          path.join(schemasDir, file),
+        ),
+      ];
+      const past = new Date('2020-01-01T00:00:00.000Z');
+      await Promise.all(
+        generatedFiles.map((file) => fs.utimes(file, past, past)),
+      );
+
+      await generateSpec(workspace, options);
+
+      const mtimes = await Promise.all(
+        generatedFiles.map(async (file) => (await fs.stat(file)).mtimeMs),
+      );
+      expect(mtimes).toEqual(generatedFiles.map(() => past.getTime()));
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('generateSpec - HTTP QUERY method', () => {
+  it('generates clients for QUERY operations with request bodies', async () => {
+    const workspace = await createTempWorkspace();
+    const targetFile = path.join(workspace, 'endpoints.ts');
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: QUERY_METHOD_SPEC },
+          output: {
+            target: './endpoints.ts',
+            client: 'fetch',
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const content = await fs.readFile(targetFile, 'utf8');
+
+      expect(content).toContain('export const searchPets =');
+      expect(content).toContain("method: 'QUERY'");
+      expect(content).toContain('body: JSON.stringify(searchPetsBody)');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('generateSpec - schemas: false', () => {
   it('does not generate separate schema files when schemas is false', async () => {
@@ -1089,6 +1205,1352 @@ describe('generateSpec - schemas.importPath', () => {
 
       const content = await fs.readFile(targetFile, 'utf8');
       expect(content).toMatch(/from\s+'@acme\/models'/);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('generateSpec - schemas.splitByTags validation', () => {
+  const SPEC_WITH_TAGS: OpenApiDocument = {
+    openapi: '3.1.0',
+    info: { title: 'Tagged', version: '1.0.0' },
+    paths: {
+      '/pets': {
+        get: {
+          operationId: 'listPets',
+          tags: ['pets'],
+          responses: {
+            '200': {
+              description: 'List',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/Pet' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    components: {
+      schemas: {
+        Pet: {
+          type: 'object',
+          properties: { id: { type: 'integer' }, name: { type: 'string' } },
+          required: ['id', 'name'],
+        },
+      },
+    },
+  };
+
+  it('works with split mode (not just tags-split)', async () => {
+    const workspace = await createTempWorkspace();
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: SPEC_WITH_TAGS },
+          output: {
+            target: './endpoints.ts',
+            mode: 'split',
+            schemas: { path: './model', type: 'typescript', splitByTags: true },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const modelDir = path.join(workspace, 'model');
+      expect(await fs.pathExists(modelDir)).toBe(true);
+
+      const entries = await fs.readdir(modelDir);
+      const subdirs: string[] = [];
+      for (const entry of entries) {
+        const stat = await fs.stat(path.join(modelDir, entry));
+        if (stat.isDirectory()) subdirs.push(entry);
+      }
+      expect(subdirs).toContain('pets');
+      expect(await fs.pathExists(path.join(modelDir, 'pets', 'pet.ts'))).toBe(
+        true,
+      );
+      expect(await fs.pathExists(path.join(modelDir, 'index.ts'))).toBe(true);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects splitByTags with operationSchemas', async () => {
+    const workspace = await createTempWorkspace();
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: SPEC_WITH_TAGS },
+          output: {
+            target: './endpoints.ts',
+            mode: 'tags-split',
+            schemas: { path: './model', type: 'typescript', splitByTags: true },
+            operationSchemas: './ops',
+          },
+        },
+        workspace,
+      );
+
+      await expect(generateSpec(workspace, options)).rejects.toThrow(
+        'schemas.splitByTags cannot be used with output.operationSchemas',
+      );
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('generates tag-split schema directories with splitByTags', async () => {
+    const workspace = await createTempWorkspace();
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: SPEC_WITH_TAGS },
+          output: {
+            target: './endpoints.ts',
+            mode: 'tags-split',
+            schemas: { path: './model', type: 'typescript', splitByTags: true },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const modelDir = path.join(workspace, 'model');
+      expect(await fs.pathExists(modelDir)).toBe(true);
+
+      const entries = await fs.readdir(modelDir);
+      const subdirs: string[] = [];
+      for (const entry of entries) {
+        const stat = await fs.stat(path.join(modelDir, entry));
+        if (stat.isDirectory()) subdirs.push(entry);
+      }
+      expect(subdirs).toContain('pets');
+      expect(await fs.pathExists(path.join(modelDir, 'pets', 'pet.ts'))).toBe(
+        true,
+      );
+      expect(await fs.pathExists(path.join(modelDir, 'index.ts'))).toBe(true);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('generates zod schemas with splitByTags', async () => {
+    const workspace = await createTempWorkspace();
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: SPEC_WITH_TAGS },
+          output: {
+            target: './endpoints.ts',
+            mode: 'tags-split',
+            schemas: { path: './model', type: 'zod', splitByTags: true },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const modelDir = path.join(workspace, 'model');
+      expect(await fs.pathExists(modelDir)).toBe(true);
+
+      const entries = await fs.readdir(modelDir);
+      const subdirs: string[] = [];
+      for (const entry of entries) {
+        const stat = await fs.stat(path.join(modelDir, entry));
+        if (stat.isDirectory()) subdirs.push(entry);
+      }
+      expect(subdirs).toContain('pets');
+
+      expect(
+        await fs.pathExists(path.join(modelDir, 'pets', 'pet.zod.ts')),
+      ).toBe(true);
+      expect(await fs.pathExists(path.join(modelDir, 'index.ts'))).toBe(true);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('generateSpec - normalizeOptions pathless schemas object', () => {
+  // Regression: a `schemas` object with no `path` (e.g. `schemas: { type: 'zod' }`)
+  // normalized to an undefined path, which `clean: true` then resolved to the
+  // current working directory and wiped.
+  it('rejects a schemas object without a path', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      await expect(
+        normalizeOptions(
+          {
+            input: { target: PETSTORE_SPEC },
+            output: {
+              target: './src/generated/api.ts',
+              schemas: { type: 'zod' } as never,
+            },
+          },
+          workspace,
+        ),
+      ).rejects.toThrow(/schemas\.path` is required/);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('generateSpec - returnTypesToWrite isolation across tags (#3685)', () => {
+  it("each tag emits its own *Result type, not the other tag's", async () => {
+    const SPEC: OpenApiDocument = {
+      openapi: '3.1.0',
+      info: { title: 'Collision Demo', version: '1.0.0' },
+      paths: {
+        '/api/catalog/products': {
+          get: {
+            tags: ['catalog'],
+            operationId: 'getCatalogProducts',
+            responses: {
+              '200': {
+                description: 'ok',
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/Product' },
+                  },
+                },
+              },
+            },
+          },
+        },
+        '/api/inventory/products': {
+          get: {
+            tags: ['inventory'],
+            operationId: 'getInventoryProducts',
+            responses: {
+              '200': {
+                description: 'ok',
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/Stock' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      components: {
+        schemas: {
+          Product: {
+            type: 'object',
+            properties: { id: { type: 'string' } },
+          },
+          Stock: {
+            type: 'object',
+            properties: { count: { type: 'integer' } },
+          },
+        },
+      },
+    };
+
+    const workspace = await createTempWorkspace();
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: SPEC },
+          output: {
+            target: './endpoints.ts',
+            mode: 'tags-split',
+            schemas: './model',
+            client: 'axios',
+            override: {
+              operationName: () => 'getProducts',
+            },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const catalogContent = await fs.readFile(
+        path.join(workspace, 'catalog', 'catalog.ts'),
+        'utf-8',
+      );
+      const inventoryContent = await fs.readFile(
+        path.join(workspace, 'inventory', 'inventory.ts'),
+        'utf-8',
+      );
+
+      // Both tags share the same operationName (getProducts) via override,
+      // but each must emit its own *Result type with the correct schema.
+      // Before #3685, the module-level returnTypesToWrite map would
+      // overwrite catalog's entry with inventory's.
+      expect(catalogContent).toContain('AxiosResponse<Product>');
+      expect(catalogContent).not.toContain('AxiosResponse<Stock>');
+
+      expect(inventoryContent).toContain('AxiosResponse<Stock>');
+      expect(inventoryContent).not.toContain('AxiosResponse<Product>');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('generateSpec - operationName tuple [methodName, typeName]', () => {
+  const GATEWAY_SPEC: OpenApiDocument = {
+    openapi: '3.1.0',
+    info: { title: 'Gateway', version: '1.0.0' },
+    paths: {
+      '/api/catalog/items': {
+        get: {
+          tags: ['catalog'],
+          responses: {
+            '200': {
+              description: 'ok',
+              content: {
+                'application/json': {
+                  schema: { type: 'array', items: { type: 'string' } },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/api/inventory/products': {
+        get: {
+          tags: ['inventory'],
+          responses: {
+            '200': {
+              description: 'ok',
+              content: {
+                'application/json': {
+                  schema: { type: 'array', items: { type: 'string' } },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+  it('decouples method names from type names when operationName returns a tuple', async () => {
+    const workspace = await createTempWorkspace();
+    const targetFile = path.join(workspace, 'endpoints.ts');
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: GATEWAY_SPEC },
+          output: {
+            target: './endpoints.ts',
+            client: 'axios',
+            override: {
+              operationName: (_operation, route, verb) => {
+                const segments = route.split('/').filter(Boolean);
+                return [
+                  `${verb}${segments.slice(2).map(cap).join('')}`,
+                  `${verb}${segments.slice(1).map(cap).join('')}`,
+                ];
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const content = await fs.readFile(targetFile, 'utf-8');
+
+      // Method name: bare (no service prefix)
+      expect(content).toContain('getItems');
+      expect(content).toContain('getProducts');
+      // Type name: includes the service segment
+      expect(content).toContain('GetCatalogItemsResult');
+      expect(content).toContain('GetInventoryProductsResult');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('backward compatible when operationName returns a string', async () => {
+    const workspace = await createTempWorkspace();
+    const targetFile = path.join(workspace, 'endpoints.ts');
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: GATEWAY_SPEC },
+          output: {
+            target: './endpoints.ts',
+            client: 'axios',
+            override: {
+              operationName: (_operation, route, verb) => {
+                const segments = route.split('/').filter(Boolean);
+                return `${verb}${segments.map(cap).join('')}`;
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const content = await fs.readFile(targetFile, 'utf-8');
+
+      expect(content).toContain('getApiCatalogItems');
+      expect(content).toContain('GetApiCatalogItemsResult');
+      expect(content).toContain('getApiInventoryProducts');
+      expect(content).toContain('GetApiInventoryProductsResult');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves underscores and $ in overridden operationName (#3775)', async () => {
+    const workspace = await createTempWorkspace();
+    const targetFile = path.join(workspace, 'endpoints.ts');
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: GATEWAY_SPEC },
+          output: {
+            target: './endpoints.ts',
+            client: 'axios',
+            override: {
+              operationName: (_operation, route, _verb) => {
+                const segments = route.split('/').filter(Boolean);
+                return `$${segments.join('_')}`;
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const content = await fs.readFile(targetFile, 'utf-8');
+
+      expect(content).toContain('$api_catalog_items');
+      expect(content).toContain('$api_inventory_products');
+      // Type names are pascal-cased by the getters (pre-existing behavior),
+      // only the function/hook names are preserved verbatim per #2040.
+      expect(content).toContain('ApiCatalogItemsResult');
+      expect(content).toContain('ApiInventoryProductsResult');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves underscores and $ in overridden operationName tuple form (#3775)', async () => {
+    const workspace = await createTempWorkspace();
+    const targetFile = path.join(workspace, 'endpoints.ts');
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: GATEWAY_SPEC },
+          output: {
+            target: './endpoints.ts',
+            client: 'axios',
+            override: {
+              operationName: (_operation, route, _verb) => {
+                const segments = route.split('/').filter(Boolean);
+                // methodName: short, typeName: long; both carry $ and _.
+                return [`$${segments.at(-1)}`, `$${segments.join('_')}`];
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const content = await fs.readFile(targetFile, 'utf-8');
+
+      // Method name preserved verbatim, including $ and _.
+      expect(content).toContain('$items');
+      expect(content).toContain('$products');
+      // Type name (pascal-cased by getters) carries the longer typeName base.
+      expect(content).toContain('ApiCatalogItemsResult');
+      expect(content).toContain('ApiInventoryProductsResult');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('produces globally unique type names across tags in tags-split mode', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: GATEWAY_SPEC },
+          output: {
+            target: './endpoints.ts',
+            mode: 'tags-split',
+            schemas: { path: './model' },
+            client: 'axios',
+            tagsSplitDeduplication: true,
+            override: {
+              operationName: (_operation, route, verb) => {
+                const segments = route.split('/').filter(Boolean);
+                return [
+                  `${verb}${segments.slice(2).map(cap).join('')}`,
+                  `${verb}${segments.slice(1).map(cap).join('')}`,
+                ];
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const catalogFile = path.join(workspace, 'catalog', 'catalog.ts');
+      const inventoryFile = path.join(workspace, 'inventory', 'inventory.ts');
+
+      expect(await fs.pathExists(catalogFile)).toBe(true);
+      expect(await fs.pathExists(inventoryFile)).toBe(true);
+
+      const catalogContent = await fs.readFile(catalogFile, 'utf-8');
+      const inventoryContent = await fs.readFile(inventoryFile, 'utf-8');
+
+      // Both have the same bare method name (safe — scoped per tag file)
+      expect(catalogContent).toContain('getItems');
+      expect(inventoryContent).toContain('getProducts');
+      expect(catalogContent).not.toContain('getProducts');
+      expect(inventoryContent).not.toContain('getItems');
+
+      // Type names are service-prefixed (globally unique — no barrel collision)
+      expect(catalogContent).toContain('GetCatalogItemsResult');
+      expect(inventoryContent).toContain('GetInventoryProductsResult');
+      expect(catalogContent).not.toContain('GetInventoryProductsResult');
+      expect(inventoryContent).not.toContain('GetCatalogItemsResult');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('decouples swr hook names from error type names', async () => {
+    const workspace = await createTempWorkspace();
+    const targetFile = path.join(workspace, 'endpoints.ts');
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: GATEWAY_SPEC },
+          output: {
+            target: './endpoints.ts',
+            client: 'swr',
+            override: {
+              swr: { useInfinite: false, generateErrorTypes: true },
+              operationName: (_operation, route, verb) => {
+                const segments = route.split('/').filter(Boolean);
+                return [
+                  `${verb}${segments.slice(2).map(cap).join('')}`,
+                  `${verb}${segments.slice(1).map(cap).join('')}`,
+                ];
+              },
+            },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const content = await fs.readFile(targetFile, 'utf-8');
+
+      // Hook name uses bare method name
+      expect(content).toContain('useGetItems');
+      expect(content).toContain('useGetProducts');
+      // Error type uses service-prefixed type name
+      expect(content).toContain('GetCatalogItemsQueryError');
+      expect(content).toContain('GetInventoryProductsQueryError');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+const ACTIVITY_SPEC: OpenApiDocument = {
+  openapi: '3.1.0',
+  info: { title: 'Activity', version: '1.0.0' },
+  paths: {
+    '/activities': {
+      get: {
+        operationId: 'getActivities',
+        responses: {
+          '200': {
+            description: 'ok',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Activity' },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  components: {
+    schemas: {
+      Activity: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+      },
+      ActivityDto: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+      },
+    },
+  },
+};
+
+const MASTER_SPEC: OpenApiDocument = {
+  openapi: '3.1.0',
+  info: { title: 'Master', version: '1.0.0' },
+  paths: {
+    '/masters': {
+      get: {
+        operationId: 'getMasters',
+        responses: {
+          '200': {
+            description: 'ok',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Master' },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  components: {
+    schemas: {
+      Master: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+      },
+      MasterDto: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+      },
+    },
+  },
+};
+
+describe('generateSpec - workspace barrel idempotency (#3756)', () => {
+  // Regression for #3756: the shared workspace barrel (`<workspace>/index.ts`)
+  // is appended to once per project. The dedup used a single-quote literal
+  // substring check, so an `afterAllFilesWrite` formatter flipping quotes
+  // (single -> double) caused every export to be re-appended on each run.
+  it('does not accumulate duplicate exports when a formatter changes quote style', async () => {
+    const workspace = await createTempWorkspace();
+    const barrel = path.join(workspace, 'gen', 'index.ts');
+
+    const countExports = async () => {
+      const content = await fs.readFile(barrel, 'utf8');
+      return (content.match(/export \*/g) ?? []).length;
+    };
+
+    try {
+      const baseOptions = await normalizeOptions(
+        {
+          input: { target: ACTIVITY_SPEC },
+          output: {
+            workspace: './gen',
+            target: './gen/api/base/endpoints.ts',
+            schemas: './gen/api/base/model',
+            client: 'axios',
+          },
+        },
+        workspace,
+      );
+      const masterOptions = await normalizeOptions(
+        {
+          input: { target: MASTER_SPEC },
+          output: {
+            workspace: './gen',
+            target: './gen/api/master/endpoints.ts',
+            schemas: './gen/api/master/model',
+            client: 'axios',
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, baseOptions, 'base');
+      await generateSpec(workspace, masterOptions, 'master');
+      const afterCycle1 = await countExports();
+      expect(afterCycle1).toBeGreaterThan(0);
+
+      // Simulate prettier flipping single -> double quotes between runs.
+      const flipped = (await fs.readFile(barrel, 'utf8')).replace(
+        /export \* from '([^']+)';/g,
+        'export * from "$1";',
+      );
+      await fs.writeFile(barrel, flipped);
+
+      await generateSpec(workspace, baseOptions, 'base');
+      await generateSpec(workspace, masterOptions, 'master');
+      const afterCycle2 = await countExports();
+
+      expect(afterCycle2).toBe(afterCycle1);
+
+      const finalContent = await fs.readFile(barrel, 'utf8');
+      const specifiers = [
+        ...finalContent.matchAll(/export \* from ['"]([^'"]+)['"]/g),
+      ].map((m) => m[1]);
+      expect(new Set(specifiers).size).toBe(specifiers.length);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('removes stale exports whose generated targets no longer exist', async () => {
+    const workspace = await createTempWorkspace();
+    const barrel = path.join(workspace, 'gen', 'index.ts');
+    const baseDir = path.join(path.dirname(barrel), 'gen', 'api', 'base');
+    const masterDir = path.join(path.dirname(barrel), 'gen', 'api', 'master');
+
+    try {
+      const baseOptions = await normalizeOptions(
+        {
+          input: { target: ACTIVITY_SPEC },
+          output: {
+            workspace: './gen',
+            target: './gen/api/base/endpoints.ts',
+            schemas: './gen/api/base/model',
+            client: 'axios',
+          },
+        },
+        workspace,
+      );
+      const masterOptions = await normalizeOptions(
+        {
+          input: { target: MASTER_SPEC },
+          output: {
+            workspace: './gen',
+            target: './gen/api/master/endpoints.ts',
+            schemas: './gen/api/master/model',
+            client: 'axios',
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, baseOptions, 'base');
+      await generateSpec(workspace, masterOptions, 'master');
+
+      const beforeRemoval = await fs.readFile(barrel, 'utf8');
+      expect(beforeRemoval).toContain('./gen/api/base/endpoints');
+      expect(beforeRemoval).toContain('./gen/api/master/endpoints');
+
+      await fs.remove(masterDir);
+      await generateSpec(workspace, baseOptions, 'base');
+
+      const afterRemoval = await fs.readFile(barrel, 'utf8');
+      expect(await fs.pathExists(baseDir)).toBe(true);
+      expect(await fs.pathExists(masterDir)).toBe(false);
+      expect(afterRemoval).toContain('./gen/api/base/endpoints');
+      expect(afterRemoval).not.toContain('./gen/api/master/endpoints');
+      expect(afterRemoval).not.toContain('./gen/api/master/model');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('generateSpec - faker schemas with tags-split MSW (#3747)', () => {
+  it('emits valid enum factories without colliding with tag mock aggregates', async () => {
+    const workspace = await createTempWorkspace();
+    const schemasDir = path.join(workspace, 'types');
+    const mswFile = path.join(workspace, 'sdk', 'pet', 'pet.msw.ts');
+
+    const spec: OpenApiDocument = {
+      openapi: '3.1.0',
+      info: { title: 'Faker MSW collision', version: '1.0.0' },
+      paths: {
+        '/pets': {
+          get: {
+            operationId: 'listPets',
+            tags: ['Pet'],
+            responses: {
+              '200': {
+                description: 'A list of pets',
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'array',
+                      items: { $ref: '#/components/schemas/Pet' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      components: {
+        schemas: {
+          PetStatus: {
+            type: 'string',
+            enum: ['available', 'pending', 'sold'],
+          },
+          Pet: {
+            type: 'object',
+            required: ['id', 'status'],
+            properties: {
+              id: { type: 'integer' },
+              status: { $ref: '#/components/schemas/PetStatus' },
+            },
+          },
+        },
+      },
+    };
+
+    try {
+      const options = await normalizeOptions(
+        {
+          input: { target: spec },
+          output: {
+            target: './sdk/index.ts',
+            schemas: './types',
+            mode: 'tags-split',
+            client: 'react-query',
+            httpClient: 'axios',
+            mock: {
+              indexMockFiles: true,
+              generators: [
+                { type: 'msw' },
+                {
+                  type: 'faker',
+                  operationResponses: false,
+                  schemas: true,
+                },
+              ],
+            },
+            override: { enumGenerationType: 'enum' },
+          },
+        },
+        workspace,
+      );
+
+      await generateSpec(workspace, options);
+
+      const fakerSchemas = await fs.readFile(
+        path.join(schemasDir, 'index.faker.ts'),
+        'utf8',
+      );
+      expect(fakerSchemas).toContain(
+        "faker.helpers.arrayElement(['available','pending','sold'] as PetStatus[])",
+      );
+      expect(fakerSchemas).not.toContain("PetStatus['PetStatus']");
+
+      const mswContent = await fs.readFile(mswFile, 'utf8');
+      expect(mswContent).toContain('getPetMock as getPetMockSchemaFactory');
+      expect(mswContent).toContain('getPetMockSchemaFactory()');
+      expect(mswContent).toContain('export const getPetMock = () => [');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+/** Every file below `dir`, as workspace-relative POSIX paths. */
+const listFilesRecursively = async (dir: string): Promise<string[]> => {
+  const entries = await readdir(dir, { recursive: true, withFileTypes: true });
+
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) =>
+      path
+        .relative(dir, path.join(entry.parentPath, entry.name))
+        .split(path.sep)
+        .join('/'),
+    )
+    .toSorted();
+};
+
+/**
+ * Generates once into `workspace`. The output options that the clean tests
+ * share are applied first, then `output` replaces the parts under test.
+ */
+const generateWithOutput = async (
+  workspace: string,
+  output: Partial<OutputOptions> = {},
+) => {
+  const options = await normalizeOptions(
+    {
+      input: { target: PETSTORE_SPEC },
+      output: {
+        target: './src/client/api.ts',
+        mode: 'tags-split',
+        client: 'fetch',
+        clean: true,
+        ...output,
+      },
+    },
+    workspace,
+  );
+
+  await generateSpec(workspace, options);
+
+  return options;
+};
+
+describe('generateSpec - clean prunes configured mock directories', () => {
+  /** Mock directories that sit outside `target` and `schemas`. */
+  const separateMockDirectories: Partial<OutputOptions> = {
+    schemas: './src/models',
+    mock: {
+      indexMockFiles: true,
+      generators: [
+        { type: 'msw', path: './src/mocks/msw' },
+        { type: 'faker', path: './src/mocks/faker' },
+      ],
+    },
+  };
+
+  /** A single shared mock directory, as `mock.path` alone configures it. */
+  const sharedMockDirectory: Partial<OutputOptions> = {
+    mock: { path: './src/mocks', generators: [{ type: 'msw' }] },
+  };
+
+  it('removes stale mock files from generator-specific mock paths', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      await generateWithOutput(workspace, separateMockDirectories);
+
+      // Files left over from a previous run, e.g. a tag removed from the spec.
+      const staleMsw = path.join(workspace, 'src/mocks/msw/stale.msw.ts');
+      const staleFaker = path.join(workspace, 'src/mocks/faker/stale.faker.ts');
+      await fs.outputFile(staleMsw, '// stale');
+      await fs.outputFile(staleFaker, '// stale');
+
+      await generateWithOutput(workspace, separateMockDirectories);
+
+      expect(await fs.pathExists(staleMsw)).toBe(false);
+      expect(await fs.pathExists(staleFaker)).toBe(false);
+      // The regenerated mocks are still there.
+      expect(
+        await fs.pathExists(path.join(workspace, 'src/mocks/msw/index.msw.ts')),
+      ).toBe(true);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('removes stale mock files from a shared mock path', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      await generateWithOutput(workspace, sharedMockDirectory);
+
+      const stale = path.join(workspace, 'src/mocks/stale.msw.ts');
+      await fs.outputFile(stale, '// stale');
+
+      await generateWithOutput(workspace, sharedMockDirectory);
+
+      expect(await fs.pathExists(stale)).toBe(false);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('removes mock files written under a previous fileExtension', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      await generateWithOutput(workspace, sharedMockDirectory);
+
+      // A run before `fileExtension` changed from `.ts` to `.js` wrote these.
+      const staleTs = path.join(workspace, 'src/mocks/pets.msw.ts');
+      await fs.outputFile(staleTs, '// stale');
+
+      await generateWithOutput(workspace, {
+        ...sharedMockDirectory,
+        fileExtension: '.js',
+      });
+
+      expect(await fs.pathExists(staleTs)).toBe(false);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('removes mock files of a type no longer configured', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      await generateWithOutput(workspace, {
+        mock: {
+          path: './src/mocks',
+          generators: [{ type: 'msw' }, { type: 'faker' }],
+        },
+      });
+      const fakerFiles = (
+        await listFilesRecursively(path.join(workspace, 'src/mocks'))
+      ).filter((file) => file.endsWith('.faker.ts'));
+      expect(fakerFiles.length).toBeGreaterThan(0);
+
+      // Dropping the faker generator orphans everything it wrote. Deriving the
+      // patterns from the configured generators alone would strand these.
+      await generateWithOutput(workspace, sharedMockDirectory);
+
+      const remaining = await listFilesRecursively(
+        path.join(workspace, 'src/mocks'),
+      );
+      expect(remaining.filter((file) => file.endsWith('.faker.ts'))).toEqual(
+        [],
+      );
+      expect(
+        remaining.filter((file) => file.endsWith('.msw.ts')).length,
+      ).toBeGreaterThan(0);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps hand-written files inside a mock directory', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      await generateWithOutput(workspace, separateMockDirectories);
+
+      // A configured mock directory is not Orval's to empty: the documented
+      // example points it inside the application source tree, next to
+      // hand-written MSW wiring.
+      const handWritten = [
+        path.join(workspace, 'src/mocks/msw/browser.ts'),
+        path.join(workspace, 'src/mocks/msw/server.ts'),
+        path.join(workspace, 'src/mocks/faker/fixtures/pets.json'),
+      ];
+      for (const file of handWritten) {
+        await fs.outputFile(file, '// keep');
+      }
+
+      await generateWithOutput(workspace, separateMockDirectories);
+
+      for (const file of handWritten) {
+        expect(await fs.pathExists(file)).toBe(true);
+      }
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('does not apply extra clean patterns to a mock directory', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      // `**/*` does not match dotfiles, so `**/.*` genuinely widens the
+      // deletion set. It must reach the owned directories and stop at the mock
+      // directories, or a configuration could delete hand-written files Orval
+      // never wrote.
+      const widened = { ...separateMockDirectories, clean: ['**/.*'] };
+      await generateWithOutput(workspace, widened);
+
+      const inMockDir = path.join(workspace, 'src/mocks/msw/.eslintrc.json');
+      const inTargetDir = path.join(workspace, 'src/client/.eslintrc.json');
+      await fs.outputFile(inMockDir, '{}');
+      await fs.outputFile(inTargetDir, '{}');
+
+      await generateWithOutput(workspace, widened);
+
+      expect(await fs.pathExists(inMockDir)).toBe(true);
+      expect(await fs.pathExists(inTargetDir)).toBe(false);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  // Guards the clean patterns against the writers: they are derived from
+  // `OutputMockType`, so anything a writer starts emitting into a configured
+  // mock directory under a different name would be silently left behind.
+  it.each(['single', 'split', 'tags', 'tags-split'] as const)(
+    'writes only files the clean patterns match in %s mode',
+    async (mode) => {
+      const workspace = await createTempWorkspace();
+
+      try {
+        const options = await generateWithOutput(workspace, {
+          schemas: './src/models',
+          mode,
+          clean: false,
+          mock: {
+            indexMockFiles: true,
+            path: './src/mocks',
+            generators: [{ type: 'msw' }, { type: 'faker' }],
+          },
+        });
+
+        const emitted = await listFilesRecursively(
+          path.join(workspace, 'src/mocks'),
+        );
+        const suffixes = Object.values(OutputMockType).map(
+          (type) => `.${type}${options.output.fileExtension}`,
+        );
+
+        expect(emitted.length).toBeGreaterThan(0);
+        expect(
+          emitted.filter(
+            (file) => !suffixes.some((suffix) => file.endsWith(suffix)),
+          ),
+        ).toEqual([]);
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+describe('generateSpec - clean prunes mock directories nested in owned ones', () => {
+  /** The layout the `mock.path` documentation recommends. */
+  const nestedInTarget: Partial<OutputOptions> = {
+    target: './src/api/petstore.ts',
+    mock: { path: './src/api/mocks', generators: [{ type: 'msw' }] },
+  };
+
+  it('keeps hand-written files in a mock directory below target', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      await generateWithOutput(workspace, nestedInTarget);
+
+      const handWritten = [
+        path.join(workspace, 'src/api/mocks/browser.ts'),
+        path.join(workspace, 'src/api/mocks/server.ts'),
+        path.join(workspace, 'src/api/mocks/fixtures/pets.json'),
+      ];
+      for (const file of handWritten) {
+        await fs.outputFile(file, '// keep');
+      }
+      const stale = path.join(workspace, 'src/api/mocks/removed.msw.ts');
+      await fs.outputFile(stale, '// stale');
+
+      await generateWithOutput(workspace, nestedInTarget);
+
+      for (const file of handWritten) {
+        expect(await fs.pathExists(file)).toBe(true);
+      }
+      // The directory is still pruned of Orval's own output.
+      expect(await fs.pathExists(stale)).toBe(false);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps hand-written files in a mock directory below schemas', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const nestedInSchemas: Partial<OutputOptions> = {
+        schemas: './src/models',
+        mock: { path: './src/models/mocks', generators: [{ type: 'faker' }] },
+      };
+      await generateWithOutput(workspace, nestedInSchemas);
+
+      const handWritten = path.join(workspace, 'src/models/mocks/fixtures.ts');
+      await fs.outputFile(handWritten, '// keep');
+      const stale = path.join(workspace, 'src/models/mocks/removed.faker.ts');
+      await fs.outputFile(stale, '// stale');
+
+      await generateWithOutput(workspace, nestedInSchemas);
+
+      expect(await fs.pathExists(handWritten)).toBe(true);
+      expect(await fs.pathExists(stale)).toBe(false);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('does not let extra clean patterns reach a nested mock directory', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const widened = { ...nestedInTarget, clean: ['**/.*'] };
+      await generateWithOutput(workspace, widened);
+
+      const inMockDir = path.join(workspace, 'src/api/mocks/.eslintrc.json');
+      const inTargetDir = path.join(workspace, 'src/api/.eslintrc.json');
+      await fs.outputFile(inMockDir, '{}');
+      await fs.outputFile(inTargetDir, '{}');
+
+      await generateWithOutput(workspace, widened);
+
+      expect(await fs.pathExists(inMockDir)).toBe(true);
+      expect(await fs.pathExists(inTargetDir)).toBe(false);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('protects the mock directory only, not a sibling with a longer name', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      await generateWithOutput(workspace, nestedInTarget);
+
+      const inMockDir = path.join(workspace, 'src/api/mocks/browser.ts');
+      const inSiblingDir = path.join(workspace, 'src/api/mocks-extra/notes.ts');
+      await fs.outputFile(inMockDir, '// keep');
+      await fs.outputFile(inSiblingDir, '// wiped');
+
+      await generateWithOutput(workspace, nestedInTarget);
+
+      expect(await fs.pathExists(inMockDir)).toBe(true);
+      // `mocks-extra` is not the mock directory, so `target` owns it.
+      expect(await fs.pathExists(inSiblingDir)).toBe(false);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  // Regression: the nested-mock exclusion pattern is built by appending the
+  // mock directory's path (relative to the owned directory) to `/**`. A mock
+  // directory name that itself carries glob metacharacters — `[`/`]` open a
+  // character class — must be escaped before it is embedded in that pattern,
+  // or the negation silently fails to match the literal directory and the
+  // owned-directory wipe deletes hand-written files inside it.
+  it('keeps hand-written files in a mock directory whose name has glob metacharacters', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      const nestedWithMetachars: Partial<OutputOptions> = {
+        target: './src/api/petstore.ts',
+        mock: {
+          path: './src/api/mocks[legacy]',
+          generators: [{ type: 'msw' }],
+        },
+      };
+
+      await generateWithOutput(workspace, nestedWithMetachars);
+
+      const handWritten = path.join(
+        workspace,
+        'src/api/mocks[legacy]/browser.ts',
+      );
+      await fs.outputFile(handWritten, '// keep');
+      const stale = path.join(
+        workspace,
+        'src/api/mocks[legacy]/removed.msw.ts',
+      );
+      await fs.outputFile(stale, '// stale');
+
+      await generateWithOutput(workspace, nestedWithMetachars);
+
+      expect(await fs.pathExists(handWritten)).toBe(true);
+      expect(await fs.pathExists(stale)).toBe(false);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('generateSpec - clean skips a symlinked mock directory', () => {
+  // Regression: `followSymbolicLinks: false` only keeps the glob from
+  // following a symlink found *below* the cleanup cwd — it does not validate
+  // the cwd itself. If `mock.path` is a symlink, cleanup previously followed
+  // it straight through to the link's target, which can sit outside the
+  // workspace entirely. The fix lstats each mock root first and skips
+  // cleaning it (with a warning) when it is a symbolic link.
+  it('does not touch files in the target of a symlinked mock.path', async ({
+    skip,
+  }) => {
+    const workspace = await createTempWorkspace();
+    const outsideTarget = await createTempWorkspace();
+
+    try {
+      const outsideFile = path.join(outsideTarget, 'do-not-touch.ts');
+      await fs.outputFile(outsideFile, '// outside the workspace');
+
+      const mockLink = path.join(workspace, 'src/mocks');
+      await fs.ensureDir(path.dirname(mockLink));
+      try {
+        // A junction, not a true symbolic link: Windows grants
+        // `SeCreateSymbolicLinkPrivilege` only to elevated tokens or under
+        // Developer Mode, but a junction needs no privilege. libuv reports any
+        // reparse point as a symlink under lstat, so the guard under test sees
+        // the same thing either way. Ignored on POSIX.
+        await fs.symlink(outsideTarget, mockLink, 'junction');
+      } catch (error: unknown) {
+        // Filesystems without reparse-point support (FAT32, some network mounts).
+        const code = (error as NodeJS.ErrnoException)?.code;
+        if (code === 'EPERM' || code === 'ENOTSUP') skip();
+        else throw error;
+      }
+
+      // A stale-looking file already sitting in the symlink target, matching
+      // the mock cleanup patterns, so a naive fix (just widening the glob
+      // options) would still be caught by an assertion on file survival.
+      const staleLookingFile = path.join(outsideTarget, 'stale.msw.ts');
+      await fs.outputFile(staleLookingFile, '// looks stale, is not ours');
+
+      await generateWithOutput(workspace, {
+        mock: { path: './src/mocks', generators: [{ type: 'msw' }] },
+      });
+
+      expect(await fs.pathExists(outsideFile)).toBe(true);
+      expect(await fs.pathExists(staleLookingFile)).toBe(true);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(outsideTarget, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('generateSpec - clean scopes to the configured schemas directory', () => {
+  // `getFileInfo(...).dirname` collapses to the parent whenever the last
+  // segment contains a dot, so a dotted schemas directory used to clean the
+  // directory above the one the writers fill.
+  const dottedSchemas: Partial<OutputOptions> = {
+    mode: 'split',
+    schemas: './src/api/petstore.schemas',
+  };
+
+  it('cleans the dotted schemas directory, not its parent', async () => {
+    const workspace = await createTempWorkspace();
+
+    try {
+      await generateWithOutput(workspace, dottedSchemas);
+
+      const mutator = path.join(
+        workspace,
+        'src/api/mutator/custom-instance.ts',
+      );
+      const stale = path.join(
+        workspace,
+        'src/api/petstore.schemas/removedModel.ts',
+      );
+      await fs.outputFile(mutator, '// keep');
+      await fs.outputFile(stale, '// stale');
+
+      await generateWithOutput(workspace, dottedSchemas);
+
+      expect(await fs.pathExists(mutator)).toBe(true);
+      expect(await fs.pathExists(stale)).toBe(false);
+      expect(
+        await fs.pathExists(path.join(workspace, 'src/api/petstore.schemas')),
+      ).toBe(true);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

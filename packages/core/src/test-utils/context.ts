@@ -47,6 +47,8 @@ export function createTestContextSpec({
     optionsParamRequired: false,
     propertySortOrder: PropertySortOrder.SPECIFICATION,
     factoryMethods: undefined,
+    tagsSplitDeduplication: false,
+    commonTypesFileName: 'common-types',
     override: {
       title: undefined,
       transformer: undefined,
@@ -100,9 +102,12 @@ export function createTestContextSpec({
         provideIn: 'root',
         client: 'httpClient',
         runtimeValidation: false,
+        queryObjectSerialization: 'spec',
       },
       swr: {},
       zod: {
+        version: 'auto',
+        variant: 'classic',
         strict: {
           param: false,
           query: false,
@@ -128,6 +133,8 @@ export function createTestContextSpec({
         useBrandedTypes: false,
         generateReusableSchemas: false,
         generateMeta: false,
+        generateDiscriminatedUnion: false,
+        exactOptional: false,
         dateTimeOptions: {},
         timeOptions: { precision: 3 },
       },
@@ -148,10 +155,12 @@ export function createTestContextSpec({
         },
         generateEachHttpStatus: false,
         useBrandedTypes: false,
+        exactOptional: false,
       },
       fetch: {
         includeHttpResponseReturnType: false,
         forceSuccessResponse: false,
+        serializeResponseHeaders: false,
         runtimeValidation: false,
         useRuntimeFetcher: false,
       },

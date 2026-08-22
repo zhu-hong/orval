@@ -1,7 +1,9 @@
 import path from 'node:path';
 
 import {
+  buildSchemaTagMap,
   type ContextSpec,
+  conventionName,
   createSuccessMessage,
   type FakerMockOptions,
   fixCrossDirectoryImports,
@@ -20,29 +22,42 @@ import {
   type OpenApiInfoObject,
   OutputMockType,
   OutputMode,
+  pascal,
   splitSchemasByType,
   SupportedFormatter,
   upath,
+  withGeneratedFileTransform,
   writeGeneratedFile,
   writeSchemas,
+  writeSchemasTagsSplit,
   writeSingleMode,
   type WriteSpecBuilder,
   writeSplitMode,
   writeSplitTagsMode,
   writeTagsMode,
+  writeTagsOperationsMode,
+  writeTagsOperationsSplitMode,
+  type NormalizedOutputOptions,
 } from '@orval/core';
 import { generateFakerForSchemas } from '@orval/mock';
 import { execa, ExecaError } from 'execa';
 import fs from 'fs-extra';
-import { unique } from 'remeda';
-import type { TypeDocOptions } from 'typedoc';
+import type { OptionsReader, TypeDocOptions } from 'typedoc';
 
-import { formatWithPrettier } from './formatters/prettier';
-import { executeHook } from './utils';
+import {
+  createPrettierFileTransform,
+  formatWithPrettier,
+} from './formatters/prettier';
+import {
+  executeHook,
+  readReExportSpecifiers,
+  reconcileWorkspaceBarrel,
+} from './utils';
 import {
   generateZodSchemasInline,
   writeZodSchemas,
   writeZodSchemasFromVerbs,
+  writeZodSchemaTagsSplitBarrel,
 } from './write-zod-specs';
 
 async function runExternalFormatter(
@@ -93,6 +108,116 @@ export async function runFormatter(
   }
 }
 
+const DOCS_MARKDOWN_PLUGIN = 'typedoc-plugin-markdown';
+const DOCS_MARKDOWN_THEME = 'markdown';
+
+export function getDocsTypedocOptions(
+  entryPoints: string[],
+  config: Partial<TypeDocOptions>,
+): Partial<TypeDocOptions> {
+  const plugin = config.plugin ?? [];
+
+  return {
+    entryPoints,
+    // Skip TypeScript diagnostics on the consuming project: TypeDoc would
+    // otherwise pick up the user's tsconfig and surface errors from files
+    // unrelated to the generated entry points (e.g. a demo `App.tsx`
+    // with an unused `React` default import under the new JSX transform —
+    // see #3338). User-overridable via the `docs` option below.
+    skipErrorChecking: true,
+    // Set the custom config location if it has been provided.
+    ...config,
+    plugin: plugin.includes(DOCS_MARKDOWN_PLUGIN)
+      ? plugin
+      : [DOCS_MARKDOWN_PLUGIN, ...plugin],
+  };
+}
+
+/**
+ * Gives the TypeDoc output for a theme. The markdown plugin makes markdown the
+ * default output, thus all other themes must use the html output.
+ */
+export function getDocsOutputName(theme: unknown): 'html' | 'markdown' {
+  return theme === DOCS_MARKDOWN_THEME ? 'markdown' : 'html';
+}
+
+/**
+ * Builds a TypeDoc `OptionsReader` that guarantees `typedoc-plugin-markdown`
+ * stays in the resolved `plugin` list, no matter what a user-supplied
+ * `configPath` config file declares.
+ *
+ * TypeDoc's `Application.bootstrapWithPlugins` applies the options we pass
+ * in *before* running its option readers (`Options.read`), and one of those
+ * readers (`TypeDocReader`) unconditionally overwrites the `plugin` option
+ * with whatever the config file specifies. Since plugin loading
+ * (`loadPlugins`) happens right after `Options.read` and before our options
+ * are re-applied, a config file that supplies its own `plugin` array without
+ * `typedoc-plugin-markdown` would otherwise silence the plugin entirely for
+ * the run that matters, even though `getDocsTypedocOptions` re-injects it
+ * into the *final* options object.
+ *
+ * Readers are processed in ascending `order`, and a later reader's
+ * `setValue` call wins outright — there's no merge. Registering this reader
+ * with the highest possible order makes it run after every built-in reader
+ * (`typedoc.json`/`typedoc.js`, `package.json`, `tsconfig.json`), so it has
+ * the final say before `loadPlugins` reads the resolved value.
+ */
+export function createMarkdownPluginReader(): OptionsReader {
+  return {
+    name: 'orval-ensure-markdown-plugin',
+    order: Number.MAX_SAFE_INTEGER,
+    supportsPackages: false,
+    read(container) {
+      const current: string[] = container.isSet('plugin')
+        ? (container.getValue('plugin') as string[])
+        : [];
+
+      if (!current.includes(DOCS_MARKDOWN_PLUGIN)) {
+        container.setValue('plugin', [...current, DOCS_MARKDOWN_PLUGIN]);
+      }
+    },
+  };
+}
+
+function getComparableFilePath(filePath: string): string {
+  const resolvedPath = path.resolve(filePath);
+  let comparablePath = resolvedPath;
+
+  try {
+    comparablePath = fs.realpathSync(resolvedPath);
+  } catch (error) {
+    // The workspace index file may not exist yet on a first-generation run,
+    // so realpathSync throws ENOENT. Fall back to the resolved path.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
+  // Platform heuristic: win32 and darwin are case-insensitive by default.
+  // Linux is case-sensitive even when a case-insensitive filesystem could
+  // theoretically be mounted. We intentionally do not try to cover that.
+  const isPlatformCaseIndependent =
+    process.platform === 'win32' || process.platform === 'darwin';
+  return isPlatformCaseIndependent
+    ? comparablePath.toLowerCase()
+    : comparablePath;
+}
+
+function excludeFilePath(
+  filePaths: string[],
+  filePathToExclude: string,
+): string[] {
+  const comparablePathToExclude = getComparableFilePath(filePathToExclude);
+  const comparableFilePaths = filePaths.map((filePath) => ({
+    filePath,
+    comparablePath: getComparableFilePath(filePath),
+  }));
+
+  return comparableFilePaths
+    .filter(({ comparablePath }) => comparablePath !== comparablePathToExclude)
+    .map(({ filePath }) => filePath);
+}
+
 function getHeader(
   option: false | ((info: OpenApiInfoObject) => string | string[]),
   info: OpenApiInfoObject,
@@ -125,16 +250,21 @@ async function addOperationSchemasReExport(
   );
   const exportLine = `export * from '${esmImportPath}';\n`;
 
-  const indexExists = await fs.pathExists(schemaIndexPath);
-  if (indexExists) {
-    // Check if export already exists to prevent duplicates on re-runs
-    // Use regex to handle both single and double quotes
-    const existingContent = await fs.readFile(schemaIndexPath, 'utf8');
-    const exportPattern = new RegExp(
-      String.raw`export\s*\*\s*from\s*['"]${esmImportPath.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)}['"]`,
-    );
-    if (!exportPattern.test(existingContent)) {
-      await fs.appendFile(schemaIndexPath, exportLine);
+  let existingContent: string | undefined;
+  try {
+    existingContent = await fs.readFile(schemaIndexPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
+  if (existingContent !== undefined) {
+    // Append the re-export only if it isn't already declared. The presence
+    // check reuses the shared barrel specifier reader so quote style can't
+    // cause duplicates (#3756).
+    if (!readReExportSpecifiers(existingContent).has(esmImportPath)) {
+      await writeGeneratedFile(schemaIndexPath, existingContent + exportLine);
     }
   } else {
     // Create index with header if file doesn't exist (no regular schemas case)
@@ -142,7 +272,7 @@ async function addOperationSchemasReExport(
       header && header.trim().length > 0
         ? `${header}\n${exportLine}`
         : exportLine;
-    await fs.outputFile(schemaIndexPath, content);
+    await writeGeneratedFile(schemaIndexPath, content);
   }
 }
 
@@ -158,6 +288,7 @@ async function writeFakerSchemaMocks(
   builder: WriteSpecBuilder,
   options: NormalizedOptions,
   header: string,
+  schemaTagMap?: Map<string, string>,
 ): Promise<string | undefined> {
   const { output } = options;
   // Pick the opted-in faker entry directly. The duplicate-type guard in
@@ -233,13 +364,53 @@ async function writeFakerSchemaMocks(
   }
 
   // Route every schema-related import (both type-only and runtime value
-  // forms) onto the consolidated schemas path. Both `import { Foo }` and
+  // forms) onto the resolved schema path. Both `import { Foo }` and
   // `import type { Foo }` come from the same module here, so we treat
   // them uniformly — `generateDependencyImports` splits values vs types
   // back out into separate `import` / `import type` lines as needed.
-  const reroutedImports = imports.map((imp) =>
-    imp.importPath ? imp : { ...imp, importPath: schemaImportPath },
-  );
+  //
+  // When `indexFiles` is true the schemas root barrel (`.`) covers every
+  // schema, so all imports can route there. When `indexFiles` is false the
+  // root barrel is not generated, so each import must resolve to its actual
+  // file. With `splitByTags: true` that file lives under a per-tag
+  // subdirectory (`./<tag>/<file>`) for tag-scoped schemas, or at the
+  // schemas root (`./<file>`) for shared schemas. Schema-factory imports
+  // (`get<X>Mock` from peer factories) are local to this consolidated file
+  // and always resolve to `'.'`.
+  const isZodSchemaOutput =
+    isObject(output.schemas) && output.schemas.type === 'zod';
+  const importExtension = getImportExtension(fileExtension, output.tsconfig);
+  const schemaSuffix = isZodSchemaOutput ? '.zod' : '';
+
+  // Build a pascal-cased-name → import path lookup so the consolidated file
+  // can route each schema type import to its on-disk location. The map is
+  // only populated when per-file routing is required (no root barrel); when
+  // `indexFiles: true` every entry maps to `'.'` and the lookup short-circuits.
+  const perSchemaImportPath = new Map<string, string>();
+  if (
+    schemaImportPath === '.' &&
+    !output.indexFiles &&
+    isObject(output.schemas)
+  ) {
+    for (const schema of builder.schemas) {
+      const tsName = pascal(schema.name);
+      const fileName = conventionName(schema.name, output.namingConvention);
+      const tagDir = schemaTagMap?.get(schema.name);
+      const tagSegment = tagDir && tagDir !== '.' ? `${tagDir}/` : '';
+      perSchemaImportPath.set(
+        tsName,
+        `./${tagSegment}${fileName}${schemaSuffix}${importExtension}`,
+      );
+    }
+  }
+
+  const reroutedImports = imports.map((imp) => {
+    if (imp.importPath) return imp;
+    if (imp.schemaFactory) return { ...imp, importPath: '.' };
+    const resolved = perSchemaImportPath.get(imp.name);
+    if (resolved) return { ...imp, importPath: resolved };
+    return { ...imp, importPath: schemaImportPath };
+  });
 
   // `generateDependencyImports` expects a list of `{ exports, dependency }`
   // groups (one per source module). Bucket all rerouted imports by their
@@ -314,7 +485,73 @@ function shouldGenerateSchemas(
   );
 }
 
-export async function writeSpecs(
+function getImplementationPathsForIndex(
+  output: NormalizedOutputOptions,
+  implementationPaths: string[],
+  indexFile: string,
+) {
+  const shouldExcludeSelf = output.indexFiles;
+  const paths = shouldExcludeSelf
+    ? excludeFilePath(implementationPaths, indexFile)
+    : implementationPaths;
+
+  // When the workspace barrel is colocated with the implementation file in
+  // split mode, the generated sibling schemas file (e.g. 'index.schemas.ts')
+  // should not be re-exported — the implementation already imports from it.
+  // Only exclude the auto-generated sibling derived from the target stem;
+  // a user-configured output.schemas dir is a separate concern.
+  const isSplitModeWithColocatedTarget =
+    shouldExcludeSelf &&
+    output.mode === OutputMode.SPLIT &&
+    getComparableFilePath(output.target) === getComparableFilePath(indexFile);
+
+  if (isSplitModeWithColocatedTarget) {
+    const targetInfo = getFileInfo(output.target, {
+      extension: output.fileExtension,
+    });
+    const defaultSiblingSchemas = path.join(
+      targetInfo.dirname,
+      `${targetInfo.filename}.schemas${output.fileExtension}`,
+    );
+    return excludeFilePath(paths, defaultSiblingSchemas);
+  }
+
+  // tags-operations and tags-operations-split produce a root barrel
+  // (dirname/index<ext>) plus per-tag barrels and individual operation files.
+  // The workspace index must only re-export the root barrel (and the global
+  // schemas file when present) — re-exporting individual operation files,
+  // per-tag barrels, helper files, and per-operation schema files causes
+  // TS2308 ambiguous-re-export errors because many types appear in multiple
+  // files simultaneously (shared helpers across tags; shared schemas across
+  // operations).
+  const isTagsOperationsMode =
+    output.mode === OutputMode.TAGS_OPERATIONS ||
+    output.mode === OutputMode.TAGS_OPERATIONS_SPLIT;
+
+  if (!isTagsOperationsMode || !shouldExcludeSelf) {
+    return paths;
+  }
+
+  const targetInfo = getFileInfo(output.target, {
+    extension: output.fileExtension,
+  });
+  const rootBarrel = path.join(
+    targetInfo.dirname,
+    `index${output.fileExtension}`,
+  );
+  const globalSchemas = path.join(
+    targetInfo.dirname,
+    `${targetInfo.filename}.schemas${output.fileExtension}`,
+  );
+
+  return paths.filter(
+    (p) =>
+      getComparableFilePath(p) === getComparableFilePath(rootBarrel) ||
+      getComparableFilePath(p) === getComparableFilePath(globalSchemas),
+  );
+}
+
+async function writeSpecsInternal(
   builder: WriteSpecBuilder,
   workspace: string,
   options: NormalizedOptions,
@@ -322,6 +559,24 @@ export async function writeSpecs(
 ) {
   const { info, schemas, target } = builder;
   const { output } = options;
+
+  // Compute the schema→tag map once when splitByTags is enabled so every
+  // downstream writer (zod schemas, typescript schemas, the mode writers,
+  // and the consolidated faker factory file) route imports consistently.
+  // Declared at function scope because it is consumed both inside the
+  // schemas-writing branch and by `writeFakerSchemaMocks` / mode dispatch
+  // which live outside that branch.
+  const shouldSplitSchemasByTags =
+    isObject(output.schemas) && output.schemas.splitByTags;
+  const schemaTagMap = shouldSplitSchemasByTags
+    ? buildSchemaTagMap(
+        Object.values(builder.operations).map((op) => ({
+          imports: op.imports,
+          tags: op.tags,
+        })),
+        schemas,
+      )
+    : undefined;
   const projectTitle = projectName ?? info.title;
 
   const header = getHeader(output.override.header, info);
@@ -330,6 +585,7 @@ export async function writeSpecs(
     const schemasPath = isString(output.schemas)
       ? output.schemas
       : output.schemas.path;
+
     const isZodSchemas =
       (!isString(output.schemas) && output.schemas.type === 'zod') ||
       // Auto-promote a string `schemas:` to the zod writer when client is zod
@@ -339,6 +595,13 @@ export async function writeSpecs(
       (isString(output.schemas) &&
         output.client === 'zod' &&
         output.override.zod.generateReusableSchemas);
+
+    if (shouldSplitSchemasByTags && output.operationSchemas) {
+      throw new Error(
+        'schemas.splitByTags cannot be used with output.operationSchemas. ' +
+          'The tags-split schema mode handles operation type placement within tag directories.',
+      );
+    }
 
     if (isZodSchemas) {
       // Use the schema-specific extension so the global `fileExtension` (which
@@ -359,33 +622,88 @@ export async function writeSpecs(
           })
         : undefined;
 
-      await writeZodSchemas(
-        builder,
-        schemasPath,
-        fileExtension,
-        header,
-        output,
-        schemasParamsMutator,
-      );
-
-      await writeZodSchemasFromVerbs(
-        builder.verbOptions,
-        schemasPath,
-        fileExtension,
-        header,
-        output,
-        {
-          spec: builder.spec,
-          target: builder.target,
-          workspace,
+      if (shouldSplitSchemasByTags) {
+        const componentDirs = await writeZodSchemas(
+          builder,
+          schemasPath,
+          fileExtension,
+          header,
           output,
-        },
-      );
+          schemasParamsMutator,
+          schemaTagMap,
+        );
+
+        const verbDirs = await writeZodSchemasFromVerbs(
+          builder.verbOptions,
+          schemasPath,
+          fileExtension,
+          header,
+          output,
+          {
+            spec: builder.spec,
+            target: builder.target,
+            workspace,
+            output,
+          },
+          schemaTagMap,
+        );
+
+        if (output.indexFiles) {
+          await writeZodSchemaTagsSplitBarrel(
+            schemasPath,
+            fileExtension,
+            header,
+            componentDirs,
+            verbDirs,
+            output.namingConvention,
+            output.tsconfig,
+          );
+        }
+      } else {
+        await writeZodSchemas(
+          builder,
+          schemasPath,
+          fileExtension,
+          header,
+          output,
+          schemasParamsMutator,
+        );
+
+        await writeZodSchemasFromVerbs(
+          builder.verbOptions,
+          schemasPath,
+          fileExtension,
+          header,
+          output,
+          {
+            spec: builder.spec,
+            target: builder.target,
+            workspace,
+            output,
+          },
+        );
+      }
     } else {
       const fileExtension = output.fileExtension || '.ts';
 
-      // Split schemas if operationSchemas path is configured
-      if (output.operationSchemas) {
+      // Split schemas by tag into subdirectories
+      if (shouldSplitSchemasByTags) {
+        await writeSchemasTagsSplit({
+          schemaPath: schemasPath,
+          schemas,
+          target,
+          namingConvention: output.namingConvention,
+          fileExtension,
+          header,
+          indexFiles: output.indexFiles,
+          tsconfig: output.tsconfig,
+          factoryOutputDirectory: output.factoryMethods?.outputDirectory,
+          operations: Object.values(builder.operations).map((op) => ({
+            imports: op.imports,
+            tags: op.tags,
+          })),
+        });
+      } else if (output.operationSchemas) {
         const { regularSchemas, operationSchemas: opSchemas } =
           splitSchemasByType(schemas);
 
@@ -468,7 +786,12 @@ export async function writeSpecs(
   // Emit a consolidated faker mock file for `components/schemas` when the
   // faker generator opts in with `schemas: true`. Lives alongside the
   // generated TS schema types so factories can import them directly.
-  const fakerSchemaPath = await writeFakerSchemaMocks(builder, options, header);
+  const fakerSchemaPath = await writeFakerSchemaMocks(
+    builder,
+    options,
+    header,
+    schemaTagMap,
+  );
 
   let implementationPaths: string[] = [];
 
@@ -524,6 +847,7 @@ export async function writeSpecs(
       projectName,
       header,
       needSchema: shouldGenerateSchemas(output, hasOperations),
+      schemaTagMap,
       generateSchemasInline: needZodSchemasInline
         ? () =>
             generateZodSchemasInline(
@@ -555,7 +879,14 @@ export async function writeSpecs(
       output.fileExtension,
       output.tsconfig,
     );
-    const imports = implementationPaths
+
+    const implementationPathsForIndex = getImplementationPathsForIndex(
+      output,
+      implementationPaths,
+      indexFile,
+    );
+
+    const imports = implementationPathsForIndex
       .filter(
         (p) =>
           mockExtensions.length === 0 ||
@@ -591,32 +922,37 @@ export async function writeSpecs(
     }
 
     if (output.indexFiles) {
-      if (await fs.pathExists(indexFile)) {
-        const data = await fs.readFile(indexFile, 'utf8');
-        const importsNotDeclared = imports.filter((imp) => !data.includes(imp));
-        await fs.appendFile(
-          indexFile,
-          unique(importsNotDeclared)
-            .map((imp) => `export * from '${imp}';\n`)
-            .join(''),
-        );
-      } else {
-        await fs.outputFile(
-          indexFile,
-          unique(imports)
-            .map((imp) => `export * from '${imp}';`)
-            .join('\n') + '\n',
-        );
-      }
+      // The workspace barrel can share its path with the implementation
+      // target (#3675: `target` === `<workspace>/index.ts`), so non-export
+      // lines are preserved rather than overwritten. Dedup on the bare
+      // specifier (not the formatted line) so a formatter changing quote
+      // style between runs can't reintroduce duplicates (#3756). Stale
+      // relative exports whose targets no longer exist are pruned so removed
+      // operations/projects do not leave dangling imports behind (#3763).
+      await reconcileWorkspaceBarrel(
+        indexFile,
+        [...new Set(imports)],
+        output.fileExtension,
+        importExtension,
+      );
 
-      implementationPaths = [indexFile, ...implementationPaths];
+      // Use the full (unfiltered) implementation paths here, not
+      // `implementationPathsForIndex` — for tags-operations modes that list
+      // is narrowed to just the root barrel + global schemas so the barrel
+      // body above doesn't re-export ambiguous duplicate types, but every
+      // per-tag/operation/helper/schema/mock file must still reach
+      // `afterAllFilesWrite` and the formatter below.
+      implementationPaths = [
+        indexFile,
+        ...excludeFilePath(implementationPaths, indexFile),
+      ];
     }
   }
 
   if (builder.extraFiles.length > 0) {
     await Promise.all(
       builder.extraFiles.map(async (file) =>
-        fs.outputFile(file.path, file.content),
+        writeGeneratedFile(file.path, file.content),
       ),
     );
 
@@ -662,26 +998,27 @@ export async function writeSpecs(
         }
       }
 
-      const getTypedocApplication = async () => {
-        const { Application } = await import('typedoc');
-        return Application;
-      };
-
-      const Application = await getTypedocApplication();
-      const app = await Application.bootstrapWithPlugins({
-        entryPoints: paths.map((x) => upath.toUnix(x)),
-        theme: 'markdown',
-        // Skip TypeScript diagnostics on the consuming project: TypeDoc would
-        // otherwise pick up the user's tsconfig and surface errors from files
-        // unrelated to the generated entry points (e.g. a demo `App.tsx`
-        // with an unused `React` default import under the new JSX transform —
-        // see #3338). User-overridable via the `docs` option below.
-        skipErrorChecking: true,
-        // Set the custom config location if it has been provided.
-        ...config,
-        plugin: ['typedoc-plugin-markdown', ...(config.plugin ?? [])],
-      });
+      const { Application, PackageJsonReader, TSConfigReader, TypeDocReader } =
+        await import('typedoc');
+      const app = await Application.bootstrapWithPlugins(
+        getDocsTypedocOptions(
+          paths.map((x) => upath.toUnix(x)),
+          config,
+        ),
+        [
+          // Mirrors TypeDoc's own DEFAULT_READERS...
+          new TypeDocReader(),
+          new PackageJsonReader(),
+          new TSConfigReader(),
+          // ...plus our own, guaranteeing the markdown plugin survives a
+          // user-supplied configPath (see createMarkdownPluginReader).
+          createMarkdownPluginReader(),
+        ],
+      );
       // Set defaults if the have not been provided by the external config.
+      if (!app.options.isSet('theme')) {
+        app.options.setValue('theme', DOCS_MARKDOWN_THEME);
+      }
       if (!app.options.isSet('readme')) {
         app.options.setValue('readme', 'none');
       }
@@ -691,7 +1028,10 @@ export async function writeSpecs(
       const project = await app.convert();
       if (project) {
         const outputPath = app.options.getValue('out');
-        await app.generateDocs(project, outputPath);
+        app.outputs.setDefaultOutputName(
+          getDocsOutputName(app.options.getValue('theme')),
+        );
+        await app.generateOutputs(project);
 
         await runFormatter(output.formatter, [outputPath], projectTitle);
       } else {
@@ -710,6 +1050,28 @@ export async function writeSpecs(
   createSuccessMessage(projectTitle);
 }
 
+export async function writeSpecs(
+  builder: WriteSpecBuilder,
+  workspace: string,
+  options: NormalizedOptions,
+  projectName?: string,
+): Promise<void> {
+  const shouldFormatBeforeWriting =
+    options.output.formatter === SupportedFormatter.PRETTIER &&
+    !options.hooks.afterAllFilesWrite;
+  const transform = shouldFormatBeforeWriting
+    ? await createPrettierFileTransform(projectName ?? builder.info.title)
+    : undefined;
+
+  if (transform) {
+    return withGeneratedFileTransform(transform, () =>
+      writeSpecsInternal(builder, workspace, options, projectName),
+    );
+  }
+
+  return writeSpecsInternal(builder, workspace, options, projectName);
+}
+
 function getWriteMode(mode: OutputMode) {
   switch (mode) {
     case OutputMode.SPLIT: {
@@ -720,6 +1082,12 @@ function getWriteMode(mode: OutputMode) {
     }
     case OutputMode.TAGS_SPLIT: {
       return writeSplitTagsMode;
+    }
+    case OutputMode.TAGS_OPERATIONS: {
+      return writeTagsOperationsMode;
+    }
+    case OutputMode.TAGS_OPERATIONS_SPLIT: {
+      return writeTagsOperationsSplitMode;
     }
     default: {
       return writeSingleMode;

@@ -1,5 +1,4 @@
 import {
-  type GeneratorMockOutput,
   type GeneratorMockOutputFull,
   type GeneratorTarget,
   type GeneratorTargetFull,
@@ -7,7 +6,9 @@ import {
   OutputClient,
   type WriteSpecBuilder,
 } from '../types';
-import { compareVersions, pascal } from '../utils';
+import { pascal } from '../utils';
+import { flattenMockOutput } from './mock-outputs';
+import { hasTypeScriptAwaitedType } from './typescript-version';
 
 function emptyMockOutputFull(
   type: GeneratorMockOutputFull['type'],
@@ -19,20 +20,18 @@ function emptyMockOutputFull(
   };
 }
 
-function flattenMockOutput(full: GeneratorMockOutputFull): GeneratorMockOutput {
-  return {
-    type: full.type,
-    implementation: full.implementation.function + full.implementation.handler,
-    imports: full.imports,
-    strictMockSchemaTypeNames: full.strictMockSchemaTypeNames,
-    strictMockSchemaKinds: full.strictMockSchemaKinds,
-  };
+/**
+ * `mockOutputsFull` keeps `function` and `handler` separate so the split
+ * writers can strip factories from the MSW output before flattening.
+ */
+export interface GeneratorTargetWithFull extends GeneratorTarget {
+  mockOutputsFull: GeneratorMockOutputFull[];
 }
 
 export function generateTarget(
   builder: WriteSpecBuilder,
   options: NormalizedOutputOptions,
-): GeneratorTarget {
+): GeneratorTargetWithFull {
   const operationNames = Object.values(builder.operations).map(
     ({ operationName }) => operationName,
   );
@@ -58,6 +57,7 @@ export function generateTarget(
     paramsSerializer: [],
     paramsFilter: [],
     fetchReviver: [],
+    sharedTypes: [],
   };
   const operations = Object.values(builder.operations);
   for (const [index, operation] of operations.entries()) {
@@ -126,12 +126,7 @@ export function generateTarget(
         isAngularClient ? mutator.hasThirdArg : mutator.hasSecondArg,
       );
 
-      const typescriptVersion =
-        options.packageJson?.dependencies?.typescript ??
-        options.packageJson?.devDependencies?.typescript ??
-        '4.4.0';
-
-      const hasAwaitedType = compareVersions(typescriptVersion, '4.5.0');
+      const hasAwaitedType = hasTypeScriptAwaitedType(options.packageJson);
 
       const header = builder.header({
         outputClient: options.client,
@@ -146,11 +141,20 @@ export function generateTarget(
         clientImplementation: target.implementation,
       });
 
-      target.implementation = header.implementation + target.implementation;
+      const inlinedSharedTypes =
+        header.sharedTypes && header.sharedTypes.length > 0
+          ? header.sharedTypes
+              .map((t) => `${t.exported ? 'export ' : ''}${t.code}`)
+              .join('\n') + '\n\n'
+          : '';
+
+      target.implementation =
+        inlinedSharedTypes + header.implementation + target.implementation;
 
       const footer = builder.footer({
         outputClient: options.client,
         operationNames,
+        operations,
         hasMutator: target.mutators.length > 0,
         hasAwaitedType,
         titles,
@@ -177,6 +181,7 @@ export function generateTarget(
     imports: target.imports,
     implementation: target.implementation,
     mockOutputs: target.mockOutputs.map((m) => flattenMockOutput(m)),
+    mockOutputsFull: target.mockOutputs,
     mutators: target.mutators,
     clientMutators: target.clientMutators,
     formData: target.formData,

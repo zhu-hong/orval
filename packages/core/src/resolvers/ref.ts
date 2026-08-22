@@ -4,6 +4,7 @@ import { prop } from 'remeda';
 import { getRefInfo, isComponentRef, type RefInfo } from '../getters/ref';
 import type {
   ContextSpec,
+  DynamicAnchorIndexEntry,
   DynamicScopeEntry,
   GeneratorImport,
   OpenApiComponentsObject,
@@ -320,7 +321,15 @@ function getSchema<TSchema extends object = OpenApiComponentsObject>(
       ) as OpenApiSchemaObject | OpenApiReferenceObject | undefined)
     : undefined;
 
-  if (isObject(schemaByRefPaths) && isReference(schemaByRefPaths)) {
+  // Don't tail-recurse through an intermediate that is itself a bound alias:
+  // it is emitted as its own named, specialized type (e.g. `ObjectArray`),
+  // so callers must reference it by name. Recursing drops that name and emits
+  // the unspecialized template instead (#3746).
+  if (
+    isObject(schemaByRefPaths) &&
+    isReference(schemaByRefPaths) &&
+    !isBoundAlias(schemaByRefPaths)
+  ) {
     return getSchema(schemaByRefPaths, context);
   }
 
@@ -431,6 +440,120 @@ export function buildDynamicScope(
 }
 
 /**
+ * Build dynamic scope entries for an **anonymous inline** subschema that declares
+ * `$dynamicAnchor` without a `$ref` (e.g. inside `allOf`, `items`, nested props).
+ *
+ * Unlike {@link buildDynamicScope}, entries carry the concrete `inlineSchema` so
+ * that a descendant `$dynamicRef` resolves to the inline override rather than the
+ * outer/global component. Used when `dereference` enters a subschema without a
+ * named component `$ref`.
+ *
+ * Scope of handling (deliberate, see #3492):
+ *   - Direct `$dynamicAnchor` on the subschema → inline entry.
+ *   - `$defs` `$dynamicAnchor` *without* a `$ref` → inline entry. Note this
+ *     differs from `buildDynamicScope`, which treats unbound `$defs` anchors as
+ *     generic parameters (`isParameter`); inline subschemas are concrete
+ *     instances, so the anchor resolves to the inline schema object itself.
+ *   - `$defs` `$dynamicAnchor` *with* a `$ref` → intentionally NOT collected
+ *     here. Such anchors rely on `resolveDynamicRef`'s global fallback (which
+ *     finds them when the `$ref` target declares the same anchor). Fully
+ *     resolving them would duplicate `buildDynamicScope`'s `$defs` logic.
+ */
+export function buildInlineDynamicScope(
+  schema: OpenApiSchemaObject,
+): Record<string, DynamicScopeEntry> {
+  const scope: Record<string, DynamicScopeEntry> = {};
+  const schemaRecord = schema as Record<string, unknown>;
+
+  if (typeof schemaRecord.$dynamicAnchor === 'string') {
+    const anchor = schemaRecord.$dynamicAnchor;
+    scope[anchor] = {
+      name: anchor,
+      schemaName: anchor,
+      inlineSchema: schema,
+    };
+  }
+
+  const defs = schemaRecord.$defs as
+    | Record<string, OpenApiSchemaObject | OpenApiReferenceObject>
+    | undefined;
+  if (defs && typeof defs === 'object') {
+    for (const defSchema of Object.values(defs)) {
+      if (!defSchema || typeof defSchema !== 'object') continue;
+      const defRecord = defSchema as Record<string, unknown>;
+      if (
+        typeof defRecord.$dynamicAnchor === 'string' &&
+        !(defSchema as OpenApiReferenceObject).$ref
+      ) {
+        const anchor = defRecord.$dynamicAnchor;
+        scope[anchor] = {
+          name: anchor,
+          schemaName: anchor,
+          inlineSchema: defSchema as OpenApiSchemaObject,
+        };
+      }
+    }
+  }
+
+  return scope;
+}
+
+/**
+ * Lazily build and memoize the `$dynamicAnchor` index on the context.
+ *
+ * Scans `components.schemas` once per spec and stores, per anchor name, the
+ * compact match info required by the {@link resolveDynamicRef} fallback (see
+ * {@link DynamicAnchorIndexEntry}). Subsequent fallback lookups are O(1)
+ * instead of re-scanning every schema per `$dynamicRef`.
+ *
+ * Recording of non-exact matches stops once `count >= 2` — the fallback only
+ * distinguishes "exactly one non-exact" from "ambiguous", so further non-exact
+ * names are irrelevant. Iteration continues regardless because a later schema
+ * whose key equals the anchor name is still the definitive (`exactName`)
+ * winner. This is the safe form of "bail early when ambiguous": a literal
+ * early-return at `count === 2` would regress the exact-name rule when the
+ * exact schema appears later in iteration order.
+ */
+export function getDynamicAnchorIndex(
+  context: ContextSpec,
+): Map<string, DynamicAnchorIndexEntry> {
+  const cached = context.dynamicAnchorIndex;
+  if (cached) return cached;
+
+  const index = new Map<string, DynamicAnchorIndexEntry>();
+  const schemas = (
+    (context.spec as Record<string, unknown>).components as
+      | Record<string, unknown>
+      | undefined
+  )?.schemas as Record<string, unknown> | undefined;
+
+  if (schemas && typeof schemas === 'object') {
+    for (const [schemaName, schemaObj] of Object.entries(schemas)) {
+      if (!schemaObj || typeof schemaObj !== 'object') continue;
+      const rec = schemaObj as Record<string, unknown>;
+      const anchor = rec.$dynamicAnchor;
+      if (typeof anchor !== 'string') continue;
+
+      let entry = index.get(anchor);
+      if (!entry) {
+        entry = { count: 0 };
+        index.set(anchor, entry);
+      }
+
+      if (schemaName === anchor) {
+        entry.exactName = schemaName;
+      } else if (entry.count < 2) {
+        entry.count += 1;
+        if (!entry.firstName) entry.firstName = schemaName;
+      }
+    }
+  }
+
+  context.dynamicAnchorIndex = index;
+  return index;
+}
+
+/**
  * Resolve a `$dynamicRef` anchor to its concrete type using the current dynamic scope.
  * Returns `{ schema: {}, resolvedTypeName: 'unknown' }` when no scope override exists.
  */
@@ -448,35 +571,18 @@ export function resolveDynamicRef(
   let scopeEntry = scope[anchorName];
 
   if (!scopeEntry) {
-    const schemas = (
-      (context.spec as Record<string, unknown>).components as
-        | Record<string, unknown>
-        | undefined
-    )?.schemas as Record<string, unknown> | undefined;
-
-    if (schemas && typeof schemas === 'object') {
-      const matches: string[] = [];
-      for (const [schemaName, schemaObj] of Object.entries(schemas)) {
-        if (!schemaObj || typeof schemaObj !== 'object') continue;
-        const rec = schemaObj as Record<string, unknown>;
-        if (rec.$dynamicAnchor === anchorName) {
-          matches.push(schemaName);
-        }
-      }
-      const match =
-        matches.length === 1
-          ? matches[0]
-          : matches.find((m) => m === anchorName);
-      if (match) {
-        const refInfo = getRefInfo(
-          `#/components/schemas/${encodeJsonPointerSegment(match)}`,
-          context,
-        );
-        scopeEntry = {
-          name: refInfo.name,
-          schemaName: refInfo.originalName,
-        };
-      }
+    const entry = getDynamicAnchorIndex(context).get(anchorName);
+    const match =
+      entry?.exactName ?? (entry?.count === 1 ? entry?.firstName : undefined);
+    if (match) {
+      const refInfo = getRefInfo(
+        `#/components/schemas/${encodeJsonPointerSegment(match)}`,
+        context,
+      );
+      scopeEntry = {
+        name: refInfo.name,
+        schemaName: refInfo.originalName,
+      };
     }
   }
 
@@ -492,6 +598,15 @@ export function resolveDynamicRef(
   if (scopeEntry.isParameter) {
     return {
       schema: {},
+      imports,
+      resolvedTypeName: scopeEntry.name,
+      schemaName: undefined,
+    };
+  }
+
+  if (scopeEntry.inlineSchema) {
+    return {
+      schema: scopeEntry.inlineSchema,
       imports,
       resolvedTypeName: scopeEntry.name,
       schemaName: undefined,

@@ -25,7 +25,7 @@ export default defineConfig({
 
 **Type:** `String | Function`
 **Default:** `'axios-functions'`
-**Options:** `angular`, `axios`, `axios-functions`, `react-query`, `svelte-query`, `vue-query`, `swr`, `zod`, `effect`, `hono`, `fetch`, `mcp`
+**Options:** `angular`, `angular-query`, `axios`, `axios-functions`, `react-query`, `solid-start`, `solid-query`, `svelte-query`, `vue-query`, `swr`, `zod`, `effect`, `hono`, `fetch`, `mcp`
 
 ```ts title="orval.config.ts"
 export default defineConfig({
@@ -61,10 +61,11 @@ const api = getPetsApi(customAxios);
 
 ## httpClient
 
-**Type:** `'fetch' | 'axios'`
+**Type:** `'fetch' | 'axios' | 'angular'`
 **Default:** `'fetch'`
 
-HTTP client used for `swr`, `react-query`, `vue-query`, and `svelte-query` clients.
+HTTP transport used by compatible generated clients. Use `fetch` or `axios` for
+query clients, and `angular` for `angular` and `angular-query` output.
 
 ```ts title="orval.config.ts"
 export default defineConfig({
@@ -111,11 +112,12 @@ export default defineConfig({
 });
 ```
 
-| Property   | Type     | Description                                     |
-| ---------- | -------- | ----------------------------------------------- |
-| `path`     | `string` | Filesystem path for schema output               |
-| `type`     | `string` | `'typescript'` (default) or `'zod'` — optional |
-| `importPath` | `string` | Optional package import specifier (see below)  |
+| Property      | Type      | Description                                     |
+| ------------- | --------- | ----------------------------------------------- |
+| `path`        | `string`  | Filesystem path for schema output               |
+| `type`        | `string`  | `'typescript'` (default) or `'zod'` — optional |
+| `importPath`  | `string`  | Optional package import specifier (see below)   |
+| `splitByTags` | `boolean` | Organize schemas into per-tag subdirectories (default `false`, see below) |
 
 ### importPath
 
@@ -171,9 +173,9 @@ import statements change.
   directory.
 - Config normalization rejects invalid `importPath` values (empty, whitespace,
   relative, or absolute paths) before generation runs — see
-  [Validation of `importPath`](#validation-of-importpath) below.
+  [Validation of `importPath`](#validation-of-importpath).
 
-### Validation of `importPath`
+#### Validation of `importPath`
 
 During config normalization, orval rejects the following `importPath` values
 with a clear error message before generation runs:
@@ -185,6 +187,57 @@ with a clear error message before generation runs:
   `../models`).
 - Absolute paths — POSIX (starting with `/`, e.g. `/abs/models`) or Windows
   (drive-letter like `C:\models`, or UNC like `\\server\share\models`).
+
+### splitByTags
+
+When `splitByTags` is `true`, schemas are organized into per-tag
+subdirectories instead of a single flat directory. Schemas referenced by
+only one tag go in that tag's directory; schemas referenced by multiple
+tags (or not referenced by any operation) remain at the root of the schema
+directory. Works with any `mode` (`single`, `split`, `tags`, `tags-split`).
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      mode: 'tags-split',
+      schemas: {
+        path: './api/model',
+        splitByTags: true,
+      },
+    },
+  },
+});
+```
+
+Result:
+
+```
+api/model/
+├── error.ts               ← schemas used by 2+ tags (or unreferenced)
+├── pagination.ts
+├── pets/                  ← schemas only used by "pets" operations
+│   ├── pet.ts
+│   ├── createPetsBody.ts
+│   ├── listPetsParams.ts
+│   └── index.ts
+└── index.ts               ← root barrel re-exporting shared files + tag dirs
+```
+
+Cross-tag imports from within a tag subdirectory resolve to the parent:
+
+```ts
+// pets/pet.ts
+import type { Error } from '../error';
+```
+
+**Requirements:**
+
+- Works with any `mode` (`single`, `split`, `tags`, `tags-split`).
+- Incompatible with `operationSchemas` — operation-derived types are placed
+  within their tag directories automatically.
+- Schema-to-tag mapping is transitive: if `Pet` imports `Dog` which imports
+  `Dachshund`, all three land in the same directory.
 
 ## operationSchemas
 
@@ -352,6 +405,28 @@ my-app/src/
     └── users.ts             ← imports from ../models
 ```
 
+To organize schemas into per-tag subdirectories instead of a flat directory, use [`splitByTags`](#splitbytags):
+
+```
+my-app/src/
+├── models/
+│   ├── pagination.ts          ← shared schemas at root
+│   ├── error.ts
+│   ├── pets/
+│   │   ├── pet.ts
+│   │   ├── listPetsParams.ts
+│   │   └── index.ts
+│   ├── users/
+│   │   ├── user.ts
+│   │   ├── listUsersParams.ts
+│   │   └── index.ts
+│   └── index.ts               ← root barrel
+├── pets/
+│   └── pets.ts
+└── users/
+    └── users.ts
+```
+
 ## baseUrl
 
 **Type:** `String | Object`
@@ -366,6 +441,15 @@ export default defineConfig({
   },
 });
 ```
+
+<Callout type="info">
+For the `angular` client, prefer
+[`override.angular.baseUrl`](#baseurl-1) when you need the base URL resolved
+through Angular's dependency injection (for example, per-API gateway routing
+or `TestBed` overrides) instead of baked into every generated route string.
+`baseUrl` and `override.angular.baseUrl` are mutually exclusive on the same
+output.
+</Callout>
 
 ### runtime
 
@@ -545,6 +629,7 @@ export default defineConfig({
 |--------|------|---------|-------------|
 | `type` | `'msw'` | required | Discriminator for MSW handler generation. |
 | `path` | `String` | `undefined` | Output directory for this generator's mock files. Overrides the shared `mock.path` when set. When provided in `single` or `tags` mode, mock code is written to separate files (relative to `path`) instead of being inlined into the implementation file. |
+| `operationResponses` | `Boolean` | `true` | Emit `get<Op>ResponseMock` factories in the MSW output. Set to `false` to generate handlers only, response fallbacks become `undefined`. No effect when a Faker generator also emits the factories, the handlers then import them from the `.faker` file. Honored in `split` and `tags-split` modes. |
 | `delay` | `Number \| Function \| false` | `false` | Response delay in ms. |
 | `delayFunctionLazyExecute` | `Boolean` | `false` | Execute delay function at runtime instead of at build time. |
 | `baseUrl` | `String` | `''` | Base URL for the generated MSW handlers. |
@@ -556,6 +641,8 @@ export default defineConfig({
 ### Faker generator (`type: 'faker'`)
 
 The Faker generator emits the same `get<Op>ResponseMock` factories MSW would emit, but without any `msw` dependency or HTTP handler code. Useful for tests or stories that only need fake response data.
+
+In `split` and `tags-split` modes, configuring Faker alongside MSW moves the `get<Op>ResponseMock` factories to the `.faker` file. The `.msw` file only contains the handlers and imports (and re-exports) the factories instead of duplicating them. If the Faker generator is configured with `operationResponses: false` it emits no factories, so there is nothing to move and the `.msw` file keeps them inline.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -618,6 +705,70 @@ import { getPetMock } from '@acme/data-layer/sdk/fakers';
 
 Generate `index.ts` files for schemas.
 
+## tagsSplitDeduplication
+
+**Type:** `Boolean`
+**Default:** `false`
+
+In `tags-split` mode, extract shared infrastructure types (e.g. `HTTPStatusCode*` emitted by the fetch client) into a single `common-types.ts` file and generate a barrel `index.ts` at the target root.
+
+When enabled alongside [`indexFiles: true`](#indexfiles):
+
+- Shared types that would otherwise be duplicated across per-tag files are collected and written once to `[commonTypesFileName].ts`
+- Each per-tag file imports shared types from the common file instead of declaring them inline
+- A barrel `index.ts` is generated with named re-exports for public shared types plus `export *` re-exports for each per-tag implementation file
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      mode: 'tags-split',
+      target: './src/api/endpoints.ts',
+      schemas: './src/api/model',
+      client: 'fetch',
+      indexFiles: true,
+      tagsSplitDeduplication: true,
+    },
+  },
+});
+```
+
+Resulting structure:
+
+```
+src/api/
+├── common-types.ts           ← shared types extracted once
+├── index.ts                  ← barrel with named + wildcard re-exports
+├── pets/
+│   └── pets.ts               ← import type { ... } from '../common-types'
+└── health/
+    └── health.ts             ← import type { ... } from '../common-types'
+```
+
+When disabled (default), shared types are inlined per-tag and no barrel is generated — identical to previous behavior.
+
+Suppressed when [`workspace`](#workspace) is set (the workspace barrel handles aggregation).
+
+## commonTypesFileName
+
+**Type:** `String`
+**Default:** `'common-types'`
+
+The file name (without extension) used for the shared types file when [`tagsSplitDeduplication`](#tagssplitdeduplication) is enabled.
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      mode: 'tags-split',
+      indexFiles: true,
+      tagsSplitDeduplication: true,
+      commonTypesFileName: 'shared',  // generates shared.ts
+    },
+  },
+});
+```
+
 ## docs
 
 **Type:** `Boolean | Object`
@@ -644,22 +795,57 @@ export default defineConfig({
 **Type:** `Boolean | String[]`
 **Default:** `false`
 
-Clean generated files before regenerating. Removes every file in the `target` and `schemas` directories (`.d.ts` files are preserved).
+Remove files left over from previous runs before regenerating. What is removed depends on whether Orval owns the directory.
 
-When set to a `String[]`, the array entries are extra glob patterns appended to the deletion list, applied to both the `target` and `schemas` directories. Use negated globs (prefixed with `!`) to preserve files from removal, or positive globs to also remove files that would otherwise be kept.
+**`target` and `schemas` are wiped.** Every file in them is removed (`.d.ts` files are preserved) — not only files produced by Orval, but also any other file that happens to live there. These are the directories Orval asks you to keep hand-written files out of, so it takes them as its own.
+
+**Configured mock directories are pruned.** Set [`mock.path`](#mock), or a mock generator's own `path`, to give mock files their own directory. You frequently keep hand-written code in that directory too — MSW's `browser.ts` and `server.ts`, fixtures, or a barrel. Orval removes only the files that it could have written there. The patterns are `**/*.msw<ext>` and `**/*.faker<ext>`. `<ext>` is your [`fileExtension`](#fileextension), or one of the usual source extensions: `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`. Orval matches those extensions as well as your own. Thus a change from `.ts` to `.js` does not strand the mock files of the earlier runs.
+
+The same rule applies when the mock directory is inside `target` or `schemas`. The wipe does not go into a mock directory. Orval prunes that directory instead.
+
+Orval keeps all the files that these patterns do not match. But it also removes every empty directory below each directory that it cleans. This includes your own empty directories.
+
+Without a mock path there is no separate mock directory: mock output lands beside the implementation files and is covered by the `target` rule above.
+
+<Callout type="warn">
+Two limits apply to the prune patterns. A hand-written file with a name such as `handlers.msw.ts` or `fixtures.faker.ts` is removed, because Orval cannot tell it from its own output. And a compound `fileExtension` such as `.gen.ts` is matched only while you keep it configured. After you change it, remove the files of the earlier extension by hand.
+</Callout>
+
+When set to a `String[]`, the array entries are extra glob patterns appended to the deletion list for the `target` and `schemas` directories. They are **not** applied to mock directories — a positive glob there could delete hand-written files Orval never produced. Use negated globs (prefixed with `!`) to preserve specific files from removal.
 
 ```ts title="orval.config.ts"
 export default defineConfig({
   petstore: {
     output: {
-      // preserve `important.ts`, and also remove `.d.ts` files
-      clean: ['!**/important.ts', '**/*.d.ts'],
+      // preserve `important.ts` when wiping `target` / `schemas`
+      clean: ['!**/important.ts'],
     },
   },
 });
 ```
 
-Keep hand-written files (mutators, transformers, app code) outside the `target` and `schemas` directories — use a dedicated subfolder such as `./gen/` for output so `clean` does not remove them.
+For example, to keep a committed `swagger.json` next to the generated output:
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      target: './src/generated',
+      clean: ['!**/swagger.json'],
+    },
+  },
+});
+```
+
+<Callout type="warn">
+`clean` removes the entire contents of `target` and `schemas`, not just generated files. Do not point either directly at a package or library entrypoint root that holds files you need to keep (`package.json`, `ng-package.json`, `public-api.ts`, etc.). Place generated output in a dedicated subdirectory such as `./generated/` so those files are never touched.
+</Callout>
+
+Keep hand-written files (mutators, transformers, app code) outside the `target` and `schemas` directories for the same reason. You can share a configured mock directory with hand-written code, because Orval prunes that directory and does not wipe it. This stays true when the mock directory is inside `target` or `schemas`. But keep to the two limits above: do not give a hand-written file a mock file name, and do not rely on Orval to keep your empty directories.
+
+<Callout type="warn">
+A directory configured by more than one project is cleaned by each of them before that project writes, so the last project to run wins and the earlier project's output is gone. This applies to `target`, `schemas`, and mock directories alike. Give each project its own output directories.
+</Callout>
 
 ## formatter
 
@@ -681,8 +867,24 @@ export default defineConfig({
 ## headers
 
 **Type:** `Boolean`
+**Default:** `false`
 
-Enable generation of headers.
+Generate typed parameters for the HTTP request headers an operation declares in
+the specification. When disabled, header parameters are omitted from the
+generated function signatures.
+
+This is unrelated to [`override.header`](#header), which controls the comment
+block written at the top of each generated file.
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      headers: true,
+    },
+  },
+});
+```
 
 ## tsconfig
 
@@ -811,9 +1013,15 @@ export default defineConfig({
 ### header
 
 **Type:** `Boolean | Function`
-**Default:** `true`
+**Default:** the built-in header function
 
-Customize or disable the generated file header:
+Customize or disable the comment block written at the top of each generated
+file. This is unrelated to [`output.headers`](#headers), which controls HTTP
+request header parameters.
+
+Pass `false` to omit the comment block, or a function to replace it. Passing
+`true` produces the same output as omitting the option, since any value that is
+neither `false` nor a function falls back to the built-in header.
 
 ```ts title="orval.config.ts"
 export default defineConfig({
@@ -939,9 +1147,39 @@ that restriction for individual operations.
 
 ### useInfiniteQueryParam
 
-**Type:** `String`
+**Type:** `String | String[]`
 
-Query parameter name for infinite queries.
+Query parameter name for infinite queries. An operation only gets an infinite
+hook when it declares the configured parameter.
+
+Pass an array when a single spec paginates in more than one way. The names are
+candidates in priority order and are resolved per operation: the first one the
+operation actually declares becomes its page parameter, and an operation
+matching none of them gets no infinite hook.
+
+An `override.operations` entry replaces the global value entirely, so a single operation can opt into a different candidate
+list.
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      override: {
+        query: {
+          useInfinite: true,
+          useInfiniteQueryParam: ['page', 'cursor'],
+        },
+        operations: { 
+          listBets: {
+            useInfinite: true,
+            useInfiniteQueryParam: "cursor.marker",
+          }
+        }
+      },
+    },
+  },
+});
+```
 
 ### usePrefetch
 
@@ -1062,6 +1300,154 @@ parameter, orval passes operation identity so the mutator can branch on it
 - `queryOptions` mutator — `{ url, operationId, operationName }`
 - `mutationOptions` mutator — `{ operationId, operationName }` (the `url`
   is supplied in the second parameter)
+
+Each option takes a mutator, so point it at a file and an exported name:
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      client: 'react-query',
+      override: {
+        query: {
+          queryKey: {
+            path: './src/mutators/custom-query-key.ts',
+            name: 'customQueryKey',
+          },
+          queryOptions: {
+            path: './src/mutators/custom-query-options.ts',
+            name: 'customQueryOptions',
+          },
+          mutationOptions: {
+            path: './src/mutators/custom-mutation.ts',
+            name: 'useCustomMutation',
+          },
+        },
+      },
+    },
+  },
+});
+```
+
+`queryKey` replaces the generated key factory. It receives the operation's
+query properties and a context carrying the `url`:
+
+```ts title="src/mutators/custom-query-key.ts"
+export function customQueryKey(
+  // The properties dictionary varies per operation (params, petId, ...), so
+  // type it broadly if one mutator serves every endpoint.
+  properties: Record<string, unknown>,
+  context: { url: string },
+) {
+  return ['tenant-abc', context.url, properties] as const;
+}
+```
+
+`queryOptions` wraps the options object passed to the generated hook. The
+third parameter is the operation identity described above:
+
+```ts title="src/mutators/custom-query-options.ts"
+import type { QueryKey } from '@tanstack/react-query';
+
+export function customQueryOptions<T extends { queryKey: QueryKey }>(
+  options: T,
+  _queryProperties: Record<string, unknown>,
+  operation: { url: string; operationId: string; operationName: string },
+): T & { queryKey: QueryKey } {
+  return {
+    ...options,
+    queryKey: ['operation', operation.operationId, ...options.queryKey],
+  };
+}
+```
+
+`mutationOptions` works the same way for mutations, which is where branching
+on `operationId` is most useful.
+
+The mutator runs where the options object is built, inside the hook body, so
+side effects belong in a callback rather than in the mutator itself. Calling
+`invalidateQueries()` directly would fire on every render instead of after the
+mutation succeeds:
+
+```ts title="src/mutators/custom-mutation.ts"
+import { type UseMutationOptions, useQueryClient } from '@tanstack/react-query';
+
+export const useCustomMutation = <TData, TError, TVariables, TContext>(
+  options: UseMutationOptions<TData, TError, TVariables, TContext>,
+  _: { url: string },
+  operation: { operationId: string; operationName: string },
+) => {
+  const queryClient = useQueryClient();
+  if (operation.operationId !== 'deletePetById') return options;
+
+  return {
+    ...options,
+    onSuccess: (...args: Parameters<NonNullable<typeof options.onSuccess>>) => {
+      queryClient.invalidateQueries({ queryKey: ['/pets'] });
+      // Keep whatever the caller already passed.
+      return options.onSuccess?.(...args);
+    },
+  };
+};
+```
+
+Because the mutator receives `operationId`, one file can serve every
+operation and branch where the behaviour needs to differ, which is the usual
+alternative to a per-operation configuration option.
+
+#### Controlling the `use` / `get` prefix on query options
+
+By default orval names the exported query options factory
+`use<Operation>QueryOptions` when a `queryOptions` mutator (or a hook
+mutator) is configured, and `get<Operation>QueryOptions` otherwise — the
+`use` prefix is meant to signal a hook. Sometimes the factory is consumed
+outside a React component, for example in a router loader or in
+`prefetchQuery` / `ensureQueryData`, where a `use*` name is misleading and
+can trip rules-of-hooks lint rules. In that case, name the exported function
+yourself via the `queryOptions` mutator and the generated code will use
+your name verbatim:
+
+```ts title="src/mutators/custom-query-options.ts"
+export function customQueryOptions<T extends { queryKey: QueryKey }>(
+  options: T,
+): T {
+  return options;
+}
+```
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      client: 'react-query',
+      override: {
+        query: {
+          queryOptions: {
+            path: './src/mutators/custom-query-options.ts',
+            name: 'customQueryOptions',
+          },
+        },
+      },
+    },
+  },
+});
+```
+
+The generated hook then calls `getPetstoreQueryOptions(...)` (the name of
+the mutator export) instead of an auto-derived `usePetstoreQueryOptions`,
+and it can be used safely with `prefetchQuery` / `ensureQueryData`:
+
+```ts
+export async function loader(queryClient: QueryClient) {
+  return queryClient.ensureQueryData(getPetstoreQueryOptions());
+}
+```
+
+<Callout type="info">
+  The `use`/`get` prefix only affects the *name* of the exported options
+  factory. The hook itself is still exported as `use<Operation>` and must
+  be called from a React component.
+</Callout>
 
 ### shouldExportMutatorHooks
 
@@ -1224,6 +1610,8 @@ export default defineConfig({
     output: {
       override: {
         zod: {
+          variant: 'mini',
+          version: 4,
           strict: {
             response: true,
             query: true,
@@ -1244,12 +1632,42 @@ export default defineConfig({
           generateEachHttpStatus: true,
           useBrandedTypes: true,
           generateReusableSchemas: true,
+          generateDiscriminatedUnion: true,
         },
       },
     },
   },
 });
 ```
+
+### variant
+
+**Type:** `'classic' | 'mini'` — defaults to `'classic'`
+
+Select the generated Zod API style.
+
+| Value       | Output                                                                 |
+| ----------- | ---------------------------------------------------------------------- |
+| `'mini'`    | Import from `zod/mini` and emit Zod Mini's functional/check-based API. |
+| `'classic'` | Import from `zod` and emit the regular chainable Zod API.              |
+
+`'classic'` is the default to avoid changing existing projects. Prefer `'mini'` when startup time, memory usage, or bundle size matter.
+
+Zod Mini requires Zod 4 output. If `variant: 'mini'` is used with `version: 3`, or with `version: 'auto'` resolving to Zod 3, Orval throws instead of generating invalid output.
+
+### version
+
+**Type:** `3 | 4 | 'auto'` — defaults to `'auto'`
+
+Pin the Zod major version that generated output targets, so generation is deterministic instead of inferred from the installed `zod` package.
+
+| Value    | Output                                                                          |
+| -------- | ------------------------------------------------------------------------------- |
+| `4`      | Always emit Zod 4 syntax (`z.strictObject`, `z.iso.datetime()`, `.meta()`, …).   |
+| `3`      | Always emit Zod 3-compatible syntax (`.strict()`, `z.string().datetime()`, …).   |
+| `'auto'` | Infer from the resolved `zod` version; fall back to Zod 4 when none is detected. |
+
+Unlike most `override.zod` options, `version` is output-wide and cannot be set per operation or tag. See the [Zod guide](/docs/guides/zod#zod-version) for details.
 
 ### strict
 
@@ -1388,6 +1806,48 @@ Behavior:
 - **zod v3** has no `.meta()` — the option is a no-op there, and descriptions continue to emit via `.describe()`.
 - The registry `id` makes [`z.toJSONSchema()`](https://zod.dev/json-schema) reference the schema as `#/$defs/<id>`, round-tripping the component structure.
 
+### generateDiscriminatedUnion
+
+**Type:** `boolean`
+
+**Default:** `false`
+
+Emit a `oneOf`/`anyOf` that carries an OpenAPI [`discriminator`](https://spec.openapis.org/oas/v3.1.0#discriminator-object) as [`zod.discriminatedUnion(key, [...])`](https://zod.dev/api?id=discriminated-unions) instead of a plain `zod.union([...])`. A discriminated union picks the branch by its discriminator value first, so validation errors point at the offending field (`type.name`) instead of collapsing into a single "no union member matched" at the union root.
+
+```ts
+// override: { zod: { generateDiscriminatedUnion: true } }
+export const Pet = zod.discriminatedUnion('petType', [
+  zod.object({ petType: zod.literal('cat'), meows: zod.boolean() }),
+  zod.object({ petType: zod.literal('dog'), barks: zod.boolean() }),
+]);
+```
+
+Behavior:
+
+- **Opt-in.** Left `false`, unions are emitted exactly as before, so existing output is unchanged.
+- **Safe fallback.** A discriminated union is emitted only when every branch can be represented as an object carrying a literal (`const`/`enum`) discriminator. If any branch is a non-object, a nested union, or lacks a literal discriminator, generation falls back to a plain `zod.union([...])` rather than emitting code that throws at construction.
+- **Inheritance (`allOf`).** Branches composed with `allOf` are flattened into a single object so they remain valid discriminated-union options — this is the case that previously forced the feature to be reverted ([#2085](https://github.com/orval-labs/orval/issues/2085)). With [`generateReusableSchemas`](#generatereusableschemas), a branch that references an `allOf` schema stays a plain union (the referenced schema can't be guaranteed to be an object from the reference alone).
+- Works with both Zod v3 (>= 3.20) and v4, and with the [`mini`](#variant) variant.
+
+### exactOptional
+
+**Type:** `boolean`
+
+**Default:** `false`
+
+Emit optional object properties with `.exactOptional()` (classic) / `zod.exactOptional()` (mini) instead of `.optional()`, so consumers compiling with [`exactOptionalPropertyTypes`](https://www.typescriptlang.org/tsconfig/#exactOptionalPropertyTypes) infer `{ x?: T }` rather than `{ x?: T | undefined }`.
+
+```ts
+// override: { zod: { exactOptional: true } }
+export const Pet = zod.object({ name: zod.string().exactOptional() });
+```
+
+Behavior:
+
+- **Opt-in.** Left `false`, optional properties emit `.optional()` as before, so existing output is unchanged.
+- **zod v4 only.** zod v3 has no `.exactOptional()`, so the option is a no-op there and `.optional()` is emitted.
+- Applies to optional properties in both the classic and [`mini`](#variant) variants.
+
 ---
 
 ## override.effect
@@ -1442,6 +1902,14 @@ Control which schemas are generated.
 **Default:** `false`
 
 Append `S.brand()` to generated Effect schemas using the schema name as the brand identifier. For array request/response bodies, only the top-level array wrapper schema is branded.
+
+### exactOptional
+
+**Type:** `boolean`
+
+**Default:** `false`
+
+Emit optional Struct properties with `S.optionalWith(schema, { exact: true })` instead of `S.optional(schema)`, so consumers compiling with [`exactOptionalPropertyTypes`](https://www.typescriptlang.org/tsconfig/#exactOptionalPropertyTypes) infer `{ x?: T }` rather than `{ x?: T | undefined }`.
 
 ---
 
@@ -1530,6 +1998,45 @@ Validation is skipped for primitive types, non-JSON responses,
 `observe: 'events' | 'response'`, and custom mutator paths that bypass the
 generated validation flow.
 
+### queryObjectSerialization
+
+**Type:** `'spec' | 'legacy'`
+**Default:** `'spec'`
+
+Controls how query parameters whose declared schema is a plain object are
+serialized when no `paramsSerializer`/`paramsFilter` is configured for the
+operation. See the
+[Object query parameters guide](/docs/guides/angular#object-query-parameters-style--explode)
+for the full explanation and a worked example.
+
+- `spec` (default): honor the OpenAPI parameter's `style`/`explode` — `form` +
+  `explode: true` (the OpenAPI default) spreads the object's properties as
+  top-level query params, `form` + `explode: false` joins them into a single
+  comma-separated value, and `deepObject` emits bracketed `name[prop]` keys.
+- `legacy`: restore the pre-#3705 behavior of silently dropping object-typed
+  query params from the generated request.
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      override: {
+        angular: {
+          queryObjectSerialization: 'legacy',
+        },
+      },
+    },
+  },
+});
+```
+
+Like `retrievalClient`/`runtimeValidation`, this can be set globally, per-tag
+(`override.tags[...].angular`), or per-operation
+(`override.operations[...].angular`). It has no effect when a
+`paramsSerializer` or `paramsFilter` is configured — those remain in full
+control of the raw value. See
+[issue #3705](https://github.com/orval-labs/orval/issues/3705).
+
 ### httpResource
 
 **Type:** `Object`
@@ -1581,6 +2088,89 @@ Raw expression passed to `HttpResourceOptions.injector`.
 **Type:** `String`
 
 Raw expression passed to `HttpResourceOptions.equal`.
+
+### baseUrl
+
+**Type:** `Object`
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      override: {
+        angular: {
+          baseUrl: {
+            apiId: 'petstore',
+          },
+        },
+      },
+    },
+  },
+});
+```
+
+Opt-in: compose this output's runtime base URL through Angular dependency
+injection (an `InjectionToken`) instead of baking a static prefix into every
+generated route string. See the
+[Angular guide](/docs/guides/angular#di-based-base-url-composition-multiple-apis--gateway-routing)
+for the full precedence chain, the generated artifacts, and a multi-API
+gateway-routing example.
+
+<Callout type="info">
+`angular`-client only. Setting `baseUrl` on any other client logs a warning
+and has no effect.
+</Callout>
+
+#### apiId
+
+**Type:** `String` (required)
+
+Explicit, stable identifier for this API. Must match
+`/^[A-Za-z][A-Za-z0-9_-]*$/`; Orval throws a config-time error otherwise.
+`apiId` is **never** derived from the specification's `info.title` or the
+target file name — it drives every generated identifier, so it needs to stay
+stable across regenerations:
+
+| Generated identifier | Derivation |
+|---|---|
+| `<API_ID>_SERVER_URL` | Embedded fallback URL constant |
+| `<API_ID>_BASE_URL_RESOLVER` | `InjectionToken` for the runtime resolver hook |
+| `<API_ID>_BASE_URL` | `InjectionToken` for the composed, normalized base URL |
+| `<Api>BaseUrlResolverContext` | Resolver context type (`{ apiId, serverUrl }`) |
+| `<Api>BaseUrlResolver` | Resolver function type |
+| `provide<Api>BaseUrl(baseUrl)` | Directly provides the base URL, bypassing the resolver |
+| `provide<Api>BaseUrlResolver(resolver)` | Provides a custom resolver |
+
+`<API_ID>` is `apiId` upper-snake-cased (e.g. `petstore` → `PETSTORE`);
+`<Api>` is `apiId` PascalCased (e.g. `petstore` → `Petstore`).
+
+#### index
+
+**Type:** `Number`
+**Default:** `0`
+
+Which entry of the specification's `servers` array to embed as the default
+fallback URL, same semantics as [`baseUrl.index`](#index) on the top-level
+`baseUrl` option.
+
+#### variables
+
+**Type:** `Record<string, string>`
+
+Values for any `{variable}` placeholders in the selected server URL.
+
+#### Error and warning behavior
+
+- **Missing/invalid `apiId`** — throws
+  `` `override.angular.baseUrl.apiId` must be a non-empty string matching /^[A-Za-z][A-Za-z0-9_-]*$/ `` at config-normalization time.
+- **Combined with `output.baseUrl`** — throws: `` `override.angular.baseUrl` cannot be combined with the top-level `output.baseUrl` ``.
+  Remove `output.baseUrl` from the output; the token's fallback already reads
+  the specification's `servers` field, and a runtime override belongs in a
+  provided resolver.
+- **Set on a non-`angular` client** — logs a warning and is otherwise ignored.
+- **Set under `override.operations[...].angular` or `override.tags[...].angular`**
+  — logs a warning and is ignored. `baseUrl` is an output-level concern
+  configured once via `override.angular.baseUrl`, not per operation or tag.
 
 ---
 
@@ -1745,6 +2335,33 @@ Include HTTP status in return type. Set to `false` to return data directly.
 
 Throw on error responses instead of returning them.
 
+### serializeResponseHeaders
+
+**Type:** `Boolean`
+**Default:** `false`
+
+Return response `headers` as a plain `Record<string, string>` instead of a `Headers` instance. Enable it when a response is cached across a serialization boundary — a `Headers` instance in `dehydrate()` state makes a Next.js Server Component fail with `Only plain objects can be passed to Client Components from Server Components`. Requires `includeHttpResponseReturnType` (the default).
+
+Header names are lowercased and repeated headers are joined with `, `. `set-cookie` is dropped, because a dehydrated cache is embedded in the RSC payload and upstream session cookies must not travel with it. Only `headers` is converted: `blob` responses still return a `Blob`, and `application/x-ndjson` responses still return the raw `Response` under `stream`.
+
+With a custom `mutator` the option changes the generated type but not the runtime value, because the mutator issues the request itself. The mutator must return headers that already match the declared shape — as it must for `includeHttpResponseReturnType` today.
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      client: 'react-query',
+      httpClient: 'fetch',
+      override: {
+        fetch: {
+          serializeResponseHeaders: true,
+        },
+      },
+    },
+  },
+});
+```
+
 ### jsonReviver
 
 **Type:** `String | Object`
@@ -1757,6 +2374,35 @@ Custom JSON reviver function (useful for date parsing).
 **Default:** `false`
 
 Enable Zod runtime validation for fetch client responses. Requires `schemas: { type: 'zod' }`. When enabled, JSON responses are validated via `Schema.parse()` before being returned.
+
+### arrayFormat
+
+**Type:** `'repeat' | 'brackets' | 'comma'`
+
+Controls how array query parameters are serialized when the OpenAPI spec does not explicitly set `explode` on a parameter. The spec's own `explode` property always takes precedence.
+
+| Value | Output |
+|-------|--------|
+| `repeat` | `?tags=a&tags=b` |
+| `brackets` | `?tags[]=a&tags[]=b` |
+| `comma` | `?tags=a%2Cb` |
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      client: 'fetch',
+      override: {
+        fetch: {
+          arrayFormat: 'repeat',
+        },
+      },
+    },
+  },
+});
+```
+
+For full control over serialization (including custom encoding, nested objects, etc.) use [`override.paramsSerializer`](#paramsserializer) instead.
 
 ### useRuntimeFetcher
 
@@ -1848,6 +2494,13 @@ export default defineConfig({
             '/tag|name/': 'jon',
             email: () => faker.internet.email(),
           },
+          schemas: {
+            Apple: {
+              properties: {
+                color: () => faker.helpers.arrayElement(['red', 'green']),
+              },
+            },
+          },
           format: {
             email: () => faker.internet.email(),
             iban: () => faker.finance.iban(),
@@ -1870,7 +2523,16 @@ export default defineConfig({
 
 ### properties
 
-Override mock values per property path or regex.
+Override mock values per property path or regex. Applies to every schema that has a
+matching property.
+
+### schemas
+
+Scope property overrides to a named schema, so the same property name can mock differently
+per schema (e.g. `color` on `Apple` vs. `Car`). Keyed by schema name; each entry holds a
+`properties` map using the same matching rules as `properties` (bare name, `/regex/`, exact
+`#.path`). Takes precedence over the global `properties` overrides. See the
+[Faker guide](/docs/guides/faker#per-schema-overrides) for a worked example.
 
 ### format
 
@@ -1961,7 +2623,9 @@ Override by OpenAPI tag (same options as `operations`).
 
 **Type:** `Function`
 
-Custom function to override generated operation names:
+Custom function to override generated operation names.
+
+**Return `string`** to control both the method name and the type-name base together:
 
 ```ts title="orval.config.ts"
 export default defineConfig({
@@ -1976,6 +2640,46 @@ export default defineConfig({
   },
 });
 ```
+
+**Return `[methodName, typeNameBase]`** to decouple method names from type-identifier names. This is useful for gateway-aggregated specs where multiple services share the same REST patterns (`GET /products`, `GET /orders`) — bare method names are safe per-tag (each service class scopes them), but type names (`*Params`, `*Body`, `*Error`, `*Result`) need to be globally unique to avoid barrel-level collisions with `tags-split` + `splitByTags` + `indexFiles`:
+
+```ts title="orval.config.ts"
+import { pascal } from '@orval/core';
+
+export default defineConfig({
+  api: {
+    output: {
+      mode: 'tags-split',
+      schemas: { path: './model', splitByTags: true },
+      override: {
+        operationName: (_operation, route, verb) => {
+          const segments = route.split('/').filter(Boolean);
+          return [
+            `${verb}${pascal(segments.slice(2).join('-'))}`,  // getProducts
+            `${verb}${pascal(segments.slice(1).join('-'))}`,  // getCatalogProducts
+          ];
+        },
+      },
+    },
+  },
+});
+```
+
+Result:
+
+```ts
+// catalog/catalog.service.ts
+class CatalogService {
+  getProducts = (params: GetCatalogProductsParams) => ...;
+}
+
+// inventory/inventory.service.ts
+class InventoryService {
+  getProducts = (params: GetInventoryProductsParams) => ...;
+}
+```
+
+The first element controls the function/hook name. The second controls the base for all operation-specific TypeScript type identifiers (`*Params`, `*Body`, `*Error`, `*Result`, `*Accept`, zod/hono/effect schema names).
 
 ---
 
@@ -2518,9 +3222,9 @@ export const customFormUrlEncodedFn = <Body>(body: Body): URLSearchParams => {
 
 **Type:** `String | Object`
 
-> **Note:** Only valid when using Axios or Angular.
+> **Note:** Valid for Axios, Angular, and the fetch client.
 
-Custom parameter serializer for query parameters:
+Custom parameter serializer for query parameters. When set, the generated URL helper delegates query string building entirely to this function instead of using the built-in logic.
 
 ```ts title="orval.config.ts"
 export default defineConfig({
@@ -2537,7 +3241,10 @@ export default defineConfig({
 });
 ```
 
+For Axios and Angular the function receives the params object and can return any value Axios/Angular accepts. For the fetch client it must return a `string` (the raw query string without the leading `?`):
+
 ```ts title="custom-params-serializer-fn.ts"
+// Axios / Angular
 export const customParamsSerializerFn = (
   params: Record<string, any>,
 ): string => {
@@ -2546,6 +3253,20 @@ export const customParamsSerializerFn = (
     .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
     .join('&');
 };
+
+// fetch client — must return a string
+export const customParamsSerializer = (
+  params: Record<string, unknown> | undefined,
+): string =>
+  new URLSearchParams(
+    Object.entries(params ?? {})
+      .filter(([_, v]) => v !== undefined)
+      .flatMap(([k, v]) =>
+        Array.isArray(v)
+          ? v.map((item) => [k, String(item)])
+          : [[k, String(v)]],
+      ),
+  ).toString();
 ```
 
 ### paramsSerializerOptions
@@ -2645,6 +3366,8 @@ export default defineConfig({
 
 > **Important:** You must provide an Axios converter to convert serialized date strings to `Date` objects. This option only affects the TypeScript definition.
 
+If you also want runtime conversion, prefer `useDatesTransform` below; the interceptor approach traverses every response and can convert date-looking strings that are not schema dates.
+
 ```ts title="axios-instance.ts"
 import axios from 'axios';
 
@@ -2682,6 +3405,42 @@ export function handleDates(body: any) {
 ```
 
 > If using `fetch` client with `useDates: true`, query parameters of type Date are stringified using `toISOString()`.
+
+### useDatesTransform
+
+**Type:** `Boolean`
+**Default:** `false`
+
+Use this property to also convert dates at runtime. While `useDates` only
+changes the generated TypeScript types, `useDatesTransform` additionally
+generates a small `deserialize<OperationName>Response` function for every
+operation whose response schema declares `format: date` or
+`format: date-time` fields, and chains it onto the generated call:
+
+```ts
+export const getOrderDetails = (orderId: string) => {
+  return customInstance<OrderDetails>({ url: `/orders/${orderId}`, method: 'GET' }).then(
+    deserializeGetOrderDetailsResponse,
+  );
+};
+```
+
+Only schema-declared date fields are converted — no response-wide traversal,
+no pattern matching on strings — and operations without date fields generate
+no extra code. Setting `useDatesTransform: true` implies `useDates: true`.
+This removes the need for the axios interceptor shown under `useDates`.
+
+Current limitations: a `oneOf`/`anyOf` without an OpenAPI
+[`discriminator`](https://spec.openapis.org/oas/v3.1.0#discriminator-object)
+`mapping` is skipped, since there's no static way to tell which variant a
+given payload matched; a discriminated union with an explicit `mapping` is
+converted, emitting a `switch` on the discriminator property with one `case`
+per mapping key. `additionalProperties` maps are not converted, responses
+with multiple success shapes are skipped, and recursive schemas are left
+untouched entirely — converting only the levels above the cycle would leave
+deeper dates as strings while the generated types claim `Date`. Only the
+axios-based clients are wired (`react-query`, `vue-query`, `svelte-query`,
+and `solid-query` with `httpClient: 'axios'`).
 
 ### useBigInt
 

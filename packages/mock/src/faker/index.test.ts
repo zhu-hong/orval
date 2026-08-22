@@ -10,8 +10,13 @@ import type {
   NormalizedOverrideOutput,
   OpenApiSchemaObject,
 } from '@orval/core';
-import { isFakerMock, isMswMock, OutputMockType } from '@orval/core';
-import { describe, expect, expectTypeOf, it } from 'vitest';
+import {
+  EnumGeneration,
+  isFakerMock,
+  isMswMock,
+  OutputMockType,
+} from '@orval/core';
+import { describe, expect, expectTypeOf, it } from 'vite-plus/test';
 
 import { createTestContextSpec } from '../../../core/src/test-utils/context';
 import { dedupeStrictMockTypeDeclarations } from '../mock-types';
@@ -228,6 +233,118 @@ describe('generateFakerForSchemas property overrides (schemas: true)', () => {
   });
 });
 
+describe('generateFakerForSchemas enum factories (#3747)', () => {
+  it('casts a top-level enum to its own array type', () => {
+    const context = createTestContextSpec({
+      override: { enumGenerationType: EnumGeneration.ENUM },
+    });
+
+    const result = generateFakerForSchemas(
+      [
+        {
+          name: 'PetStatus',
+          model: 'PetStatus',
+          imports: [],
+          schema: {
+            type: 'string',
+            enum: ['available', 'pending', 'sold'],
+          },
+        },
+      ],
+      context,
+      { type: OutputMockType.FAKER, schemas: true },
+    );
+
+    expect(result.implementation).toContain(
+      "faker.helpers.arrayElement(['available','pending','sold'] as PetStatus[])",
+    );
+    expect(result.implementation).not.toContain("PetStatus['PetStatus']");
+  });
+});
+
+describe('generateFakerForSchemas schema-scoped overrides (override.mock.schemas)', () => {
+  const appleColor = () => `'red'`;
+  const carColor = () => `'midnight black'`;
+
+  const context = createTestContextSpec({
+    override: {
+      mock: {
+        schemas: {
+          Apple: { properties: { color: appleColor } },
+          Car: { properties: { color: carColor } },
+        },
+      },
+    },
+  });
+
+  const appleSchema: GeneratorSchema = {
+    name: 'Apple',
+    model: 'Apple',
+    imports: [],
+    schema: {
+      type: 'object',
+      required: ['color'],
+      properties: { color: { type: 'string' } },
+    },
+  };
+
+  const carSchema: GeneratorSchema = {
+    name: 'Car',
+    model: 'Car',
+    imports: [],
+    schema: {
+      type: 'object',
+      required: ['color'],
+      properties: { color: { type: 'string' } },
+    },
+  };
+
+  it('applies a different override to the same property name per schema', () => {
+    const result = generateFakerForSchemas([appleSchema, carSchema], context, {
+      type: OutputMockType.FAKER,
+      schemas: true,
+    });
+
+    expect(result.implementation).toContain(`color: (${String(appleColor)})()`);
+    expect(result.implementation).toContain(`color: (${String(carColor)})()`);
+  });
+
+  it('applies the Apple schema-scoped override inside a referencing schema', () => {
+    const basketSchema: GeneratorSchema = {
+      name: 'Basket',
+      model: 'Basket',
+      imports: [],
+      schema: {
+        type: 'object',
+        required: ['apple'],
+        properties: { apple: { $ref: '#/components/schemas/Apple' } },
+      },
+    };
+
+    context.spec.components = {
+      schemas: {
+        Apple: appleSchema.schema as Record<string, unknown>,
+      },
+    };
+
+    const result = generateFakerForSchemas(
+      [appleSchema, basketSchema],
+      context,
+      { type: OutputMockType.FAKER, schemas: true },
+    );
+
+    // `Apple.color` resolves through the Apple schema-scoped override whether
+    // Basket inlines Apple's body or delegates to getAppleMock() — the factory
+    // is built with the same mock options, so the override is baked into both.
+    const basketBody = result.implementation.slice(
+      result.implementation.indexOf('getBasketMock'),
+    );
+    expect(basketBody).toMatch(
+      /apple: (\{ \.\.\.getAppleMock\(\) \}|\{color: \(\(\) => `'red'`\)\(\)\})/,
+    );
+  });
+});
+
 describe('generateFakerForSchemas strict mock types (#3525)', () => {
   const context = createTestContextSpec({
     override: {
@@ -391,6 +508,268 @@ describe('generateFakerForSchemas recursion guards', () => {
   });
 });
 
+describe('generateFakerForSchemas recursive reference terminators', () => {
+  const run = (
+    schemas: Record<string, OpenApiSchemaObject>,
+    roots: string[],
+    context = createTestContextSpec(),
+  ) => {
+    context.spec.components = { schemas };
+    return generateFakerForSchemas(
+      roots.map((root) => ({
+        name: root,
+        model: root,
+        imports: [],
+        schema: schemas[root]!,
+      })),
+      context,
+      { type: OutputMockType.FAKER, schemas: true },
+    );
+  };
+
+  const factoryBody = (implementation: string, factoryName: string) => {
+    const start = implementation.indexOf(`export const ${factoryName}`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = implementation.indexOf('export const', start + 1);
+    return implementation.slice(start, end === -1 ? undefined : end);
+  };
+
+  const levelSchema = {
+    type: 'object',
+    required: ['entityType', 'nextLevelsWithConditions'],
+    properties: {
+      entityType: { type: 'string' },
+      nextLevelsWithConditions: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/LevelWithCondition' },
+      },
+    },
+  } satisfies OpenApiSchemaObject;
+  const levelWithConditionSchema = {
+    type: 'object',
+    required: ['condition', 'level'],
+    properties: {
+      condition: { type: 'string' },
+      level: { $ref: '#/components/schemas/Level' },
+    },
+  } satisfies OpenApiSchemaObject;
+  const levelSchemas: Record<string, OpenApiSchemaObject> = {
+    Level: levelSchema,
+    LevelWithCondition: levelWithConditionSchema,
+  };
+
+  it('stubs a required non-nullable recursive $ref instead of emitting null', () => {
+    const result = run(levelSchemas, ['LevelWithCondition', 'Level']);
+
+    expect(result.implementation).not.toContain('level: null');
+    // The re-expansion terminates through the array guard one hop deeper.
+    const levelMock = factoryBody(result.implementation, 'getLevelMock');
+    expect(levelMock).toContain('level: {entityType:');
+    expect(levelMock).toContain('nextLevelsWithConditions: []');
+  });
+
+  it('picks a concrete variant for a union member referencing its parent union', () => {
+    const result = run(
+      {
+        TracingValue: {
+          oneOf: [
+            { $ref: '#/components/schemas/StringTracingValue' },
+            { $ref: '#/components/schemas/RangeTracingValue' },
+          ],
+        },
+        StringTracingValue: {
+          type: 'object',
+          required: ['value', 'type'],
+          properties: {
+            value: { type: 'string' },
+            type: { type: 'string', enum: ['StringTracingValue'] },
+          },
+        },
+        RangeTracingValue: {
+          type: 'object',
+          required: ['from', 'to', 'type'],
+          properties: {
+            from: { $ref: '#/components/schemas/TracingValue' },
+            to: { $ref: '#/components/schemas/TracingValue' },
+            type: { type: 'string', enum: ['RangeTracingValue'] },
+          },
+        },
+      },
+      ['StringTracingValue', 'RangeTracingValue', 'TracingValue'],
+    );
+
+    expect(result.implementation).not.toContain('from: null');
+    expect(result.implementation).not.toContain('to: null');
+    const helper = factoryBody(
+      result.implementation,
+      'getTracingValueResponseRangeTracingValueMock',
+    );
+    expect(helper).toContain(
+      'from: faker.helpers.arrayElement([{...getTracingValueResponseStringTracingValueMock()}',
+    );
+  });
+
+  it('keeps null for a required recursive $ref to a nullable schema', () => {
+    const schemas: Record<string, OpenApiSchemaObject> = {
+      ...levelSchemas,
+      Level: {
+        ...levelSchema,
+        type: ['object', 'null'],
+      },
+    };
+    const result = run(schemas, ['Level']);
+
+    const levelMock = factoryBody(result.implementation, 'getLevelMock');
+    expect(levelMock).toContain('level: null');
+  });
+
+  it('still omits an optional recursive $ref', () => {
+    const schemas: Record<string, OpenApiSchemaObject> = {
+      ...levelSchemas,
+      LevelWithCondition: {
+        ...levelWithConditionSchema,
+        required: ['condition'],
+      },
+    };
+    const result = run(schemas, ['Level']);
+
+    const levelMock = factoryBody(result.implementation, 'getLevelMock');
+    expect(levelMock).not.toContain('level:');
+  });
+
+  it('terminates a fully-required self cycle with a cast after one re-expansion', () => {
+    const result = run(
+      {
+        Ouro: {
+          type: 'object',
+          required: ['next'],
+          properties: { next: { $ref: '#/components/schemas/Ouro' } },
+        },
+      },
+      ['Ouro'],
+    );
+
+    expect(result.implementation).not.toContain('next: null');
+    expect(result.implementation).toContain('next: {} as unknown as Ouro');
+  });
+
+  it('terminates a fully-required mutual cycle with a cast', () => {
+    const result = run(
+      {
+        A: {
+          type: 'object',
+          required: ['b'],
+          properties: { b: { $ref: '#/components/schemas/B' } },
+        },
+        B: {
+          type: 'object',
+          required: ['a'],
+          properties: { a: { $ref: '#/components/schemas/A' } },
+        },
+      },
+      ['A', 'B'],
+    );
+
+    expect(result.implementation).not.toContain('a: null');
+    expect(result.implementation).not.toContain('b: null');
+    expect(result.implementation).toContain('as unknown as');
+  });
+
+  it('casts undefined for a required $ref union whose variants are all recursive', () => {
+    const result = run(
+      {
+        OnlyRange: {
+          oneOf: [{ $ref: '#/components/schemas/RangeOnly' }],
+        },
+        RangeOnly: {
+          type: 'object',
+          required: ['from'],
+          properties: { from: { $ref: '#/components/schemas/OnlyRange' } },
+        },
+      },
+      ['RangeOnly'],
+    );
+
+    expect(result.implementation).not.toContain('from: undefined}');
+    expect(result.implementation).toContain(
+      'from: undefined as unknown as OnlyRange',
+    );
+  });
+
+  it('collapses a re-expansion that still needed casts inside', () => {
+    const result = run(
+      {
+        Wrap: {
+          type: 'object',
+          required: ['inner'],
+          properties: {
+            inner: {
+              type: 'object',
+              required: ['next'],
+              properties: { next: { $ref: '#/components/schemas/Wrap' } },
+            },
+          },
+        },
+      },
+      ['Wrap'],
+    );
+
+    expect(result.implementation).toContain('next: {} as unknown as Wrap');
+    expect(result.implementation).not.toContain('next: {inner:');
+  });
+
+  it('keeps output bounded on a dense cluster of mutually required refs', () => {
+    const names = ['D0', 'D1', 'D2', 'D3', 'D4', 'D5'];
+    const schemas: Record<string, OpenApiSchemaObject> = Object.fromEntries(
+      names.map((name) => [
+        name,
+        {
+          type: 'object',
+          required: names.filter((other) => other !== name),
+          properties: Object.fromEntries(
+            names
+              .filter((other) => other !== name)
+              .map((other) => [
+                other,
+                { $ref: `#/components/schemas/${other}` },
+              ]),
+          ),
+        },
+      ]),
+    );
+
+    const result = run(schemas, names);
+
+    expect(result.implementation.length).toBeLessThan(300_000);
+  });
+
+  it('does not delegate a recursive $ref to its own factory (runtime cycle)', () => {
+    const context = createTestContextSpec({
+      output: {
+        schemas: 'model',
+        mock: {
+          indexMockFiles: false,
+          generators: [{ type: OutputMockType.FAKER, schemas: true }],
+        },
+      },
+    });
+    const result = run(
+      {
+        TreeNode: {
+          type: 'object',
+          required: ['next'],
+          properties: { next: { $ref: '#/components/schemas/TreeNode' } },
+        },
+      },
+      ['TreeNode'],
+      context,
+    );
+
+    expect(result.implementation).not.toContain('next: { ...getTreeNodeMock()');
+    expect(result.implementation).toContain('next: {} as unknown as TreeNode');
+  });
+});
+
 describe('resolveMockValue returns one factory import per ref-property (#3606)', () => {
   // Delegation to a `get<X>Mock` factory requires output.schemas to be set and
   // the $ref to point at a components schema.
@@ -440,5 +819,126 @@ describe('resolveMockValue returns one factory import per ref-property (#3606)',
       name: 'getLeafDTOMock',
       schemaFactory: true,
     });
+  });
+});
+
+describe('oneOf split helpers forward body imports (#3656)', () => {
+  // A oneOf variant that resolves to an object is split into its own
+  // `get<Op>Response<Variant>Mock` helper. Any import the helper body uses as
+  // a runtime value — e.g. a $ref'd string enum rendered as
+  // `Object.values(ReasonEnum)` — must reach the shared imports array:
+  // mutating that array suppresses the caller-side merge of the returned
+  // imports, so forwarding only the variant's type import loses the enum
+  // value import and the generated mock fails tsc with TS2304.
+  // `enum` generation makes the $ref'd enum a runtime object, so the helper
+  // renders it as `Object.values(ReasonEnum)` (see #3690 — `union` inlines the
+  // values instead and forwards no value import).
+  const context = createTestContextSpec({
+    override: { enumGenerationType: EnumGeneration.ENUM },
+    spec: {
+      components: {
+        schemas: {
+          UpdatedDetails: {
+            type: 'object',
+            required: ['event_type', 'reason'],
+            properties: {
+              event_type: { type: 'string', enum: ['updated'] },
+              reason: { $ref: '#/components/schemas/ReasonEnum' },
+            },
+          },
+          ReasonEnum: { type: 'string', enum: ['queue_rebalance'] },
+        },
+      },
+    },
+  });
+
+  it('registers the enum value import used by the split helper', () => {
+    const imports: GeneratorImport[] = [];
+    const splitMockImplementations: string[] = [];
+
+    resolveMockValue({
+      schema: { $ref: '#/components/schemas/UpdatedDetails' },
+      operationId: 'listEvents',
+      tags: [],
+      combine: { separator: 'oneOf', includedProperties: [] },
+      context,
+      imports,
+      existingReferencedProperties: [],
+      splitMockImplementations,
+    });
+
+    // Precondition: the helper body references the enum as a runtime value.
+    expect(splitMockImplementations).toHaveLength(1);
+    expect(splitMockImplementations[0]).toContain('Object.values(ReasonEnum)');
+
+    expect(imports).toContainEqual(
+      expect.objectContaining({ name: 'ReasonEnum', values: true }),
+    );
+    expect(imports).toContainEqual(
+      expect.objectContaining({ name: 'UpdatedDetails', values: false }),
+    );
+  });
+});
+
+describe('schema-scoped overrides are preserved through factory delegation', () => {
+  // A schema-scoped override targets a schema's *own* properties, so its
+  // get<X>Mock factory bakes the override in. A referencing schema can keep
+  // delegating to that factory — the override rides along.
+  const appleColor = () => `'red'`;
+  const context = createTestContextSpec({
+    output: {
+      schemas: 'model',
+      mock: {
+        indexMockFiles: false,
+        generators: [{ type: OutputMockType.FAKER, schemas: true }],
+      },
+    },
+    override: {
+      mock: { schemas: { Apple: { properties: { color: appleColor } } } },
+    },
+    spec: {
+      components: {
+        schemas: {
+          Apple: {
+            type: 'object',
+            required: ['color'],
+            properties: { color: { type: 'string' } },
+          },
+        },
+      },
+    },
+  });
+
+  it('bakes the override into the factory and delegates from referencing schemas', () => {
+    const result = generateFakerForSchemas(
+      [
+        {
+          name: 'Apple',
+          model: 'Apple',
+          imports: [],
+          schema: {
+            type: 'object',
+            required: ['color'],
+            properties: { color: { type: 'string' } },
+          },
+        },
+        {
+          name: 'Basket',
+          model: 'Basket',
+          imports: [],
+          schema: {
+            type: 'object',
+            required: ['apple'],
+            properties: { apple: { $ref: '#/components/schemas/Apple' } },
+          },
+        },
+      ],
+      context,
+      { type: OutputMockType.FAKER, schemas: true },
+    );
+
+    // Factory carries the override; Basket delegates to it.
+    expect(result.implementation).toContain(`color: (${String(appleColor)})()`);
+    expect(result.implementation).toContain('apple: { ...getAppleMock() }');
   });
 });

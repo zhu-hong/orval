@@ -1,6 +1,6 @@
 {
   "name": "angular-app",
-  "version": "8.18.0",
+  "version": "8.25.0",
   "type": "module",
   "scripts": {
     "ng": "ng",
@@ -8,7 +8,7 @@
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
     "test": "ng test --no-watch",
-    "test:snapshots": "vitest run --config vitest.snapshots.ts",
+    "test:snapshots": "vp test run --config vitest.snapshots.ts",
     "test:snapshots:update": "vp run test:snapshots --update",
     "lint": "ng lint",
     "generate-api": "vp exec orval",
@@ -25,23 +25,25 @@
     "@angular/router": "catalog:angular",
     "rxjs": "catalog:angular",
     "tslib": "catalog:",
-    "zod": "catalog:zod3"
+    "zod": "catalog:zod4"
   },
   "devDependencies": {
-    "@angular-eslint/builder": "21.3.0",
+    "@angular-eslint/builder": "22.0.0",
     "@angular/build": "catalog:angular",
     "@angular/cli": "catalog:angular",
     "@angular/compiler-cli": "catalog:angular",
     "@faker-js/faker": "catalog:tooling",
-    "angular-eslint": "21.3.1",
+    "angular-eslint": "22.0.0",
     "eslint": "catalog:",
+    "jsdom": "catalog:",
     "msw": "catalog:tooling",
     "orval": "workspace:*",
     "prettier": "catalog:",
     "rimraf": "catalog:",
     "typescript": "catalog:",
     "typescript-eslint": "catalog:",
-    "vitest": "catalog:"
+    "vite-plus": "catalog:",
+    "vitest": "4.1.10"
   },
   "dependenciesMeta": {
     "msw": {

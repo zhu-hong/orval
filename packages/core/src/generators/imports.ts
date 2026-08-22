@@ -7,8 +7,7 @@ import {
   GetterPropType,
   NamingConvention,
 } from '../types';
-import { conventionName } from '../utils';
-import { escapeRegExp } from '../utils/string';
+import { compareNatural, conventionName } from '../utils';
 
 interface GenerateImportsOptions {
   imports: readonly GeneratorImport[];
@@ -58,7 +57,7 @@ export function generateImports({
   );
 
   return Object.entries(grouped)
-    .toSorted(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))
+    .toSorted(([a], [b]) => compareNatural(a, b))
     .map(([, group]) => {
       const sample = group[0];
       const canAggregate =
@@ -234,26 +233,39 @@ interface AddDependencyOptions {
   isAllowSyntheticDefaultImports: boolean;
 }
 
-export function addDependency({
-  implementation,
+type AddDependencyFromIdentifiersOptions = Omit<
+  AddDependencyOptions,
+  'implementation'
+> & {
+  referencedIdentifiers: ReadonlySet<string>;
+};
+
+function getReferencedIdentifiers(implementation: string): Set<string> {
+  return new Set(
+    implementation.match(/[$_\p{ID_Start}][$\u200c\u200d\p{ID_Continue}]*/gu) ??
+      [],
+  );
+}
+
+function addDependencyFromIdentifiers({
+  referencedIdentifiers,
   exports,
   dependency,
   projectName,
   isAllowSyntheticDefaultImports,
-}: AddDependencyOptions) {
+}: AddDependencyFromIdentifiersOptions) {
   const toAdds = exports.filter((e) => {
-    const searchWords = [e.alias, e.name]
-      .filter((p): p is string => Boolean(p?.length))
-      .map((part) => escapeRegExp(part))
-      .join('|');
+    // An aliased import is rendered as `name as alias`, so the alias is the only
+    // binding in scope; the pre-alias name never appears as a reference. Match on
+    // the alias when present (otherwise the name) to avoid false positives such as
+    // a path param `z` colliding with `z as zod` (#3695).
+    const identifier = e.alias?.length ? e.alias : e.name;
 
-    if (!searchWords) {
+    if (!identifier) {
       return false;
     }
 
-    const pattern = new RegExp(String.raw`\b(${searchWords})\b`, 'g');
-
-    return implementation.match(pattern);
+    return referencedIdentifiers.has(identifier);
   });
 
   if (toAdds.length === 0) {
@@ -325,6 +337,16 @@ export function addDependency({
   );
 }
 
+export function addDependency({
+  implementation,
+  ...options
+}: AddDependencyOptions) {
+  return addDependencyFromIdentifiers({
+    ...options,
+    referencedIdentifiers: getReferencedIdentifiers(implementation),
+  });
+}
+
 function getLibName(code: string) {
   const splitString = code.split(' from ');
   return (splitString.at(-1) ?? '').split(';')[0].trim();
@@ -340,11 +362,16 @@ export function generateDependencyImports(
   hasSchemaDir: boolean,
   isAllowSyntheticDefaultImports: boolean,
 ): string {
+  if (imports.length === 0) {
+    return '';
+  }
+
+  const referencedIdentifiers = getReferencedIdentifiers(implementation);
   const dependencies = imports
     .map((dep) =>
-      addDependency({
+      addDependencyFromIdentifiers({
         ...dep,
-        implementation,
+        referencedIdentifiers,
         projectName,
         hasSchemaDir,
         isAllowSyntheticDefaultImports,

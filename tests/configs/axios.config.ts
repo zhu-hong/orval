@@ -197,6 +197,108 @@ export default defineConfig({
       },
     },
   },
+  tagsSplitSharedModels: {
+    output: {
+      target:
+        '../generated/axios/tags-split-shared-models/endpoints.ts',
+      schemas: {
+        path: '../generated/axios/tags-split-shared-models/model',
+        type: 'typescript',
+        splitByTags: true,
+      },
+      mock: true,
+      mode: 'tags-split',
+      client: 'axios',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/tags-split-shared.yaml',
+    },
+  },
+  splitModeSplitSchemas: {
+    output: {
+      target: '../generated/axios/split-mode-split-schemas/endpoints.ts',
+      schemas: {
+        path: '../generated/axios/split-mode-split-schemas/model',
+        type: 'typescript',
+        splitByTags: true,
+      },
+      mode: 'split',
+      client: 'axios',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/tags-split-shared.yaml',
+    },
+  },
+  splitByTagsFakerSchemasNoIndex: {
+    output: {
+      target:
+        '../generated/axios/split-by-tags-faker-schemas-no-index/endpoints.ts',
+      schemas: {
+        path: '../generated/axios/split-by-tags-faker-schemas-no-index/model',
+        type: 'typescript',
+        splitByTags: true,
+      },
+      indexFiles: false,
+      mock: {
+        generators: [{ type: 'faker', schemas: true }],
+      },
+      mode: 'tags-split',
+      client: 'axios',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/tags-split-shared.yaml',
+    },
+  },
+  petstoreTagsSplitZodSchemas: {
+    output: {
+      target:
+        '../generated/axios/petstore-tags-split-zod-schemas/endpoints.ts',
+      schemas: {
+        path: '../generated/axios/petstore-tags-split-zod-schemas/model',
+        type: 'zod',
+        splitByTags: true,
+      },
+      mode: 'tags-split',
+      client: 'axios',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+      override: {
+        transformer: '../transformers/add-version.js',
+      },
+    },
+  },
+  petstoreTagsSplitZodReusableSchemas: {
+    output: {
+      target:
+        '../generated/axios/petstore-tags-split-zod-reusable/endpoints.ts',
+      schemas: {
+        path: '../generated/axios/petstore-tags-split-zod-reusable/model',
+        type: 'zod',
+        splitByTags: true,
+      },
+      mode: 'tags-split',
+      client: 'zod',
+      override: {
+        zod: {
+          generateReusableSchemas: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/tags-split-shared.yaml',
+    },
+  },
   petstoreTagsSplitMutator: {
     output: {
       target: '../generated/axios/petstore-tags-split-mutator/endpoints.ts',
@@ -279,6 +381,65 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/issue-3330.yaml',
+    },
+  },
+  issue3675IndexTarget: {
+    output: {
+      target: 'index.ts',
+      workspace: '../generated/axios/issue-3675-index-target/',
+      mode: 'split',
+      client: 'axios',
+      indexFiles: true,
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3675.yaml',
+    },
+  },
+  issue3675NonIndexTarget: {
+    output: {
+      target: 'endpoints.ts',
+      workspace: '../generated/axios/issue-3675-non-index-target/',
+      mode: 'split',
+      client: 'axios',
+      indexFiles: true,
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3675.yaml',
+    },
+  },
+  gatewayTupleTagsSplit: {
+    output: {
+      target:
+        '../generated/axios/gateway-tuple-tags-split/endpoints.ts',
+      schemas: {
+        path: '../generated/axios/gateway-tuple-tags-split/model',
+        type: 'typescript',
+        splitByTags: true,
+      },
+      mode: 'tags-split',
+      client: 'axios',
+      indexFiles: true,
+      tagsSplitDeduplication: true,
+      override: {
+        operationName: (_operation, route, verb) => {
+          const segments = route.split('/').filter(Boolean);
+          const cap = (s: string) =>
+            s.charAt(0).toUpperCase() + s.slice(1);
+          return [
+            `${verb}${segments.slice(2).map(cap).join('')}`,
+            `${verb}${segments.slice(1).map(cap).join('')}`,
+          ];
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/gateway-tuple.yaml',
     },
   },
 });

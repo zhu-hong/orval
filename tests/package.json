@@ -1,6 +1,6 @@
 {
   "name": "orval-tests",
-  "version": "8.18.0",
+  "version": "8.25.0",
   "description": "",
   "author": "Victor Bury",
   "license": "ISC",
@@ -14,6 +14,8 @@
     "generate:angular": "orval --config ./configs/angular.config.ts",
     "generate:angular-query": "orval --config ./configs/angular-query.config.ts",
     "generate:react-query": "orval --config ./configs/react-query.config.ts",
+    "generate:solid-query": "orval --config ./configs/solid-query.config.ts",
+    "generate:solid-start": "orval --config ./configs/solid-start.config.ts",
     "generate:svelte-query": "orval --config ./configs/svelte-query.config.ts",
     "generate:vue-query": "orval --config ./configs/vue-query.config.ts",
     "generate:swr": "orval --config ./configs/swr.config.ts",
@@ -24,7 +26,7 @@
     "generate:mcp": "orval --config ./configs/mcp.config.ts",
     "generate:hono": "orval --config ./configs/hono.config.ts",
     "generate:factory-methods": "orval --config ./configs/factory-methods.config.ts",
-    "test:snapshots": "vitest run --config vitest.snapshots.ts",
+    "test:snapshots": "vp test run --config vitest.snapshots.ts",
     "test:snapshots:update": "vp run test:snapshots --update",
     "build": "node ./scripts/typecheck-generated.mjs && vp run verify:mock-generated",
     "verify:mock-generated": "node ./scripts/verify-mock-generated.mjs",
@@ -38,8 +40,10 @@
     "@faker-js/faker": "catalog:tooling",
     "@hono/zod-validator": "catalog:hono",
     "@modelcontextprotocol/sdk": "catalog:mcp",
+    "@solidjs/router": "catalog:solid",
     "@tanstack/angular-query-experimental": "catalog:angular",
     "@tanstack/react-query": "catalog:react",
+    "@tanstack/solid-query": "catalog:solid",
     "@tanstack/svelte-query": "catalog:svelte",
     "@tanstack/vue-query": "catalog:vue",
     "@types/react": "catalog:react",
@@ -52,11 +56,12 @@
     "react": "catalog:react",
     "rimraf": "catalog:",
     "rxjs": "catalog:angular",
+    "solid-js": "catalog:solid",
     "svelte": "catalog:svelte",
     "swr": "catalog:swr",
     "typescript": "catalog:",
-    "vitest": "catalog:",
+    "vite-plus": "catalog:",
     "vue": "catalog:vue",
-    "zod": "catalog:zod3"
+    "zod": "catalog:zod4"
   }
 }

@@ -36,6 +36,7 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/issue-3327/spec.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
       override: {
         transformer: '../transformers/issue-3327-inject-external-ref.js',
       },
@@ -83,6 +84,23 @@ export default defineConfig({
       mock: true,
       mode: 'tags-split',
       client: 'fetch',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  petstoreTagsSplitDeduplication: {
+    output: {
+      target:
+        '../generated/fetch/petstore-tags-split-deduplication/endpoints.ts',
+      schemas:
+        '../generated/fetch/petstore-tags-split-deduplication/model',
+      mode: 'tags-split',
+      client: 'fetch',
+      indexFiles: true,
+      tagsSplitDeduplication: true,
       clean: true,
       formatter: 'prettier',
     },
@@ -322,7 +340,10 @@ export default defineConfig({
       clean: true,
       formatter: 'prettier',
     },
-    input: '../specifications/import-from-subdirectory/petstore.yaml',
+    input: {
+      target: '../specifications/import-from-subdirectory/petstore.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
+    },
   },
   defaultOnlyResponse: {
     output: {
@@ -437,6 +458,83 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/petstore.yaml',
+    },
+  },
+  serializeResponseHeaders: {
+    output: {
+      target: '../generated/fetch/serialize-response-headers/endpoints.ts',
+      schemas: '../generated/fetch/serialize-response-headers/model',
+      client: 'fetch',
+      override: {
+        fetch: {
+          serializeResponseHeaders: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  // ndjson and blob build their return object separately from the json branch.
+  serializeResponseHeadersStream: {
+    output: {
+      target:
+        '../generated/fetch/serialize-response-headers-stream/endpoints.ts',
+      schemas: '../generated/fetch/serialize-response-headers-stream/model',
+      client: 'fetch',
+      override: {
+        fetch: {
+          serializeResponseHeaders: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/stream.yaml',
+    },
+  },
+  serializeResponseHeadersBlob: {
+    output: {
+      target: '../generated/fetch/serialize-response-headers-blob/endpoints.ts',
+      schemas: '../generated/fetch/serialize-response-headers-blob/model',
+      client: 'fetch',
+      override: {
+        fetch: {
+          serializeResponseHeaders: true,
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/blob-file.yaml',
+    },
+  },
+  // A mutator owns the whole request, so the generated code cannot convert its
+  // headers — the option only changes the type the mutator has to satisfy.
+  serializeResponseHeadersMutator: {
+    output: {
+      target:
+        '../generated/fetch/serialize-response-headers-mutator/endpoints.ts',
+      schemas: '../generated/fetch/serialize-response-headers-mutator/model',
+      client: 'fetch',
+      override: {
+        fetch: {
+          serializeResponseHeaders: true,
+        },
+        mutator: {
+          path: '../mutators/custom-fetch.ts',
+          name: 'customFetch',
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/default-status.yaml',
     },
   },
   requestOptionsHeaders: {
@@ -567,6 +665,7 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/issue-3027/issue-3027.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
     },
   },
   zodSchemaResponseSuffixSplit: {
@@ -595,6 +694,7 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/issue-3027/issue-3027.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
     },
   },
   zodSchemaResponseSuffixTags: {
@@ -621,6 +721,7 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/issue-3027/issue-3027.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
     },
   },
   zodSchemaResponseSuffixTagsSplit: {
@@ -648,6 +749,7 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/issue-3027/issue-3027.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
     },
   },
   zodSchemaResponseSuffixSingleNoRuntimeValidation: {
@@ -674,6 +776,7 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/issue-3027/issue-3027.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
     },
   },
   zodSchemaResponseSuffixSplitNoRuntimeValidation: {
@@ -702,6 +805,7 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/issue-3027/issue-3027.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
     },
   },
   zodSchemaResponseSuffixTagsNoRuntimeValidation: {
@@ -729,6 +833,7 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/issue-3027/issue-3027.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
     },
   },
   zodSchemaResponseSuffixTagsSplitNoRuntimeValidation: {
@@ -756,6 +861,7 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/issue-3027/issue-3027.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
     },
   },
   wildcardResponses: {
@@ -817,6 +923,105 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/mixed-content-responses.yaml',
+    },
+  },
+  fetchArrayFormatRepeat: {
+    output: {
+      target: '../generated/fetch/array-format-repeat/endpoints.ts',
+      client: 'fetch',
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        fetch: {
+          arrayFormat: 'repeat',
+        },
+      },
+    },
+    input: {
+      target: '../specifications/array-format.yaml',
+    },
+  },
+  fetchArrayFormatBrackets: {
+    output: {
+      target: '../generated/fetch/array-format-brackets/endpoints.ts',
+      client: 'fetch',
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        fetch: {
+          arrayFormat: 'brackets',
+        },
+      },
+    },
+    input: {
+      target: '../specifications/array-format.yaml',
+    },
+  },
+  fetchArrayFormatComma: {
+    output: {
+      target: '../generated/fetch/array-format-comma/endpoints.ts',
+      client: 'fetch',
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        fetch: {
+          arrayFormat: 'comma',
+        },
+      },
+    },
+    input: {
+      target: '../specifications/array-format.yaml',
+    },
+  },
+  fetchParamsSerializer: {
+    output: {
+      target: '../generated/fetch/params-serializer/endpoints.ts',
+      schemas: '../generated/fetch/params-serializer/model',
+      client: 'fetch',
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        paramsSerializer: {
+          path: '../mutators/fetch-params-serializer.ts',
+          name: 'customParamsSerializer',
+        },
+      },
+    },
+    input: {
+      target: '../specifications/issue-3326.yaml',
+    },
+  },
+  'issue-3663': {
+    output: {
+      target: '../generated/fetch/issue-3663/endpoints.ts',
+      client: 'fetch',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3663.yaml',
+    },
+  },
+  'issue-3695': {
+    output: {
+      target: '../generated/fetch/issue-3695/endpoints.ts',
+      client: 'fetch',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3695.yaml',
+    },
+  },
+  'dotted-path-params': {
+    output: {
+      target: '../generated/fetch/dotted-path-params/endpoints.ts',
+      client: 'fetch',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/dotted-path-params.yaml',
     },
   },
 });

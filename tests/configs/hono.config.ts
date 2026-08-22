@@ -82,6 +82,24 @@ export default defineConfig({
       },
     },
   },
+  petstoreSplitWithHandlersKebab: {
+    input: '../specifications/petstore.yaml',
+    output: {
+      target:
+        '../generated/hono/petstore-split-with-handlers-kebab/endpoints.ts',
+      mode: 'split',
+      client: 'hono',
+      clean: true,
+      formatter: 'prettier',
+      namingConvention: 'kebab-case',
+      override: {
+        hono: {
+          handlers:
+            '../generated/hono/petstore-split-with-handlers-kebab/src/handlers',
+        },
+      },
+    },
+  },
   petstoreTagsWithHandlers: {
     input: '../specifications/petstore.yaml',
     output: {
@@ -132,6 +150,27 @@ export default defineConfig({
         hono: {
           handlers:
             '../generated/hono/petstore-tags-split-with-handlers/src/handlers',
+        },
+      },
+    },
+  },
+  // Regression for #3634: a multi-word/acronym tag ("AB Widget") in tags-split
+  // mode must route its handler/zod/context files into the canonical
+  // `ab-widget/` directory and be imported by the composite route from there.
+  issue3634CompositeRoutesTagsSplit: {
+    input: '../specifications/issue-3634.yaml',
+    output: {
+      target: '../generated/hono/issue-3634/src/endpoints.ts',
+      schemas: '../generated/hono/issue-3634/src/schemas',
+      mode: 'tags-split',
+      client: 'hono',
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        hono: {
+          compositeRoute: '../generated/hono/issue-3634/src/routes.ts',
+          validatorOutputPath:
+            '../generated/hono/issue-3634/src/endpoints/validator.ts',
         },
       },
     },

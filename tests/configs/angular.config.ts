@@ -198,6 +198,28 @@ export default defineConfig({
       target: '../specifications/angular-http-resource-both.yaml',
     },
   },
+  issue3624: {
+    output: {
+      target: '../generated/angular/issue-3624/petstore.client.ts',
+      schemas: {
+        path: '../generated/angular/issue-3624/petstore.schemas',
+      },
+      mode: 'split',
+      client: 'angular',
+      mock: false,
+      clean: true,
+      indexFiles: true,
+      formatter: 'prettier',
+      override: {
+        angular: {
+          retrievalClient: 'httpResource',
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
   multiContentQueryParams: {
     output: {
       target: '../generated/angular/multi-content-query-params/endpoints.ts',
@@ -205,6 +227,23 @@ export default defineConfig({
       client: 'angular',
       clean: true,
       formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/angular-multi-content-query-params.yaml',
+    },
+  },
+  httpResourceMultiContent: {
+    output: {
+      target: '../generated/angular/http-resource-multi-content/endpoints.ts',
+      schemas: '../generated/angular/http-resource-multi-content/model',
+      client: 'angular',
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        angular: {
+          retrievalClient: 'httpResource',
+        },
+      },
     },
     input: {
       target: '../specifications/angular-multi-content-query-params.yaml',
@@ -221,6 +260,19 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/issue-3103.yaml',
+    },
+  },
+  issue3634: {
+    output: {
+      target: '../generated/angular/issue-3634/endpoints.ts',
+      schemas: '../generated/angular/issue-3634/model',
+      client: 'angular',
+      mode: 'tags-split',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3634.yaml',
     },
   },
   issue3326: {
@@ -271,6 +323,117 @@ export default defineConfig({
       target: '../specifications/issue-3326.yaml',
     },
   },
+  issue3705: {
+    output: {
+      target: '../generated/angular/issue-3705/endpoints.ts',
+      schemas: '../generated/angular/issue-3705/model',
+      client: 'angular',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3705.yaml',
+    },
+  },
+  issue3705HttpResource: {
+    output: {
+      target: '../generated/angular/issue-3705-http-resource/endpoints.ts',
+      schemas: '../generated/angular/issue-3705-http-resource/model',
+      client: 'angular',
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        angular: {
+          retrievalClient: 'httpResource',
+        },
+      },
+    },
+    input: {
+      target: '../specifications/issue-3705.yaml',
+    },
+  },
+  issue3705Legacy: {
+    output: {
+      target: '../generated/angular/issue-3705-legacy/endpoints.ts',
+      schemas: '../generated/angular/issue-3705-legacy/model',
+      client: 'angular',
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        angular: {
+          queryObjectSerialization: 'legacy',
+        },
+      },
+    },
+    input: {
+      target: '../specifications/issue-3705.yaml',
+    },
+  },
+  issue3705Serializer: {
+    output: {
+      target: '../generated/angular/issue-3705-serializer/endpoints.ts',
+      schemas: '../generated/angular/issue-3705-serializer/model',
+      client: 'angular',
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        paramsSerializer: {
+          path: '../mutators/params-serializer.ts',
+          name: 'customParamsSerializer',
+        },
+      },
+    },
+    input: {
+      target: '../specifications/issue-3705.yaml',
+    },
+  },
+  issue3712: {
+    output: {
+      target: '../generated/angular/issue-3712/endpoints.ts',
+      schemas: '../generated/angular/issue-3712/model',
+      client: 'angular',
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/issue-3712.yaml',
+    },
+  },
+  issue3712HttpResource: {
+    output: {
+      target: '../generated/angular/issue-3712-http-resource/endpoints.ts',
+      schemas: '../generated/angular/issue-3712-http-resource/model',
+      client: 'angular',
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        angular: {
+          retrievalClient: 'httpResource',
+        },
+      },
+    },
+    input: {
+      target: '../specifications/issue-3712.yaml',
+    },
+  },
+  issue3712Serializer: {
+    output: {
+      target: '../generated/angular/issue-3712-serializer/endpoints.ts',
+      schemas: '../generated/angular/issue-3712-serializer/model',
+      client: 'angular',
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        paramsSerializer: {
+          path: '../mutators/params-serializer.ts',
+          name: 'customParamsSerializer',
+        },
+      },
+    },
+    input: {
+      target: '../specifications/issue-3712.yaml',
+    },
+  },
   urlEncodeParameters: {
     output: {
       target: '../generated/angular/url-encode-parameters/endpoints.ts',
@@ -303,6 +466,125 @@ export default defineConfig({
     },
     input: {
       target: '../specifications/petstore.yaml',
+    },
+  },
+  baseUrlToken: {
+    output: {
+      target: '../generated/angular/base-url-token/endpoints.ts',
+      schemas: '../generated/angular/base-url-token/model',
+      client: 'angular',
+      mock: false,
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        angular: {
+          baseUrl: { apiId: 'petstore-api' },
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  baseUrlTokenHttpResource: {
+    output: {
+      target: '../generated/angular/base-url-token-http-resource/endpoints.ts',
+      schemas: '../generated/angular/base-url-token-http-resource/model',
+      client: 'angular',
+      mock: false,
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        angular: {
+          retrievalClient: 'httpResource',
+          baseUrl: { apiId: 'petstore-api' },
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  baseUrlTokenBoth: {
+    output: {
+      target: '../generated/angular/base-url-token-both/endpoints.ts',
+      schemas: '../generated/angular/base-url-token-both/model',
+      client: 'angular',
+      mode: 'tags-split',
+      mock: false,
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        angular: {
+          retrievalClient: 'both',
+          baseUrl: { apiId: 'petstore-api' },
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  baseUrlTokenZod: {
+    output: {
+      target: '../generated/angular/base-url-token-zod/endpoints.ts',
+      schemas: {
+        type: 'zod',
+        path: '../generated/angular/base-url-token-zod/model',
+      },
+      client: 'angular',
+      mock: false,
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        angular: {
+          runtimeValidation: true,
+          baseUrl: { apiId: 'petstore-api' },
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  httpResourceHeaders: {
+    output: {
+      target: '../generated/angular/http-resource-headers/endpoints.ts',
+      schemas: '../generated/angular/http-resource-headers/model',
+      client: 'angular',
+      headers: true,
+      mock: false,
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        angular: {
+          retrievalClient: 'httpResource',
+        },
+      },
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  httpResourceRequestExtensionMultiContent: {
+    output: {
+      target:
+        '../generated/angular/http-resource-request-extension-multi-content/endpoints.ts',
+      schemas:
+        '../generated/angular/http-resource-request-extension-multi-content/model',
+      client: 'angular',
+      headers: true,
+      mock: false,
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        angular: {
+          retrievalClient: 'httpResource',
+        },
+      },
+    },
+    input: {
+      target: '../specifications/angular-http-resource-request-extension.yaml',
     },
   },
 });

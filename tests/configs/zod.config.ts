@@ -193,7 +193,10 @@ export default defineConfig({
       clean: true,
       formatter: 'prettier',
     },
-    input: '../specifications/import-from-subdirectory/petstore.yaml',
+    input: {
+      target: '../specifications/import-from-subdirectory/petstore.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
+    },
   },
   dateTimeOptions: {
     output: {
@@ -238,6 +241,42 @@ export default defineConfig({
       client: 'zod',
       clean: true,
       formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/enums.yaml',
+    },
+  },
+  'enums-v3': {
+    output: {
+      target: '../generated/zod/enums-v3/enums-v3.ts',
+      client: 'zod',
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        zod: {
+          version: 3
+        }
+      }
+    },
+    input: {
+      target: '../specifications/enums.yaml',
+    },
+  },
+  // Mini is Zod 4-only; `variant: 'mini'` renders `zod/enum` from `zod/mini`.
+  // `enums-mini` exists so Mini output is generated and typechecked in CI:
+  // the compile-time fixture in tests/regressions/zod-enums-mini.ts asserts a
+  // Mini enum member keeps its literal type (see #3852).
+  'enums-mini': {
+    output: {
+      target: '../generated/zod/enums-mini/enums-mini.ts',
+      client: 'zod',
+      clean: true,
+      formatter: 'prettier',
+      override: {
+        zod: {
+          variant: 'mini',
+        },
+      },
     },
     input: {
       target: '../specifications/enums.yaml',
@@ -353,7 +392,10 @@ export default defineConfig({
       clean: true,
       formatter: 'prettier',
     },
-    input: '../specifications/issue-3027/issue-3027.yaml',
+    input: {
+      target: '../specifications/issue-3027/issue-3027.yaml',
+      parserOptions: { externalRefs: { allow: ['*'] } },
+    },
   },
   'issue-3171': {
     output: {
@@ -372,5 +414,45 @@ export default defineConfig({
       formatter: 'prettier',
     },
     input: '../specifications/issue-3505.yaml',
+  },
+  // The next two configs pin `override.zod.version` to prove the explicit target
+  // wins over installed-version detection. `tests` installs Zod 4, so:
+  //   - `version: 3` must still emit Zod 3 syntax (`.strict()`,
+  //     `zod.string().email()`), which remains valid (deprecated) under Zod 4.
+  //   - `version: 4` emits Zod 4 syntax (`zod.strictObject`, `zod.email()`).
+  // The api-generation spec asserts the two outputs diverge accordingly.
+  'force-version-3': {
+    output: {
+      target: '../generated/zod/force-version-3/force-version-3.ts',
+      client: 'zod',
+      override: {
+        zod: {
+          version: 3,
+          strict: { body: true, response: true },
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
+  },
+  'force-version-4': {
+    output: {
+      target: '../generated/zod/force-version-4/force-version-4.ts',
+      client: 'zod',
+      override: {
+        zod: {
+          version: 4,
+          strict: { body: true, response: true },
+        },
+      },
+      clean: true,
+      formatter: 'prettier',
+    },
+    input: {
+      target: '../specifications/petstore.yaml',
+    },
   },
 });

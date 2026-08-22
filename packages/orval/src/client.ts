@@ -130,29 +130,36 @@ export const generateClientHeader: GeneratorClientHeader = ({
 }) => {
   const { header } = getGeneratorClient(outputClient, output);
 
+  const rawHeader = header
+    ? header({
+        title: titles.implementation,
+        isRequestOptions,
+        isGlobalMutator,
+        isMutator,
+        provideIn,
+        hasAwaitedType,
+        output,
+        verbOptions,
+        tag,
+        isDefaultTagBucket,
+        clientImplementation,
+      })
+    : '';
+
+  const normalizedHeader =
+    typeof rawHeader === 'string' ? { implementation: rawHeader } : rawHeader;
+
   return {
-    implementation: header
-      ? header({
-          title: titles.implementation,
-          isRequestOptions,
-          isGlobalMutator,
-          isMutator,
-          provideIn,
-          hasAwaitedType,
-          output,
-          verbOptions,
-          tag,
-          isDefaultTagBucket,
-          clientImplementation,
-        })
-      : '',
+    implementation: normalizedHeader.implementation,
     implementationMock: `export const ${titles.implementationMock} = () => [\n`,
+    sharedTypes: normalizedHeader.sharedTypes,
   };
 };
 
 export const generateClientFooter: GeneratorClientFooter = ({
   outputClient,
   operationNames,
+  operations,
   hasMutator,
   hasAwaitedType,
   titles,
@@ -180,6 +187,7 @@ export const generateClientFooter: GeneratorClientFooter = ({
     } else {
       implementation = footer({
         operationNames,
+        operations,
         title: titles.implementation,
         hasMutator,
         hasAwaitedType,
@@ -188,6 +196,7 @@ export const generateClientFooter: GeneratorClientFooter = ({
   } catch {
     implementation = footer({
       operationNames,
+      operations,
       title: titles.implementation,
       hasMutator,
       hasAwaitedType,
@@ -339,6 +348,9 @@ export const generateOperations = (
         paramsFilter: verbOption.paramsFilter,
         operationName: verbOption.operationName,
         fetchReviver: verbOption.fetchReviver,
+        ...(client.returnType
+          ? { types: { result: client.returnType } }
+          : undefined),
       };
 
       return acc;
